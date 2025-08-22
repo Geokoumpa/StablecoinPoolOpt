@@ -1,0 +1,48 @@
+# .gitignore for a Python/Terraform project
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*/site-packages/
+.ipynb_checkpoints/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+dist/
+build/
+*.egg-info/
+.env
+.venv
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*.override.tf
+*.override.tf.json
+.terraformrc
+terraform.rc
+
+# General
+.DS_Store
+.vscode/
+*.log
+*.backup
+*.swp
+*.swo
+*.tmp
+
+# Environment variables
+.env
+
+models/

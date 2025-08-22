@@ -1,0 +1,13 @@
+pandas
+numpy
+scikit-learn
+xgboost
+skforecast
+psycopg2-binary
+sqlalchemy
+google-cloud-storage
+requests
+python-dotenv
+cvxpy
+ortools
+ecos

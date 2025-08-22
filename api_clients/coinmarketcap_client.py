@@ -1,0 +1,118 @@
+import requests
+import json
+from datetime import datetime, timezone
+from config import COINMARKETCAP_API_KEY
+
+def get_latest_eth_price() -> float:
+    """
+    Fetches the latest ETH price from the CoinMarketCap API.
+    """
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {
+        'Accepts': 'application/json',
+        'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY,
+    }
+    params = {
+        'symbol': 'ETH',
+        'convert': 'USD'
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        eth_data = data['data']['ETH']
+        latest_price = eth_data['quote']['USD']['price']
+        return latest_price
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching latest ETH price from CoinMarketCap: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON response from CoinMarketCap: {e}")
+        return None
+    except KeyError as e:
+        print(f"Could not find expected data in CoinMarketCap response: {e}")
+        return None
+
+def get_latest_btc_price() -> float:
+    """
+    Fetches the latest BTC price from the CoinMarketCap API.
+    """
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {
+        'Accepts': 'application/json',
+        'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY,
+    }
+    params = {
+        'symbol': 'BTC',
+        'convert': 'USD'
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        btc_data = data['data']['BTC']
+        latest_price = btc_data['quote']['USD']['price']
+        return latest_price
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching latest BTC price from CoinMarketCap: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON response from CoinMarketCap: {e}")
+        return None
+    except KeyError as e:
+        print(f"Could not find expected data in CoinMarketCap response: {e}")
+        return None
+
+def get_historical_ohlcv_data(symbol: str, count: int = 30) -> list:
+    """
+    Fetches historical OHLCV data for a given symbol from the CoinMarketCap API.
+    """
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
+    headers = {
+        'Accepts': 'application/json',
+        'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY,
+    }
+    params = {
+        'symbol': symbol,
+        'time_period': 'daily',
+        'interval': 'daily',
+        'convert': 'USD',
+        'count': count,
+        'skip_invalid': True
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        raw_data = response.json()
+        return raw_data.get('data', {}).get('quotes', [])
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching historical OHLCV for {symbol}: {e}")
+        return []
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON response for {symbol}: {e}")
+        return []
+    except KeyError as e:
+        print(f"Could not find expected data in CoinMarketCap historical response: {e}")
+        return []
+
+if __name__ == "__main__":
+    if not COINMARKETCAP_API_KEY:
+        print("COINMARKETCAP_API_KEY environment variable not set in config.py.")
+    else:
+        latest_eth_price = get_latest_eth_price()
+        if latest_eth_price is not None:
+            print(f"Latest ETH Price: {latest_eth_price} USD")
+        
+        # Example of fetching historical data
+        eth_historical_data = get_historical_ohlcv_data(symbol='ETH', count=5)
+        if eth_historical_data:
+            print(f"\nLast 5 days of ETH historical data:")
+            for entry in eth_historical_data:
+                timestamp = entry.get('quote', {}).get('USD', {}).get('timestamp')
+                close_price = entry.get('quote', {}).get('USD', {}).get('close')
+                print(f"Date: {timestamp}, Close: {close_price}")

@@ -1,0 +1,65 @@
+-- Insert approved tokens (from M$ reboot.md line 150)
+INSERT INTO approved_tokens (token_symbol) VALUES
+    ('USDT'),
+    ('USDC'),
+    ('USDS'),
+    ('DAI'),
+    ('LUSD'),
+    ('BOLD'),
+    ('PYUSD'),
+    ('USDP'),
+    ('GUSD'),
+    ('GHO'),
+    ('RLUSD'),
+    ('USDtb'),
+    ('USD0'),
+    ('USDG'),
+    ('USDL'),
+    ('USDM'),
+    ('USDe'),
+    ('USYC'),
+    ('BUIDL'),
+    ('FOBXX'),
+    ('USDY'),
+    ('USTB'),
+    ('USCC'),
+    ('OUSG'),
+    ('TBILL'),
+    ('USTBL'),
+    ('crvUSD'),
+    ('USDF');
+
+-- Insert blacklisted tokens (from M$ reboot.md line 151)
+INSERT INTO blacklisted_tokens (token_symbol) VALUES
+    ('FRAX'),
+    ('USDD'),
+    ('MIM'),
+    ('FRXUSD'),
+    ('SUSD'),
+    ('USD0++');
+
+-- Insert approved protocols (from M$ reboot.md line 149)
+-- Using database protocol names (kebab-case) to match pools table
+INSERT INTO approved_protocols (protocol_name) VALUES
+    ('aave-v2'),
+    ('aave-v3'),
+    ('morpho'),
+    ('morpho-blue'),
+    ('sky-lending'),
+    ('sparklend'),
+    ('curve'),
+    ('curve-dex'),
+    ('uniswap-v2'),
+    ('uniswap-v3'),
+    ('compound-v2'),
+    ('compound-v3'),
+    ('goldfinch'),
+    ('yearn'),
+    ('yearn-finance'),
+    ('balancer-v2'),
+    ('balancer-v3'),
+    ('liquity'),
+    ('pendle'),
+    ('convex-finance'),
+    ('maple'),
+    ('fluid-lending');
