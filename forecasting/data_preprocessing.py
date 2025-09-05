@@ -30,7 +30,7 @@ def preprocess_data(df: pd.DataFrame, exogenous_cols: list = None) -> pd.DataFra
         df['gas_price_gwei'] = df['gas_price_wei'] / 1e9
 
     # 3. Derived Financial Metrics: Calculate estimated gas fees in USD and ETH.
-    # Requires 'gas_used' and 'eth_price_usd' columns.
+    # Requires 'gas_used' and 'gas_price_gwei' and 'eth_price_usd' columns.
     if 'gas_used' in df.columns and 'gas_price_gwei' in df.columns and 'eth_price_usd' in df.columns:
         df['gas_fee_eth'] = df['gas_used'] * df['gas_price_gwei'] / 1e9 # Convert Gwei to ETH
         df['gas_fee_usd'] = df['gas_fee_eth'] * df['eth_price_usd']
@@ -56,9 +56,8 @@ def preprocess_data(df: pd.DataFrame, exogenous_cols: list = None) -> pd.DataFra
                 # Drop the original exogenous column if only the shifted version is needed for forecasting
                 # df = df.drop(columns=[col])
 
-    # 7. Missing Value Handling: Remove rows with missing values after all preprocessing.
-    # This is crucial after creating lagged and shifted features.
-    df = df.dropna()
+    # 7. Missing Value Handling: Removed aggressive df.dropna()
+    # Specific dropna calls in forecasting scripts should handle this more precisely.
 
     return df
 

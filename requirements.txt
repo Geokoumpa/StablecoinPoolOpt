@@ -11,3 +11,4 @@ python-dotenv
 cvxpy
 ortools
 ecos
+python-dateutil

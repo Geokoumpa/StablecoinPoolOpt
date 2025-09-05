@@ -1,10 +1,10 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from database.db_utils import get_db_connection
 from config import COINMARKETCAP_API_KEY
 from api_clients.coinmarketcap_client import get_historical_ohlcv_data
 
-def fetch_ohlcv_coinmarketcap(api_key, symbols=['BTC', 'ETH']):
+def fetch_ohlcv_coinmarketcap(api_key):
     engine = None
     try:
         engine = get_db_connection()
@@ -12,49 +12,102 @@ def fetch_ohlcv_coinmarketcap(api_key, symbols=['BTC', 'ETH']):
             print("Could not establish database connection. Exiting.")
             return
 
+        # Fetch approved tokens from database
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT token_symbol FROM approved_tokens
+                WHERE removed_timestamp IS NULL
+            """))
+            approved_symbols = [row[0] for row in result.fetchall()]
+
+        # Include BTC and ETH which are not in approved_tokens but still needed
+        symbols = ['BTC', 'ETH'] + approved_symbols
+
+        if not symbols:
+            print("No symbols to fetch. Exiting.")
+            return
+
+        print(f"Fetching OHLCV data for symbols: {symbols}")
+
         for symbol in symbols:
-            # Get historical data for the past 30 days using the API client
-            historical_quotes = get_historical_ohlcv_data(symbol=symbol, count=30)
-            
+            # Check existing history for this symbol
+            with engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT MIN(data_timestamp), MAX(data_timestamp)
+                    FROM raw_coinmarketcap_ohlcv
+                    WHERE symbol = :symbol
+                """), {"symbol": symbol})
+                row = result.fetchone()
+                min_date = row[0] if row[0] else None
+                max_date = row[1] if row[1] else None
+
+            if min_date and max_date:
+                days_diff = (max_date - min_date).days
+                if days_diff >= 365:
+                    count = 1  # Fetch only previous day
+                    print(f"Symbol {symbol} has {days_diff} days of history (>=365), fetching 1 day.")
+                else:
+                    count = 365  # Fetch 1 year history
+                    print(f"Symbol {symbol} has {days_diff} days of history (<365), fetching 365 days.")
+            else:
+                count = 365  # No history, fetch 1 year
+                print(f"Symbol {symbol} has no history, fetching 365 days.")
+
+            # Get historical data using the API client
+            historical_quotes = get_historical_ohlcv_data(symbol=symbol, count=count)
+
             if not historical_quotes:
                 print(f"No historical data fetched for {symbol}. Skipping database insertion.")
                 continue
 
             try:
+                from psycopg2 import extras  # Import extras for Json type and execute_values
+                # Collect all data for bulk upsert
+                bulk_data = []
                 for quote_data in historical_quotes:
                     quote_usd = quote_data.get('quote', {}).get('USD', {})
                     timestamp_str = quote_usd.get('timestamp')
-                    
-                    if timestamp_str:
-                        data_timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                        # Directly execute UPSERT query for raw_coinmarketcap_ohlcv
-                        # This bypasses the generic insert_raw_data's duplicate check
-                        # and uses the specific unique constraint on (data_timestamp, symbol)
-                        from sqlalchemy import text
-                        from psycopg2 import extras # Import extras for Json type
 
-                        upsert_query = text(f"""
-                            INSERT INTO raw_coinmarketcap_ohlcv (data_timestamp, symbol, raw_json_data)
-                            VALUES (:data_timestamp, :symbol, :raw_json_data)
-                            ON CONFLICT (data_timestamp, symbol) DO UPDATE SET
-                                raw_json_data = EXCLUDED.raw_json_data,
-                                insertion_timestamp = CURRENT_TIMESTAMP;
-                        """)
-                        with engine.connect() as conn:
-                            with conn.begin():
-                                conn.execute(upsert_query, {
-                                    "data_timestamp": data_timestamp,
-                                    "symbol": symbol,
-                                    "raw_json_data": extras.Json(quote_usd)
-                                })
-                        print(f"Successfully upserted CoinMarketCap OHLCV data for {symbol} on {data_timestamp.date()}.")
+                    if timestamp_str:
+                        # Ensure data_timestamp is timezone-aware and then convert to date for consistency
+                        data_timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).astimezone(timezone.utc).date()
+                        bulk_data.append({
+                            "data_timestamp": data_timestamp,
+                            "symbol": symbol,
+                            "raw_json_data": extras.Json(quote_usd)
+                        })
+
+                # Perform bulk upsert if there's data to insert
+                if bulk_data:
+                    # Prepare data for bulk insert
+                    values = [(item['data_timestamp'], item['symbol'], item['raw_json_data']) for item in bulk_data]
+
+                    # Use psycopg2's execute_values for efficient bulk upsert
+                    upsert_query = """
+                        INSERT INTO raw_coinmarketcap_ohlcv (data_timestamp, symbol, raw_json_data)
+                        VALUES %s
+                        ON CONFLICT (data_timestamp, symbol) DO UPDATE SET
+                            raw_json_data = EXCLUDED.raw_json_data,
+                            insertion_timestamp = CURRENT_TIMESTAMP;
+                    """
+                    raw_conn = engine.raw_connection()
+                    try:
+                        cursor = raw_conn.connection.cursor()
+                        extras.execute_values(cursor, upsert_query, values)
+                        raw_conn.connection.commit()
+                    finally:
+                        raw_conn.close()
+                    print(f"Successfully bulk upserted {len(bulk_data)} CoinMarketCap OHLCV records for {symbol}.")
+                else:
+                    print(f"No valid data to upsert for {symbol}.")
+
                 print(f"Successfully fetched and processed CoinMarketCap OHLCV data for {symbol}.")
-            except Exception as e: # Catch a broader exception for issues during processing/insertion
+            except Exception as e:  # Catch a broader exception for issues during processing/insertion
                 print(f"Error processing or inserting CoinMarketCap OHLCV for {symbol}: {e}")
     finally:
         if engine:
             engine.dispose()
-
 if __name__ == "__main__":
     if not COINMARKETCAP_API_KEY:
         print("COINMARKETCAP_API_KEY environment variable not set in config.py.")

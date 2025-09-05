@@ -19,8 +19,8 @@ CREATE TABLE pool_daily_metrics (
     forecasted_apy DECIMAL(20, 4),
     actual_tvl DECIMAL(20, 2),
     forecasted_tvl DECIMAL(20, 2),
-    eth_price_usd DECIMAL(20, 4),
-    btc_price_usd DECIMAL(20, 4),
+    eth_open DECIMAL(20, 8),
+    btc_open DECIMAL(20, 8),
     gas_price_gwei DECIMAL(20, 4),
     is_filtered_out BOOLEAN DEFAULT FALSE,
     filter_reason TEXT,
@@ -42,7 +42,9 @@ CREATE TABLE gas_fees_daily (
     actual_avg_gas_gwei DECIMAL(10, 2),
     forecasted_avg_gas_gwei DECIMAL(10, 2),
     actual_max_gas_gwei DECIMAL(10, 2),
-    forecasted_max_gas_gwei DECIMAL(10, 2)
+    forecasted_max_gas_gwei DECIMAL(10, 2),
+    eth_open DECIMAL(20, 8),
+    btc_open DECIMAL(20, 8)
 );
 
 -- Create icebox_tokens table

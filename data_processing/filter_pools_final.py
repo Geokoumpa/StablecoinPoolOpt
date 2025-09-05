@@ -5,8 +5,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def filter_pools_final():
     """
-    Final filtering phase: Apply icebox token filtering to pre-filtered pools.
-    Only processes pools that passed pre-filtering and adds icebox exclusions.
+    Final filtering phase: Apply TVL, APY, and icebox token filtering to pre-filtered pools.
+    Only processes pools that passed pre-filtering and adds final exclusions.
     """
     logging.info("Starting final pool filtering (icebox)...")
     engine = None
@@ -17,22 +17,32 @@ def filter_pools_final():
         conn = engine.raw_connection()
         cur = conn.cursor()
 
-        # Get blacklisted tokens from the blacklisted_tokens table
-        cur.execute("SELECT token_symbol FROM blacklisted_tokens;")
-        blacklisted_tokens = {row[0] for row in cur.fetchall()}
-
         # Get icebox tokens from the icebox_tokens table (only active ones)
         cur.execute("SELECT token_symbol FROM icebox_tokens WHERE removed_timestamp IS NULL;")
         icebox_tokens = {row[0] for row in cur.fetchall()}
 
+        # Get allocation parameters for TVL and APY limits
+        cur.execute("""
+            SELECT pool_tvl_limit, pool_apy_limit
+            FROM allocation_parameters
+            ORDER BY timestamp DESC LIMIT 1;
+        """)
+        filter_params = cur.fetchone()
+        if filter_params:
+            pool_tvl_limit, pool_apy_limit = filter_params
+        else:
+            pool_tvl_limit, pool_apy_limit = None, None
+            logging.warning("No allocation parameters found for TVL/APY filtering.")
+
         print("=== Final Pool Filtering Criteria ===")
-        print(f"Blacklisted Tokens: {blacklisted_tokens}")
         print(f"Icebox Tokens: {icebox_tokens}")
+        print(f"Pool TVL Limit: {pool_tvl_limit}")
+        print(f"Pool APY Limit: {pool_apy_limit}")
         print("=====================================")
 
         # Fetch pools that passed pre-filtering (not filtered out)
         cur.execute("""
-            SELECT pdm.pool_id, p.symbol, pdm.filter_reason
+            SELECT pdm.pool_id, p.symbol, p.tvl, p.apy, pdm.filter_reason
             FROM pool_daily_metrics pdm
             JOIN pools p ON pdm.pool_id = p.pool_id
             WHERE pdm.date = CURRENT_DATE AND pdm.is_filtered_out = FALSE;
@@ -41,22 +51,26 @@ def filter_pools_final():
 
         logging.info(f"Processing {len(pre_filtered_pools)} pre-filtered pools for final filtering...")
 
-        for pool_id, symbol, existing_reason in pre_filtered_pools:
+        for pool_id, symbol, tvl, apy, existing_reason in pre_filtered_pools:
             additional_reasons = []
             should_filter_out = False
 
-            # Check for blacklisted tokens
+            # Check for icebox tokens
             if symbol:
-                blacklisted_found = [token for token in blacklisted_tokens if token in symbol]
-                if blacklisted_found:
-                    additional_reasons.append(f"Pool contains blacklisted token(s): {', '.join(blacklisted_found)}.")
-                    should_filter_out = True
-
-                # Check for icebox tokens
                 icebox_found = [token for token in icebox_tokens if token in symbol]
                 if icebox_found:
                     additional_reasons.append(f"Pool contains icebox token(s): {', '.join(icebox_found)}.")
                     should_filter_out = True
+
+            # Check TVL limit
+            if tvl is not None and pool_tvl_limit is not None and tvl < pool_tvl_limit:
+                additional_reasons.append(f"Pool TVL ({tvl:.2f}) below limit ({pool_tvl_limit}).")
+                should_filter_out = True
+
+            # Check APY limit
+            if apy is not None and pool_apy_limit is not None and apy < pool_apy_limit:
+                additional_reasons.append(f"Pool APY ({apy:.4f}) below limit ({pool_apy_limit:.4f}).")
+                should_filter_out = True
 
             if should_filter_out:
                 # Combine existing reasons with new ones
@@ -96,8 +110,9 @@ def filter_pools_final():
         print("🏁 FINAL POOL FILTERING SUMMARY")
         print("="*60)
         print(f"📥 Input pools (pre-filtered): {len(pre_filtered_pools)}")
-        print(f"🔍 Blacklisted tokens checked: {len(blacklisted_tokens)}")
         print(f"📦 Icebox tokens checked: {len(icebox_tokens)}")
+        print(f"💰 TVL limit: ${pool_tvl_limit:,.0f}" if pool_tvl_limit else "💰 TVL limit: N/A")
+        print(f"📈 APY limit: {pool_apy_limit:.2%}" if pool_apy_limit else "📈 APY limit: N/A")
         print(f"✅ Final approved pools: {final_count}")
         print(f"❌ Total filtered out pools: {filtered_count}")
         if len(pre_filtered_pools) > 0:

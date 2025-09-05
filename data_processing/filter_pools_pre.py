@@ -6,8 +6,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def filter_pools_pre():
     """
-    Pre-filtering phase: Filter pools based on APY, TVL, approved protocols, and approved tokens only.
-    Does NOT filter based on blacklisted tokens or icebox tokens (those come from icebox analysis).
+    Pre-filtering phase: Filter pools based on approved protocols, approved tokens, and blacklisted tokens.
+    Does NOT filter based on TVL, APY, or icebox tokens (those come from final filtering).
     """
     logging.info("Starting pre-pool filtering...")
     engine = get_db_connection()
@@ -22,8 +22,6 @@ def filter_pools_pre():
             result = conn.execute(text("""
                 SELECT
                     token_marketcap_limit,
-                    pool_tvl_limit,
-                    pool_apy_limit,
                     pool_pair_tvl_ratio_min,
                     pool_pair_tvl_ratio_max
                 FROM allocation_parameters
@@ -36,7 +34,7 @@ def filter_pools_pre():
                 trans.rollback()
                 return
 
-            (token_marketcap_limit, pool_tvl_limit, pool_apy_limit,
+            (token_marketcap_limit,
              pool_pair_tvl_ratio_min, pool_pair_tvl_ratio_max) = filter_params
 
             # Get approved protocols
@@ -47,24 +45,27 @@ def filter_pools_pre():
             result = conn.execute(text("SELECT token_symbol FROM approved_tokens;"))
             approved_tokens = {row[0] for row in result.fetchall()}
 
+            # Get blacklisted tokens
+            result = conn.execute(text("SELECT token_symbol FROM blacklisted_tokens;"))
+            blacklisted_tokens = {row[0] for row in result.fetchall()}
+
             print("=== Pre-Pool Filtering Criteria and Thresholds ===")
             print(f"Token Marketcap Limit: {token_marketcap_limit}")
-            print(f"Pool TVL Limit: {pool_tvl_limit}")
-            print(f"Pool APY Limit: {pool_apy_limit}")
             print(f"Pool Pair TVL Ratio Min: {pool_pair_tvl_ratio_min}")
             print(f"Pool Pair TVL Ratio Max: {pool_pair_tvl_ratio_max}")
             print(f"Approved Protocols: {approved_protocols}")
             print(f"Approved Tokens: {approved_tokens}")
+            print(f"Blacklisted Tokens: {blacklisted_tokens}")
             print("================================================")
 
             # Fetch all pools for pre-filtering
             result = conn.execute(text("""
-                SELECT pool_id, protocol, symbol, tvl, apy, name
+                SELECT pool_id, protocol, symbol, tvl, apy, name, chain
                 FROM pools p;
             """))
             pools_data = result.fetchall()
 
-            for pool_id, protocol, symbol, tvl, apy, name in pools_data:
+            for pool_id, protocol, symbol, tvl, apy, name, chain in pools_data:
                 filter_reason = []
                 is_filtered_out = False
 
@@ -73,20 +74,42 @@ def filter_pools_pre():
                     filter_reason.append(f"Protocol '{protocol}' not in approved protocols.")
                     is_filtered_out = True
 
-                # Exclude pools not containing approved tokens
-                approved_found = any(token in symbol for token in approved_tokens) if symbol else False
-                if not approved_found:
-                    filter_reason.append(f"Pool does not contain any approved tokens.")
+                # Exclude pools not on Ethereum chain
+                if chain != "Ethereum":
+                    filter_reason.append(f"Pool is on chain '{chain}', not Ethereum.")
                     is_filtered_out = True
 
-                # Exclude pools below TVL limit
-                if tvl is not None and tvl < pool_tvl_limit:
-                    filter_reason.append(f"Pool TVL ({tvl:.2f}) below limit ({pool_tvl_limit}).")
-                    is_filtered_out = True
-
-                # Exclude pools below APY limit
-                if apy is not None and apy < pool_apy_limit:
-                    filter_reason.append(f"Pool APY ({apy:.4f}) below limit ({pool_apy_limit:.4f}).")
+                # Check token composition: all tokens must be approved and not blacklisted
+                if symbol:
+                    tokens_in_symbol = symbol.split('-')
+                    invalid_tokens = []
+                    blacklisted_in_pool = []
+                    
+                    for token in tokens_in_symbol:
+                        # Check for partial match with approved tokens
+                        has_approved_match = False
+                        for approved_token in approved_tokens:
+                            if approved_token.lower() in token.lower() or token.lower() in approved_token.lower():
+                                has_approved_match = True
+                                break
+                        
+                        if not has_approved_match:
+                            invalid_tokens.append(token)
+                        
+                        # Check for partial match with blacklisted tokens
+                        for blacklisted_token in blacklisted_tokens:
+                            if blacklisted_token.lower() in token.lower() or token.lower() in blacklisted_token.lower():
+                                blacklisted_in_pool.append(token)
+                                break
+                    
+                    if invalid_tokens:
+                        filter_reason.append(f"Pool contains non-approved token(s): {', '.join(invalid_tokens)}.")
+                        is_filtered_out = True
+                    if blacklisted_in_pool:
+                        filter_reason.append(f"Pool contains blacklisted token(s): {', '.join(blacklisted_in_pool)}.")
+                        is_filtered_out = True
+                else:
+                    filter_reason.append("Pool has no symbol.")
                     is_filtered_out = True
 
                 # Check if pool already exists in pool_daily_metrics for today
@@ -153,8 +176,7 @@ def filter_pools_pre():
             print(f"📊 Total pools processed: {total_pools}")
             print(f"📋 Approved protocols: {len(approved_protocols)}")
             print(f"🪙 Approved tokens: {len(approved_tokens)}")
-            print(f"💰 TVL limit: ${pool_tvl_limit:,.0f}")
-            print(f"📈 APY limit: {pool_apy_limit:.2%}")
+            print(f"🛑 Blacklisted tokens: {len(blacklisted_tokens)}")
             print(f"✅ Pools approved (passed pre-filtering): {approved_count}")
             print(f"❌ Pools filtered out: {filtered_count}")
             print(f"📊 Approval rate: {(approved_count/total_pools*100):.1f}%" if total_pools > 0 else "N/A")

@@ -32,13 +32,13 @@ def fetch_pool_daily_metrics(conn):
     return pd.read_sql(query, conn)
 
 def fetch_daily_ledger(conn):
-    """Fetches current account balances and liquidity portfolio."""
+    """Fetches current account balances and liquidity portfolio from the previous day."""
     query = """
     SELECT
         token_symbol,
         end_of_day_balance
     FROM daily_ledger
-    WHERE date = CURRENT_DATE;
+    WHERE date = CURRENT_DATE - INTERVAL '1 day';
     """
     return pd.read_sql(query, conn)
 

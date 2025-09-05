@@ -55,13 +55,9 @@ def run_pipeline(phases=None):
     logger.info("Applying database migrations...")
     apply_migrations()
 
-    # Import historical gas data (one-time operation)
-    logger.info("Importing historical gas data...")
-    try:
-        run_script("data_ingestion.import_historical_gas_data", "import_historical_gas_data.py")
-    except Exception as e:
-        logger.error(f"Error during historical gas data import: {e}")
-        # Don't exit - this is a one-time operation that might already be completed
+    # Create initial allocation parameter snapshots
+    logger.info("Creating initial allocation parameter snapshots...")
+    run_script("data_processing.create_allocation_snapshots", "create_allocation_snapshots.py")
 
     if phases is None:
         phases = ["all"] # Default to running all phases
@@ -72,9 +68,9 @@ def run_pipeline(phases=None):
     if "all" in phases or "phase1" in phases:
         logger.info("--- Phase 1: Initial Data Ingestion ---")
         try:
-            run_script("data_ingestion.fetch_defillama_pools", "fetch_defillama_pools.py")
             run_script("data_ingestion.fetch_ohlcv_coinmarketcap", "fetch_ohlcv_coinmarketcap.py")
             run_script("data_ingestion.fetch_gas_ethgastracker", "fetch_gas_ethgastracker.py")
+            run_script("data_ingestion.fetch_defillama_pools", "fetch_defillama_pools.py")
             run_script("data_ingestion.fetch_account_data_etherscan", "fetch_account_data_etherscan.py")
             logger.info("Phase 1 completed successfully.")
         except Exception as e:
@@ -99,11 +95,15 @@ def run_pipeline(phases=None):
             run_script("data_processing.calculate_pool_metrics", "calculate_pool_metrics.py")
             run_script("data_processing.apply_pool_grouping", "apply_pool_grouping.py")
             run_script("data_processing.process_icebox_logic", "process_icebox_logic.py")
+            # Update allocation snapshots after icebox logic
+            run_script("data_processing.update_allocation_snapshots", "update_allocation_snapshots.py")
             run_script("data_processing.filter_pools_final", "filter_pools_final.py")
             logger.info("Phase 3 completed successfully.")
         except Exception as e:
             logger.error(f"Error during Phase 3 (Pool Analysis & Final Filtering): {e}")
             sys.exit(1)
+
+
 
     # Phase 4: Fresh Data & Snapshots
     if "all" in phases or "phase4" in phases:
@@ -161,6 +161,7 @@ def run_pipeline(phases=None):
     print(f"📋 Phases executed: {', '.join(phases)}")
     print("")
     print("📊 PHASE BREAKDOWN:")
+    print("  📸 Initial allocation snapshots created (after migrations)")
     if "all" in phases or "phase1" in phases:
         print("  ✅ Phase 1: Initial Data Ingestion")
         print("     • DeFiLlama pools data fetched")
@@ -176,11 +177,14 @@ def run_pipeline(phases=None):
         print("     • Pool metrics calculated")
         print("     • Pool grouping applied")
         print("     • Icebox logic processed")
+        print("     • Allocation snapshots updated (post-icebox)")
         print("     • Final filtering completed (with icebox)")
+        print("     • Historical metrics calculated for filtered pools (6 months)")
+        print("     • Missing historical metrics filled for filtered pools")
     if "all" in phases or "phase4" in phases:
         print("  ✅ Phase 4: Fresh Data & Snapshots")
-        
-        print("     • Allocation snapshots created")
+
+        print("     • Final allocation snapshots created")
     if "all" in phases or "phase5" in phases:
         print("  ✅ Phase 5: Forecasting")
         print("     • Pool forecasts generated")

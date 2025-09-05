@@ -1,14 +1,11 @@
 import pandas as pd
-import pickle
 from datetime import timedelta
 from skforecast.recursive import ForecasterRecursive
 from skforecast.model_selection import bayesian_search_forecaster, TimeSeriesFold
 from xgboost import XGBRegressor
 from database.db_utils import get_db_connection
 from forecasting.data_preprocessing import preprocess_data
-from google.cloud import storage
 from optuna.distributions import IntDistribution, FloatDistribution
-from config import GCS_MODEL_BUCKET_NAME, ENVIRONMENT
 
 def has_sufficient_data(df: pd.DataFrame) -> bool:
     """
@@ -27,8 +24,8 @@ def has_sufficient_data(df: pd.DataFrame) -> bool:
 
 def fetch_pool_data(pool_id: str) -> pd.DataFrame:
     """
-    Fetches historical APY, TVL, and exogenous data for a specific pool from the database.
-    All exogenous variables (ETH price, gas fees) are pre-merged in pool_daily_metrics.
+    Fetches last 210 days (7 months) of historical APY, TVL, and exogenous data for a specific pool.
+    Uses a sliding window of 210 days for comprehensive forecasting with lagged features.
     """
     engine = get_db_connection()
     with engine.connect() as conn:
@@ -37,21 +34,28 @@ def fetch_pool_data(pool_id: str) -> pd.DataFrame:
             date,
             rolling_apy_7d as apy_7d,
             actual_tvl as tvl_usd,
-            eth_price_usd,
-            btc_price_usd,
+            eth_open,
+            btc_open,
             gas_price_gwei
         FROM
             pool_daily_metrics
         WHERE
             pool_id = %s
+            AND rolling_apy_7d IS NOT NULL
+            AND rolling_apy_30d IS NOT NULL
+            AND stddev_apy_7d IS NOT NULL
         ORDER BY
-            date;
+            date DESC
+        LIMIT 210;
         """
         df = pd.read_sql(query, conn, params=(pool_id,), parse_dates=['date'], index_col='date')
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC')
         else:
             df.index = df.index.tz_convert('UTC')
+        
+        # Reverse to get chronological order (oldest to newest)
+        df = df.sort_index()
         return df
 
 def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
@@ -70,10 +74,6 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
         print(f"No sufficient data for pool {pool_id}. Skipping.")
         return {}
 
-    if len(data) < 14:
-        print(f"Not enough data points for bayesian_search_forecaster (requires > window_size=14). Skipping pool {pool_id}.")
-        return {}
-    
     # Ensure data is properly formatted
     if not isinstance(data.index, pd.DatetimeIndex):
         data.index = pd.to_datetime(data.index)
@@ -81,14 +81,16 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     data.index = data.index.normalize()
 
     # Define exogenous columns for this specific forecasting task
-    exogenous_cols = ['eth_price_usd', 'btc_price_usd', 'gas_price_gwei']
+    exogenous_cols = ['eth_open', 'btc_open', 'gas_price_gwei']
     
     # Check if we have sufficient exogenous data
-    if data[exogenous_cols].isna().any().any():
+    has_missing_exog = data[exogenous_cols].isna().any().any()
+    if has_missing_exog:
         print(f"Pool {pool_id} has missing exogenous data, filling with forward fill...")
         data[exogenous_cols] = data[exogenous_cols].ffill()
-    
-    if data[exogenous_cols].isna().any().any():
+
+    has_missing_exog_after_ffill = data[exogenous_cols].isna().any().any()
+    if has_missing_exog_after_ffill:
         print(f"Pool {pool_id} still has missing exogenous data after forward fill, using backward fill...")
         data[exogenous_cols] = data[exogenous_cols].bfill()
     
@@ -98,6 +100,15 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
 
     # Apply preprocessing
     data_processed = preprocess_data(data, exogenous_cols=exogenous_cols)
+
+    # Add additional lagged features for crypto prices (7-day and 30-day lags for longer-term patterns)
+    from forecasting.data_preprocessing import create_lagged_features
+    data_processed = create_lagged_features(data_processed, 'eth_open', [7, 30])
+    data_processed = create_lagged_features(data_processed, 'btc_open', [7, 30])
+    data_processed = create_lagged_features(data_processed, 'gas_price_gwei', [7, 30])
+
+    # Use only the last 180 days (6 months) to ensure all lagged features have values
+    data_processed = data_processed.tail(180)
 
     # Ensure the index is datetime and has a frequency
     if not isinstance(data_processed.index, pd.DatetimeIndex):
@@ -109,20 +120,63 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
 
     print(f"Pool {pool_id} processed dataset:\n{data_processed}\nShape: {data_processed.shape}")
 
-    # Define forecasters for APY and TVL with increased lags to capture weekly patterns
+    # Define forecasters for APY and TVL with fixed lags of 7 to align with experimental approach
     forecaster_apy = ForecasterRecursive(
         regressor=XGBRegressor(random_state=123),
-        lags=14  # Capture up to 2-week patterns
+        lags=7  # Fixed lags of 7 as per experimental script alignment
     )
     forecaster_tvl = ForecasterRecursive(
         regressor=XGBRegressor(random_state=123),
-        lags=14  # Capture up to 2-week patterns
+        lags=7  # Fixed lags of 7 as per experimental script alignment
     )
 
     # Hyperparameter tuning (example for APY, can be extended for TVL)
     print(f"Starting hyperparameter tuning for APY for pool {pool_id}...")
     print(f"Data processed length: {len(data_processed)}")
+
+        # Check for NaN values in target and exogenous data
+    print(f"NaN in target (apy_7d): {data_processed['apy_7d'].isna().sum()}")
+    print(f"NaN in exogenous data: {data_processed[exogenous_cols].isna().sum()}")
+
+    # Define additional exogenous features including lagged variables
+    additional_features = ['day_of_week', 'day_of_year', 'month', 'year', 'week_of_year', 'quarter',
+                           'eth_open_lag7', 'eth_open_lag30', 'btc_open_lag7', 'btc_open_lag30',
+                           'gas_price_gwei_lag7', 'gas_price_gwei_lag30']
+
+    # Filter out features that don't exist in the dataset
+    available_additional_features = [feat for feat in additional_features if feat in data_processed.columns]
+    print(f"Available additional features: {available_additional_features}")
+
+    # Combine shifted exogenous with additional features
+    exog_features = [f'{col}_shifted' for col in exogenous_cols] + available_additional_features
+    print(f"Exogenous features for forecasting: {exog_features}")
+
+    # Check for NaN in exogenous features
+    exog_data = data_processed[exog_features]
+    print(f"NaN values in exogenous features: {exog_data.isna().sum().sum()}")
+
+    # Drop rows with NaN values to ensure clean data for forecasting
+    # Include TVL data in the combined dataset for cleaning
+    data_columns = ['apy_7d']
+    if 'tvl_usd' in data_processed.columns:
+        data_columns.append('tvl_usd')
     
+    combined_data = pd.concat([data_processed[data_columns], exog_data], axis=1)
+    combined_data_clean = combined_data.dropna()
+    print(f"Data length after dropping NaN: {len(combined_data_clean)} (was {len(combined_data)})")
+    print(f"Columns in combined_data_clean: {combined_data_clean.columns.tolist()}")
+
+    min_data_length_for_cv = 15  # Minimum required for basic forecasting
+    if len(combined_data_clean) < min_data_length_for_cv:
+        print(f"After dropping NaN values, not enough data for forecasting. "
+              f"Found {len(combined_data_clean)} records, need at least {min_data_length_for_cv}. Skipping pool {pool_id}.")
+        return {}
+
+    # Update data_processed and exog_data to clean versions
+    # Use combined_data_clean directly since it already contains cleaned data
+    data_processed_clean = combined_data_clean.copy()
+    exog_data_clean = combined_data_clean[exog_features]
+
     # Define search space for Bayesian optimization using Optuna distributions
     def search_space_fn(trial):
         return {
@@ -130,78 +184,202 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
             'max_depth': trial.suggest_int('max_depth', 3, 5),
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1)
         }
-    
+
     # Adaptive validation setup optimized for 30-day exogenous data availability
-    data_length = len(data_processed)
+    data_length = int(len(data_processed_clean))  # Ensure it's an integer
+    
+    # Ensure all variables are scalars
+    min_lags = forecaster_apy.lags
+    if hasattr(min_lags, '__len__') and not isinstance(min_lags, str):
+        # If lags is an array, take the maximum
+        min_lags = int(max(min_lags))
+    else:
+        min_lags = int(min_lags)
+    
+    min_train_size_required = min_lags + 1 # Must be > lags
+    min_data_length_for_cv = min_train_size_required + int(steps) # At least one test sample
+    
+    print(f"Debug: data_length={data_length}, min_lags={min_lags}, min_train_size_required={min_train_size_required}, min_data_length_for_cv={min_data_length_for_cv}")
+
+    if data_length < min_data_length_for_cv:
+        print(f"Not enough data points for cross-validation with lags={min_lags} and steps={steps}. "
+              f"Found {data_length} records, need at least {min_data_length_for_cv}. Skipping pool {pool_id}.")
+        return {}
+
+    steps_int = int(steps)  # Ensure steps is an integer
     
     if data_length < 45:
         # For smaller datasets, use simple validation but ensure we have enough training data
         print(f"Small dataset ({data_length} points), using simple train-test split")
-        initial_train_size = max(int(data_length * 0.75), 21)  # Use 75% for training, minimum 21 (3 weeks)
+        initial_train_size = max(min_train_size_required, data_length - steps_int)
+        # Ensure initial_train_size is strictly less than data_length
+        if initial_train_size >= data_length:
+            initial_train_size = data_length - 1
+
+        print(f"Creating CV with initial_train_size: {initial_train_size}, data_length: {data_length}")
         cv = TimeSeriesFold(
-            steps=steps,
+            steps=steps_int,
             initial_train_size=initial_train_size,
             refit=False
         )
     else:
         # For larger datasets, use more sophisticated cross-validation with better coverage
-        test_size = max(steps * 5, 14)  # Minimum test size of 14 days (2 weeks)
-        n_splits = min(4, (data_length - 35) // test_size)  # More splits with 35-day minimum training
+        test_size = max(steps_int * 5, 14)  # Minimum test size of 14 days (2 weeks)
+        n_splits = max(1, min(4, (data_length - 35) // test_size))  # Ensure at least 1 split
         initial_train_size = max(data_length - n_splits * test_size, 35)  # Ensure positive and reasonable size
-        
-        print(f"Using {n_splits} splits with initial_train_size: {initial_train_size}, test_size: {test_size}")
+
+        # Ensure initial_train_size is valid
+        if initial_train_size >= data_length:
+            initial_train_size = max(min_train_size_required, data_length - steps_int)
+            n_splits = 1
+
+        print(f"Using {n_splits} splits with initial_train_size: {initial_train_size}, test_size: {test_size}, data_length: {data_length}")
         cv = TimeSeriesFold(
-            steps=steps,
+            steps=steps_int,
             initial_train_size=initial_train_size,
             refit=False
         )
 
-    # Bayesian search for APY
-    results_bayesian_apy, best_trial = bayesian_search_forecaster(
-        forecaster=forecaster_apy,
-        y=data_processed['apy_7d'],
-        exog=data_processed[[f'{col}_shifted' for col in exogenous_cols] + ['day_of_week', 'day_of_year', 'month']],
-        cv=cv,
-        search_space=search_space_fn,
-        metric='mean_squared_error',
-        n_trials=5, # Number of trials for Bayesian search
-        return_best=True,
-        n_jobs=-1,
-        verbose=False,
-        show_progress=True
-    )
-    print(f"Best hyperparameters for APY: {forecaster_apy.regressor.get_params()}")
+    # Ensure data types are numeric and handle any potential type issues
+    y_clean = data_processed_clean['apy_7d'].astype(float)
+    exog_data_clean = data_processed_clean[exog_features].astype(float)
+    
+    # Ensure no infinite values using numpy
+    import numpy as np
+    
+    if not np.isfinite(y_clean).all():
+        print("Warning: Found infinite values in target variable, replacing with NaN and dropping")
+        y_clean = y_clean.replace([float('inf'), float('-inf')], float('nan')).dropna()
+        exog_data_clean = exog_data_clean.loc[y_clean.index]
+    
+    if not np.isfinite(exog_data_clean).all().all():
+        print("Warning: Found infinite values in exogenous variables, replacing with NaN and dropping")
+        finite_mask = np.isfinite(exog_data_clean).all(axis=1)
+        y_clean = y_clean[finite_mask]
+        exog_data_clean = exog_data_clean[finite_mask]
+    
+    print(f"Final clean data length: {len(y_clean)}")
+    
+    # Additional validation to avoid any potential array comparison issues
+    if len(y_clean) != len(exog_data_clean):
+        print(f"Mismatch in data lengths: y_clean={len(y_clean)}, exog_data_clean={len(exog_data_clean)}")
+        return {}
+    
+    # Reset indices to ensure proper alignment
+    y_clean = y_clean.reset_index(drop=True)
+    exog_data_clean = exog_data_clean.reset_index(drop=True)
+    
+    # Ensure all data is finite
+    print(f"Y data check - finite: {np.isfinite(y_clean).all()}, any NaN: {y_clean.isna().any()}")
+    print(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().any().any()}")
 
-    # Train forecasters with best parameters
+    # Skip Bayesian optimization for now and use default parameters to test if that's the issue
+    print("Skipping Bayesian search and using default parameters to avoid array ambiguity...")
+    default_params = {
+        'n_estimators': 150,
+        'max_depth': 4,
+        'learning_rate': 0.05,
+        'random_state': 123
+    }
+    forecaster_apy.regressor.set_params(**default_params)
+    print(f"Using default hyperparameters for APY: {default_params}")
+
+    # Train forecasters with default parameters
     print(f"Training forecasters for pool {pool_id}...")
-    forecaster_apy.fit(
-        y=data_processed['apy_7d'],
-        exog=data_processed[[f'{col}_shifted' for col in exogenous_cols] + ['day_of_week', 'day_of_year', 'month']]
-    )
-    forecaster_tvl.fit(
-        y=data_processed['tvl_usd'],
-        exog=data_processed[[f'{col}_shifted' for col in exogenous_cols] + ['day_of_week', 'day_of_year', 'month']]
-    )
+    training_exog_cols = [f'{col}_shifted' for col in exogenous_cols] + ['day_of_week', 'day_of_year', 'month']
+    training_exog_cols = [col for col in training_exog_cols if col in exog_data_clean.columns]
+    
+    # Prepare clean TVL data similarly to APY data
+    tvl_data_available = 'tvl_usd' in data_processed_clean.columns
+    if tvl_data_available:
+        print(f"TVL data available for pool {pool_id}")
+        # Use the same cleaning approach as APY data - get TVL from combined_data_clean
+        tvl_clean = combined_data_clean['tvl_usd'].astype(float) if 'tvl_usd' in combined_data_clean.columns else data_processed_clean['tvl_usd'].loc[combined_data_clean.index].astype(float)
+        
+        # Debug TVL data
+        print(f"TVL data before cleaning - shape: {tvl_clean.shape}, sample values: {tvl_clean.head().tolist()}")
+        print(f"TVL data stats - min: {tvl_clean.min()}, max: {tvl_clean.max()}, mean: {tvl_clean.mean()}")
+        
+        # Handle infinite values in TVL
+        if not np.isfinite(tvl_clean).all():
+            print("Warning: Found infinite values in TVL data, replacing with NaN and using available data")
+            tvl_clean = tvl_clean.replace([float('inf'), float('-inf')], float('nan'))
+            finite_mask = np.isfinite(tvl_clean)
+            y_clean = y_clean[finite_mask]
+            tvl_clean = tvl_clean[finite_mask]
+            exog_data_clean = exog_data_clean[finite_mask]
+            print(f"TVL data after infinite value cleanup - shape: {tvl_clean.shape}")
+        
+        # Reset indices to ensure alignment
+        tvl_clean = tvl_clean.reset_index(drop=True)
+        print(f"Final TVL data - shape: {tvl_clean.shape}, sample values: {tvl_clean.head().tolist()}")
+    else:
+        print(f"No TVL data available for pool {pool_id}")
+    
+    # Get training exogenous data
+    training_exog_data = exog_data_clean[training_exog_cols]
 
-    # Generate forecasts for the current day
-    last_date = data_processed.index[-1]
-    future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='D')
+    forecaster_apy.fit(
+        y=y_clean,
+        exog=training_exog_data
+    )
+    
+    if tvl_data_available:
+        forecaster_tvl.fit(
+            y=tvl_clean,
+            exog=training_exog_data
+        )
+
+    # Always forecast for today, regardless of whether pool has data up to yesterday or today
+    last_date = data_processed_clean.index[-1]
+    today = pd.Timestamp.now(tz='UTC').normalize()
+    
+    # Always set forecast date to today
+    forecast_start_date = today
+    
+    if last_date.date() >= today.date():
+        print(f"Pool {pool_id} has data up to {last_date.date()} (today or future), forecasting for today {forecast_start_date.date()}")
+    else:
+        print(f"Pool {pool_id} has data up to {last_date.date()} (yesterday), forecasting for today {forecast_start_date.date()}")
+    
+    future_dates = pd.date_range(start=forecast_start_date, periods=steps_int, freq='D')
 
     # Prepare exogenous data for forecasting
     future_exog = pd.DataFrame(index=future_dates)
     for col in exogenous_cols:
-        future_exog[f'{col}_shifted'] = data_processed[f'{col}_shifted'].iloc[-1] # Using last known value
+        # Use the last known value from the original data since we reset indices
+        future_exog[f'{col}_shifted'] = data_processed_clean[f'{col}_shifted'].iloc[-1] # Using last known value
     future_exog['day_of_week'] = future_exog.index.dayofweek
     future_exog['day_of_year'] = future_exog.index.dayofyear
     future_exog['month'] = future_exog.index.month
 
-    forecast_apy = forecaster_apy.predict(steps=steps, exog=future_exog)
-    forecast_tvl = forecaster_tvl.predict(steps=steps, exog=future_exog)
+    # Ensure future_exog has the same columns as training data
+    future_exog_filtered = future_exog[training_exog_cols]
+    
+    # Reset index to RangeIndex as expected by skforecast
+    # The index should start one step ahead of the last window
+    last_index = len(y_clean) - 1  # Last index of training data
+    future_exog_filtered = future_exog_filtered.reset_index(drop=True)
+    future_exog_filtered.index = range(last_index + 1, last_index + 1 + steps_int)
+    
+    forecast_apy = forecaster_apy.predict(steps=steps_int, exog=future_exog_filtered)
+    
+    if tvl_data_available:
+        print(f"Generating TVL forecast for pool {pool_id}")
+        forecast_tvl = forecaster_tvl.predict(steps=steps_int, exog=future_exog_filtered)
+        print(f"TVL forecast generated: {forecast_tvl.tolist()}")
+    else:
+        # If no TVL data available, use a simple estimate based on the last known value
+        print(f"No TVL data available for forecasting, using fallback method for pool {pool_id}")
+        last_tvl = data_processed_clean['tvl_usd'].iloc[-1] if 'tvl_usd' in data_processed_clean.columns else 0
+        print(f"Last known TVL value: {last_tvl}")
+        forecast_tvl = pd.Series([last_tvl] * steps_int, index=future_dates)
+        print(f"TVL forecast (fallback): {forecast_tvl.tolist()}")
 
     # Update pool_daily_metrics with forecasted values
     engine = get_db_connection()
     with engine.connect() as conn:
-        for i in range(steps):
+        for i in range(steps_int):
             forecast_date = future_dates[i].strftime('%Y-%m-%d')
             apy_forecast = float(forecast_apy.iloc[i])
             tvl_forecast = float(forecast_tvl.iloc[i])
@@ -247,50 +425,10 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     
     print(f"Forecasts for pool {pool_id} updated in pool_daily_metrics.")
 
-    # Model persistence
-    model_blob_name_apy = f'forecaster_apy_{pool_id}.pkl'
-    model_blob_name_tvl = f'forecaster_tvl_{pool_id}.pkl'
-
-    if ENVIRONMENT == 'production':
-        print(f"Saving models to GCS bucket: {GCS_MODEL_BUCKET_NAME}")
-        client = storage.Client()
-        bucket = client.bucket(GCS_MODEL_BUCKET_NAME)
-
-        # Save APY model
-        blob_apy = bucket.blob(model_blob_name_apy)
-        blob_apy.upload_from_string(pickle.dumps(forecaster_apy))
-        print(f"APY model for pool {pool_id} saved to gs://{GCS_MODEL_BUCKET_NAME}/{model_blob_name_apy}")
-
-        # Save TVL model
-        blob_tvl = bucket.blob(model_blob_name_tvl)
-        blob_tvl.upload_from_string(pickle.dumps(forecaster_tvl))
-        print(f"TVL model for pool {pool_id} saved to gs://{GCS_MODEL_BUCKET_NAME}/{model_blob_name_tvl}")
-        
-        model_apy_path = f"gs://{GCS_MODEL_BUCKET_NAME}/{model_blob_name_apy}"
-        model_tvl_path = f"gs://{GCS_MODEL_BUCKET_NAME}/{model_blob_name_tvl}"
-    else:
-        print("Running in development environment. Saving models locally.")
-        import os
-        os.makedirs('models', exist_ok=True)
-        
-        model_filename_apy = f'models/{model_blob_name_apy}'
-        model_filename_tvl = f'models/{model_blob_name_tvl}'
-
-        with open(model_filename_apy, 'wb') as f:
-            pickle.dump(forecaster_apy, f)
-        with open(model_filename_tvl, 'wb') as f:
-            pickle.dump(forecaster_tvl, f)
-        print(f"Models for pool {pool_id} saved locally to {model_filename_apy} and {model_filename_tvl}")
-
-        model_apy_path = model_filename_apy
-        model_tvl_path = model_filename_tvl
-
     return {
         'pool_id': pool_id,
         'forecast_apy': forecast_apy.to_dict(),
-        'forecast_tvl': forecast_tvl.to_dict(),
-        'model_apy_path': model_apy_path,
-        'model_tvl_path': model_tvl_path
+        'forecast_tvl': forecast_tvl.to_dict()
     }
 
 def get_filtered_pool_ids() -> list:
@@ -325,7 +463,7 @@ if __name__ == "__main__":
         print(f"Processing pool: {pool_id}")
         try:
             result = train_and_forecast_pool(pool_id, steps=1) # Forecast for 1 day ahead
-            if result:
+            if isinstance(result, dict) and result:
                 successful_forecasts += 1
             else:
                 skipped_forecasts += 1

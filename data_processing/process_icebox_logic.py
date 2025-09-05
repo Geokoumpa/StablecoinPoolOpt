@@ -28,12 +28,12 @@ def process_icebox_logic():
             other_dynamic_limits = latest_params[0]
             approved_tokens_snapshot = latest_params[1]
 
-            icebox_ohlc_l_threshold_pct = other_dynamic_limits.get('icebox_ohlc_l_threshold_pct', 0.05) if other_dynamic_limits else 0.05
-            icebox_ohlc_l_days_threshold = other_dynamic_limits.get('icebox_ohlc_l_days_threshold', 7) if other_dynamic_limits else 7
-            icebox_ohlc_c_threshold_pct = other_dynamic_limits.get('icebox_ohlc_c_threshold_pct', 0.03) if other_dynamic_limits else 0.03
-            icebox_ohlc_c_days_threshold = other_dynamic_limits.get('icebox_ohlc_c_days_threshold', 3) if other_dynamic_limits else 3
-            icebox_recovery_l_days_threshold = other_dynamic_limits.get('icebox_recovery_l_days_threshold', 14) if other_dynamic_limits else 14
-            icebox_recovery_c_days_threshold = other_dynamic_limits.get('icebox_recovery_c_days_threshold', 7) if other_dynamic_limits else 7
+            icebox_ohlc_l_threshold_pct = other_dynamic_limits.get('icebox_ohlc_l_threshold_pct', 0.02) if other_dynamic_limits else 0.02
+            icebox_ohlc_l_days_threshold = other_dynamic_limits.get('icebox_ohlc_l_days_threshold', 2) if other_dynamic_limits else 2
+            icebox_ohlc_c_threshold_pct = other_dynamic_limits.get('icebox_ohlc_c_threshold_pct', 0.01) if other_dynamic_limits else 0.01
+            icebox_ohlc_c_days_threshold = other_dynamic_limits.get('icebox_ohlc_c_days_threshold', 1) if other_dynamic_limits else 1
+            icebox_recovery_l_days_threshold = other_dynamic_limits.get('icebox_recovery_l_days_threshold', 2) if other_dynamic_limits else 2
+            icebox_recovery_c_days_threshold = other_dynamic_limits.get('icebox_recovery_c_days_threshold', 3) if other_dynamic_limits else 3
 
             if approved_tokens_snapshot:
                 logging.debug(f"approved_tokens_snapshot raw: {approved_tokens_snapshot}")
@@ -56,18 +56,18 @@ def process_icebox_logic():
                 result = connection.execute(
                     text("""
                         SELECT DISTINCT ON ((raw_json_data->>'symbol'))
-                               raw_json_data->>'symbol' AS token_symbol,
-                               (raw_json_data->>'quote')::jsonb->'USD'->>'price' AS current_price,
-                               (raw_json_data->>'quote')::jsonb->'USD'->>'market_cap' AS market_cap,
-                               (raw_json_data->>'quote')::jsonb->'USD'->>'volume_24h' AS volume_24h,
-                               (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_1h' AS percent_change_1h,
-                               (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_24h' AS percent_change_24h,
-                               (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_7d' AS percent_change_7d,
-                               (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_30d' AS percent_change_30d,
-                               timestamp
+                                raw_json_data->>'symbol' AS token_symbol,
+                                (raw_json_data->>'quote')::jsonb->'USD'->>'price' AS current_price,
+                                (raw_json_data->>'quote')::jsonb->'USD'->>'market_cap' AS market_cap,
+                                (raw_json_data->>'quote')::jsonb->'USD'->>'volume_24h' AS volume_24h,
+                                (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_1h' AS percent_change_1h,
+                                (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_24h' AS percent_change_24h,
+                                (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_7d' AS percent_change_7d,
+                                (raw_json_data->>'quote')::jsonb->'USD'->>'percent_change_30d' AS percent_change_30d,
+                                data_timestamp
                         FROM raw_coinmarketcap_ohlcv
                         WHERE raw_json_data->>'symbol' = ANY(:tokens)
-                        ORDER BY (raw_json_data->>'symbol'), timestamp DESC;
+                        ORDER BY (raw_json_data->>'symbol'), data_timestamp DESC;
                     """),
                     {"tokens": list(approved_tokens)}
                 )
@@ -82,7 +82,7 @@ def process_icebox_logic():
                     except Exception:
                         logging.warning(f"Could not convert current_price for {token_symbol}: {val}")
                         current_price = None
-                    timestamp = row[8]
+                    timestamp = row[8] # This is data_timestamp from raw_coinmarketcap_ohlcv
 
                     if token_symbol not in approved_tokens:
                         continue
@@ -93,7 +93,7 @@ def process_icebox_logic():
                             SELECT MIN((raw_json_data->>'quote')::jsonb->'USD'->>'price')
                             FROM raw_coinmarketcap_ohlcv
                             WHERE raw_json_data->>'symbol' = :token_symbol
-                            AND timestamp >= NOW() - INTERVAL '{icebox_ohlc_l_days_threshold} days';
+                            AND data_timestamp >= NOW() - INTERVAL '{icebox_ohlc_l_days_threshold} days';
                         """),
                         {"token_symbol": token_symbol}
                     )
@@ -121,8 +121,8 @@ def process_icebox_logic():
                             SELECT (raw_json_data->>'quote')::jsonb->'USD'->>'price'
                             FROM raw_coinmarketcap_ohlcv
                             WHERE raw_json_data->>'symbol' = :token_symbol
-                            AND timestamp >= NOW() - INTERVAL '{icebox_ohlc_c_days_threshold} days'
-                            ORDER BY timestamp ASC LIMIT 1;
+                            AND data_timestamp >= NOW() - INTERVAL '{icebox_ohlc_c_days_threshold} days'
+                            ORDER BY data_timestamp ASC LIMIT 1;
                         """),
                         {"token_symbol": token_symbol}
                     )
@@ -156,7 +156,7 @@ def process_icebox_logic():
                         SELECT (raw_json_data->>'quote')::jsonb->'USD'->>'price' AS current_price
                         FROM raw_coinmarketcap_ohlcv
                         WHERE raw_json_data->>'symbol' = :token_symbol
-                        ORDER BY timestamp DESC LIMIT 1;
+                        ORDER BY data_timestamp DESC LIMIT 1;
                     """),
                     {"token_symbol": token_symbol}
                 )
@@ -174,7 +174,7 @@ def process_icebox_logic():
                         SELECT MIN((raw_json_data->>'quote')::jsonb->'USD'->>'price')
                         FROM raw_coinmarketcap_ohlcv
                         WHERE raw_json_data->>'symbol' = :token_symbol
-                        AND timestamp >= NOW() - INTERVAL '{icebox_recovery_l_days_threshold} days';
+                        AND data_timestamp >= NOW() - INTERVAL '{icebox_recovery_l_days_threshold} days';
                     """),
                     {"token_symbol": token_symbol}
                 )
@@ -187,8 +187,8 @@ def process_icebox_logic():
                         SELECT (raw_json_data->>'quote')::jsonb->'USD'->>'price'
                         FROM raw_coinmarketcap_ohlcv
                         WHERE raw_json_data->>'symbol' = :token_symbol
-                        AND timestamp >= NOW() - INTERVAL '{icebox_recovery_c_days_threshold} days'
-                        ORDER BY timestamp ASC LIMIT 1;
+                        AND data_timestamp >= NOW() - INTERVAL '{icebox_recovery_c_days_threshold} days'
+                        ORDER BY data_timestamp ASC LIMIT 1;
                     """),
                     {"token_symbol": token_symbol}
                 )
