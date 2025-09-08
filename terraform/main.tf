@@ -1,92 +1,108 @@
 terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+  }
+
   backend "gcs" {
     bucket = "defiyieldopt-terraform-state"
     prefix = "terraform/state"
   }
 }
 
-# Configure the Google Cloud provider
 provider "google" {
   project = var.project_id
   region  = var.region
 }
 
-# Enable the Cloud SQL Admin API
-resource "google_project_service" "sqladmin_api" {
+resource "google_project_service" "project_services" {
+  for_each = toset([
+    "run.googleapis.com",
+    "sqladmin.googleapis.com",
+    "secretmanager.googleapis.com",
+    "workflows.googleapis.com",
+    "servicenetworking.googleapis.com", # Added for Private Service Connection
+    "compute.googleapis.com", # Added for Private Service Connection
+    "cloudresourcemanager.googleapis.com", # Added for project info
+    "iam.googleapis.com", # Added for service account creation
+    "cloudfunctions.googleapis.com", # Potentially needed for future extensions
+    "cloudscheduler.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "vpcaccess.googleapis.com" # Required for Serverless VPC Access
+  ])
+  service                    = each.key
+  disable_dependent_services = true
+}
+
+data "google_project" "project" {
+  project_id = var.project_id
+}
+
+resource "google_service_account" "cloud_run_sa" {
+  account_id   = "cloud-run-sa"
+  display_name = "Service Account for Cloud Run services"
+  project      = var.project_id
+}
+
+resource "google_service_account" "workflow_sa" {
+  account_id   = "workflow-sa"
+  display_name = "Service Account for Cloud Workflows"
+  project      = var.project_id
+}
+
+resource "google_project_iam_member" "cloud_run_sa_roles" {
+  for_each = toset([
+    "roles/run.invoker",
+    "roles/secretmanager.secretAccessor",
+    "roles/cloudsql.client"
+  ])
   project = var.project_id
-  service = "sqladmin.googleapis.com"
-  disable_on_destroy = false
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.cloud_run_sa.email}"
 }
 
-# Enable the Cloud Storage API
-resource "google_project_service" "storage_api" {
+resource "google_project_iam_member" "workflow_sa_roles" {
+  for_each = toset([
+    "roles/workflows.invoker",
+    "roles/run.invoker"
+  ])
   project = var.project_id
-  service = "storage.googleapis.com"
-  disable_on_destroy = false
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.workflow_sa.email}"
 }
 
-# Create a Cloud SQL PostgreSQL instance
-resource "google_sql_database_instance" "main_instance" {
-  database_version = var.database_version
-  name             = "defiyieldopt-sql-instance"
-  project          = var.project_id
-  region           = var.region
-  settings {
-    tier = var.instance_tier
-    disk_size = var.disk_size
-    backup_configuration {
-      enabled            = true
-      start_time         = "03:00"
-    }
-    ip_configuration {
-      ipv4_enabled = true
-      # You might want to restrict authorized networks for production
-      # authorized_networks {
-      #   value = "0.0.0.0/0" # Replace with your IP range
-      # }
-    }
-    database_flags {
-      name  = "cloudsql.iam_authentication"
-      value = "On"
-    }
+# Cloud Router for Cloud NAT
+resource "google_compute_router" "nat_router" {
+  name    = "nat-router-${var.region}"
+  region  = var.region
+  network = "default" # Assuming your Cloud Run connector uses the 'default' VPC network
+}
+
+# Cloud NAT Gateway
+resource "google_compute_router_nat" "nat_gateway" {
+  name                          = "nat-gateway-${var.region}"
+  router                        = google_compute_router.nat_router.name
+  region                        = google_compute_router.nat_router.region
+  nat_ip_allocate_option        = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
   }
-  depends_on = [google_project_service.sqladmin_api]
 }
 
-# Create a PostgreSQL database
-resource "google_sql_database" "defiyieldopt_database" {
-  name     = var.database_name
-  instance = google_sql_database_instance.main_instance.name
-  project  = var.project_id
-  charset  = "UTF8"
-  collation = "en_US.UTF8"
-}
-
-# Create a PostgreSQL user
-resource "google_sql_user" "defiyieldopt_user" {
-  name     = var.database_user
-  instance = google_sql_database_instance.main_instance.name
-  project  = var.project_id
-  password = var.database_password
-}
-
-# Create a GCS bucket for model persistence
-resource "google_storage_bucket" "model_bucket" {
-  name          = "${var.project_id}-forecasting-models" # Unique bucket name
-  location      = var.region
-  project       = var.project_id
-  force_destroy = false # Set to true for easier testing, but be careful in production
-
-  uniform_bucket_level_access = true
-
-  lifecycle_rule {
-    action {
-      type = "Delete"
-    }
-    condition {
-      age = 30 # Delete objects older than 30 days
-    }
+# Cloud Build Trigger for Docker image builds on git push to main
+resource "google_cloudbuild_trigger" "docker_build_trigger" {
+  trigger_template {
+    branch_name = "main"
+    repo_name   = "stablecoin-yield-pipeline"  # Replace with actual repo name connected to Cloud Build
   }
 
-  depends_on = [google_project_service.storage_api]
+  filename = "cloudbuild.yaml"
+
+  description = "Build and push defi-pipeline Docker images on main branch push"
 }

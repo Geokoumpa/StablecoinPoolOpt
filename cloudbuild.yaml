@@ -1,0 +1,90 @@
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', '.']
+  
+  # Push the image to GCR
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:latest']
+  
+  # Tag specific versions for each script (optional for future)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:apply-migrations']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:create-allocation-snapshots']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-ohlcv-coinmarketcap']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-gas-ethgastracker']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-defillama-pools']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-account-data-etherscan']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:filter-pools-pre']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-filtered-pool-histories']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:calculate-pool-metrics']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:apply-pool-grouping']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:process-icebox-logic']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:update-allocation-snapshots']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:filter-pools-final']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-pools']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-gas-fees']
+  
+  # Push all tagged images
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:apply-migrations']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:create-allocation-snapshots']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-ohlcv-coinmarketcap']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-gas-ethgastracker']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-defillama-pools']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-account-data-etherscan']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:filter-pools-pre']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-filtered-pool-histories']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:calculate-pool-metrics']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:apply-pool-grouping']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:process-icebox-logic']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:update-allocation-snapshots']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:filter-pools-final']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-pools']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-gas-fees']
+
+images:
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:latest'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:apply-migrations'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:create-allocation-snapshots'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-ohlcv-coinmarketcap'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-gas-ethgastracker'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-defillama-pools'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-account-data-etherscan'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:filter-pools-pre'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:fetch-filtered-pool-histories'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:calculate-pool-metrics'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:apply-pool-grouping'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:process-icebox-logic'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:update-allocation-snapshots'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:filter-pools-final'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-pools'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-gas-fees'

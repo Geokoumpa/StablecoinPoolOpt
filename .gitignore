@@ -32,6 +32,7 @@ override.tf.json
 *.override.tf.json
 .terraformrc
 terraform.rc
+*.tfvars
 
 # General
 .DS_Store

@@ -1,5 +1,4 @@
 # Variables for GCP Cloud SQL PostgreSQL setup
-
 variable "project_id" {
   description = "The GCP project ID."
   type        = string
@@ -44,6 +43,36 @@ variable "database_user" {
 
 variable "database_password" {
   description = "The password for the PostgreSQL database user."
+  type        = string
+  sensitive   = true
+}
+
+variable "etherscan_api_key" {
+  description = "The Etherscan API key for fetching account and gas data."
+  type        = string
+  sensitive   = true
+}
+
+variable "coinmarketcap_api_key" {
+  description = "The CoinMarketCap API key for fetching OHLCV data."
+  type        = string
+  sensitive   = true
+}
+
+variable "main_asset_holding_address" {
+  description = "The main asset holding Ethereum address."
+  type        = string
+  sensitive   = true
+}
+
+variable "ethgastracker_api_key" {
+  description = "The ETH Gas Tracker API key."
+  type        = string
+  sensitive   = true
+}
+
+variable "slack_webhook_url" {
+  description = "The Slack webhook URL for notifications."
   type        = string
   sensitive   = true
 }

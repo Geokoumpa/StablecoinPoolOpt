@@ -1,0 +1,98 @@
+main:
+  steps:
+    - init:
+        assign:
+          - project: "innate-concept-430315-q2"
+          - location: "us-central1"
+          - job_ids:
+              - "PIPELINE_STEP_APPLY_MIGRATIONS_ID"
+              - "PIPELINE_STEP_CREATE_ALLOCATION_SNAPSHOTS_ID"
+              - "PIPELINE_STEP_FETCH_OHLCV_COINMARKETCAP_ID"
+              - "PIPELINE_STEP_FETCH_GAS_ETHGASTRACKER_ID"
+              - "PIPELINE_STEP_FETCH_DEFILLAMA_POOLS_ID"
+              - "PIPELINE_STEP_FETCH_ACCOUNT_DATA_ETHERSCAN_ID"
+              - "PIPELINE_STEP_FILTER_POOLS_PRE_ID"
+              - "PIPELINE_STEP_FETCH_FILTERED_POOL_HISTORIES_ID"
+              - "PIPELINE_STEP_CALCULATE_POOL_METRICS_ID"
+              - "PIPELINE_STEP_APPLY_POOL_GROUPING_ID"
+              - "PIPELINE_STEP_PROCESS_ICEBOX_LOGIC_ID"
+              - "PIPELINE_STEP_UPDATE_ALLOCATION_SNAPSHOTS_ID"
+              - "PIPELINE_STEP_FILTER_POOLS_FINAL_ID"
+              - "PIPELINE_STEP_FORECAST_POOLS_ID"
+              - "PIPELINE_STEP_FORECAST_GAS_FEES_ID"
+              - "PIPELINE_STEP_OPTIMIZE_ALLOCATIONS_ID"
+              - "PIPELINE_STEP_MANAGE_LEDGER_ID"
+              - "PIPELINE_STEP_POST_SLACK_NOTIFICATION_ID"
+
+    - run_pipeline_steps:
+        for:
+          value: job_env_var
+          index: step_index
+          in: ${job_ids}
+          steps:
+            - log_current_step:
+                call: sys.log
+                args:
+                  data: '${"=== Starting step " + string(step_index + 1) + " -> " + job_env_var + " ==="}'
+
+            - get_job_id:
+                assign:
+                  - job_id: ${sys.get_env(job_env_var)}
+                  - project_id: ${text.split(job_id, "/")[1]}
+                  - job_location: ${text.split(job_id, "/")[3]}
+                  - job_name: ${text.split(job_id, "/")[5]}
+
+            - log_job_details:
+                call: sys.log
+                args:
+                  data: '${"Job ID -> " + job_id + ", Project ID -> " + project_id + ", Location -> " + job_location + ", Job Name -> " + job_name}'
+
+            - run_job:
+                try:
+                  call: googleapis.run.v1.namespaces.jobs.run
+                  args:
+                    name: ${"namespaces/" + project_id + "/jobs/" + job_name}
+                    location: ${job_location}
+                    body: {}
+                  result: job_execution
+                except:
+                  as: e
+                  steps:
+                    - log_run_error:
+                        call: sys.log
+                        args:
+                          data: '${"Error starting job -> " + text.decode(json.encode(e))}'
+                    - fail_with_details:
+                        raise: '${"Failed to start job at step " + string(step_index + 1) + ": " + json.encode(e)}'
+
+            - log_job_execution_details:
+                call: sys.log
+                args:
+                  data: '${"Job execution started -> " + job_execution.metadata.name}'
+
+            - check_job_success:
+                switch:
+                  - condition: ${job_execution.status.succeededCount == 1}
+                    steps:
+                      - log_success:
+                          call: sys.log
+                          args:
+                            data: '${"✓ Step " + string(step_index + 1) + " completed successfully"}'
+                  - condition: true
+                    steps:
+                      - log_failure:
+                          call: sys.log
+                          args:
+                            data: '${"✗ Step " + string(step_index + 1) + " failed. Status: " + json.encode(job_execution.status)}'
+                      - fail_pipeline:
+                          raise: '${"Pipeline failed at step " + string(step_index + 1) + ". Check logs for details."}'
+        next: final_step
+
+    - final_step:
+        call: sys.log
+        args:
+          data: "🎉 All pipeline steps completed successfully!"
+        next: end
+
+    - end:
+        return: "Workflow completed successfully"
