@@ -83,7 +83,11 @@ resource "google_vpc_access_connector" "connector" {
   region        = var.region
   ip_cidr_range = "10.8.0.0/28"
   network       = "default"
-
+  machine_type  = "e2-micro"
+  
+  # Note: min/max_instances and min/max_throughput are set to 0 in actual deployment
+  # This indicates automatic scaling configuration
+  
   depends_on = [google_project_service.project_services["vpcaccess.googleapis.com"]]
 }
 
@@ -144,7 +148,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
         }
         env {
           name  = "DB_HOST"
-          value = google_sql_database_instance.main_instance.private_ip_address
+          value = google_sql_database_instance.main_instance.public_ip_address
         }
         env {
           name  = "DB_PORT"

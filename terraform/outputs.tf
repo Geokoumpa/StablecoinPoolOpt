@@ -36,11 +36,6 @@ output "daily_scheduler_id" {
   value       = google_cloud_scheduler_job.daily_pipeline_trigger.id
 }
 
-# Output for GCS bucket
-output "model_bucket_name" {
-  description = "The name of the GCS bucket for model persistence."
-  value       = google_storage_bucket.model_bucket.name
-}
 
 # Output for VPC Connector
 output "vpc_connector_id" {

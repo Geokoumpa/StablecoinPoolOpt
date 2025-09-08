@@ -38,6 +38,12 @@ steps:
     args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-pools']
   - name: 'gcr.io/cloud-builders/docker'
     args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-gas-fees']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:optimize-allocations']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:manage-ledger']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['tag', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', 'gcr.io/$PROJECT_ID/defi-pipeline:post-slack-notification']
   
   # Push all tagged images
   - name: 'gcr.io/cloud-builders/docker'
@@ -70,6 +76,12 @@ steps:
     args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-pools']
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-gas-fees']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:optimize-allocations']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:manage-ledger']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:post-slack-notification']
 
 images:
   - 'gcr.io/$PROJECT_ID/defi-pipeline:latest'
@@ -88,3 +100,6 @@ images:
   - 'gcr.io/$PROJECT_ID/defi-pipeline:filter-pools-final'
   - 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-pools'
   - 'gcr.io/$PROJECT_ID/defi-pipeline:forecast-gas-fees'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:optimize-allocations'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:manage-ledger'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:post-slack-notification'

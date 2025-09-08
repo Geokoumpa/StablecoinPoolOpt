@@ -2,7 +2,15 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 5.0"
+      version = "~> 7.0"
+    }
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 7.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.1"
     }
   }
 
@@ -57,7 +65,9 @@ resource "google_project_iam_member" "cloud_run_sa_roles" {
   for_each = toset([
     "roles/run.invoker",
     "roles/secretmanager.secretAccessor",
-    "roles/cloudsql.client"
+    "roles/cloudsql.client",
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter"
   ])
   project = var.project_id
   role    = each.key
@@ -67,7 +77,9 @@ resource "google_project_iam_member" "cloud_run_sa_roles" {
 resource "google_project_iam_member" "workflow_sa_roles" {
   for_each = toset([
     "roles/workflows.invoker",
-    "roles/run.invoker"
+    "roles/run.invoker",
+    "roles/run.developer",
+    "roles/logging.logWriter"
   ])
   project = var.project_id
   role    = each.key
@@ -96,13 +108,19 @@ resource "google_compute_router_nat" "nat_gateway" {
 }
 
 # Cloud Build Trigger for Docker image builds on git push to main
-resource "google_cloudbuild_trigger" "docker_build_trigger" {
-  trigger_template {
-    branch_name = "main"
-    repo_name   = "stablecoin-yield-pipeline"  # Replace with actual repo name connected to Cloud Build
-  }
-
-  filename = "cloudbuild.yaml"
-
-  description = "Build and push defi-pipeline Docker images on main branch push"
-}
+# Commented out temporarily due to configuration issues
+# resource "google_cloudbuild_trigger" "docker_build_trigger" {
+#   name        = "defi-pipeline-build-trigger"
+#   description = "Build and push defi-pipeline Docker images on main branch push"
+#   filename    = "cloudbuild.yaml"
+#
+#   github {
+#     owner = "your-github-username"  # Replace with actual GitHub username
+#     name  = "stablecoin-yield-pipeline"  # Replace with actual repo name
+#     push {
+#       branch = "^master$"
+#     }
+#   }
+#
+#   depends_on = [google_project_service.project_services["cloudbuild.googleapis.com"]]
+# }
