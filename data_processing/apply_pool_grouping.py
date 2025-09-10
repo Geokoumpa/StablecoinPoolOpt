@@ -2,13 +2,13 @@ import logging
 from datetime import date
 from database.db_utils import get_db_connection
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def apply_pool_grouping():
     """
     Applies pool grouping logic based on calculated metrics and stores assignments.
     """
-    logging.info("Starting pool grouping application...")
+    logger.info("Starting pool grouping application...")
     conn = None
     try:
         conn = get_db_connection()
@@ -103,29 +103,29 @@ def apply_pool_grouping():
                 group_stats[group_assignment] = group_stats.get(group_assignment, 0) + 1
 
             # Print comprehensive summary
-            print("\n" + "="*60)
-            print("🎯 POOL GROUPING SUMMARY")
-            print("="*60)
-            print(f"📊 Total pools processed: {len(update_data)}")
-            print(f"📅 Date: {date.today()}")
-            print("")
-            print("📈 Group Assignments:")
+            logger.info("\n" + "="*60)
+            logger.info("🎯 POOL GROUPING SUMMARY")
+            logger.info("="*60)
+            logger.info(f"📊 Total pools processed: {len(update_data)}")
+            logger.info(f"📅 Date: {date.today()}")
+            logger.info("")
+            logger.info("📈 Group Assignments:")
             for group in sorted(group_stats.keys()):
                 count = group_stats[group]
                 if group == 1:
-                    print(f"   🟢 Group 1 (Low Risk): {count} pools")
+                    logger.info(f"   🟢 Group 1 (Low Risk): {count} pools")
                 elif group == 2:
-                    print(f"   🟡 Group 2 (Medium Risk): {count} pools")
+                    logger.info(f"   🟡 Group 2 (Medium Risk): {count} pools")
                 elif group == 3:
-                    print(f"   🟠 Group 3 (High Risk): {count} pools")
+                    logger.info(f"   🟠 Group 3 (High Risk): {count} pools")
                 else:
-                    print(f"   ⚪️ Group 4 (Other): {count} pools")
-            print("="*60)
+                    logger.info(f"   ⚪️ Group 4 (Other): {count} pools")
+            logger.info("="*60)
 
-            logging.info(f"Upserted {len(update_data)} pool daily metrics with group assignments.")
+            logger.info(f"Upserted {len(update_data)} pool daily metrics with group assignments.")
 
     except Exception as e:
-        logging.error(f"Error during pool grouping application: {e}")
+        logger.error(f"Error during pool grouping application: {e}")
     finally:
         if conn:
             conn.dispose()

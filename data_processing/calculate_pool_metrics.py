@@ -9,7 +9,7 @@ from psycopg2 import extras # Import extras for Json type
 # from api_clients.coinmarketcap_client import get_latest_eth_price, get_latest_btc_price
 # from api_clients.ethgastracker_client import get_current_average_gas_price as get_latest_gas_price
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def fetch_exogenous_data(connection) -> pd.DataFrame:
     """
@@ -78,7 +78,7 @@ def calculate_pool_metrics():
     Stores these metrics in the pool_daily_metrics table for current and historical dates.
     Will fill in metrics for all available dates in the raw data.
     """
-    logging.info("Starting pool metrics calculation...")
+    logger.info("Starting pool metrics calculation...")
     conn = None
     try:
         conn = get_db_connection()
@@ -122,7 +122,7 @@ def calculate_pool_metrics():
             df_history['date'] = pd.to_datetime(df_history['date']).dt.date
 
             if df_history.empty:
-                logging.warning("No historical pool data found. Skipping pool metrics calculation.")
+                logger.warning("No historical pool data found. Skipping pool metrics calculation.")
                 return
 
             # Fetch exogenous data (ETH price, gas fees)
@@ -136,7 +136,7 @@ def calculate_pool_metrics():
             
             # CRITICAL FIX: Fill missing exogenous data for historical dates to ensure forecasting has complete dataset
             # Forward fill missing values to ensure all historical dates have exogenous data
-            logging.info(f"Before exogenous data fill - Missing values:\n{df_history[['eth_open', 'btc_open', 'gas_price_gwei']].isnull().sum()}")
+            logger.info(f"Before exogenous data fill - Missing values:\n{df_history[['eth_open', 'btc_open', 'gas_price_gwei']].isnull().sum()}")
 
             # Sort by date to ensure proper forward/backward filling
             df_history = df_history.sort_values(['pool_id', 'date'])
@@ -146,17 +146,17 @@ def calculate_pool_metrics():
             df_history['btc_open'] = df_history.groupby('pool_id')['btc_open'].ffill().bfill()
             df_history['gas_price_gwei'] = df_history.groupby('pool_id')['gas_price_gwei'].ffill().bfill()
 
-            logging.info(f"After exogenous data fill - Missing values:\n{df_history[['eth_open', 'btc_open', 'gas_price_gwei']].isnull().sum()}")
+            logger.info(f"After exogenous data fill - Missing values:\n{df_history[['eth_open', 'btc_open', 'gas_price_gwei']].isnull().sum()}")
             
             # Convert date column back to date format after merge (normalize to remove time and tz info)
             df_history['date'] = df_history['date'].dt.normalize().dt.date
-            logging.info(f"Merged df_history with exogenous data. Shape: {df_history.shape}\nTail:\n{df_history.tail()}")
+            logger.info(f"Merged df_history with exogenous data. Shape: {df_history.shape}\nTail:\n{df_history.tail()}")
 
             # TIMING FIX: Removed fetching and backdating "latest" prices when running at midnight UTC
             # This prevents data leakage where current day prices appear on previous day records
             # The historical data from raw_coinmarketcap_ohlcv and gas_fees_daily already contains
             # the closing prices for the previous day, which is the correct data for forecasting
-            logging.info("Using only historical data without fetching latest prices to ensure proper timing for midnight UTC execution")
+            logger.info("Using only historical data without fetching latest prices to ensure proper timing for midnight UTC execution")
 
             # Calculate metrics for each pool
             unique_pool_ids = df_history['pool_id'].unique()
@@ -164,7 +164,7 @@ def calculate_pool_metrics():
             processed_pools_count = 0
             total_pools = len(unique_pool_ids)
 
-            logging.info(f"Calculating metrics for {total_pools} pools...")
+            logger.info(f"Calculating metrics for {total_pools} pools...")
 
             for i, pool_id in enumerate(unique_pool_ids):
                 pool_df = df_history[df_history['pool_id'] == pool_id].sort_values(by='date').copy()
@@ -174,7 +174,7 @@ def calculate_pool_metrics():
                 # We'll handle null APY values in the rolling calculations
                 
                 if len(pool_df) < 2:
-                    logging.warning(f"Skipping pool {pool_id} due to insufficient historical data (less than 2 data points).")
+                    logger.warning(f"Skipping pool {pool_id} due to insufficient historical data (less than 2 data points).")
                     continue
 
                 # Fill missing APY values using forward fill for better rolling calculations
@@ -226,12 +226,12 @@ def calculate_pool_metrics():
                 ))
                 processed_pools_count += 1
                 if (i + 1) % 10 == 0:
-                    logging.info(f"Processed {processed_pools_count}/{total_pools} pools...")
+                    logger.info(f"Processed {processed_pools_count}/{total_pools} pools...")
 
-            logging.info(f"Finished calculating metrics for all {total_pools} pools.")
+            logger.info(f"Finished calculating metrics for all {total_pools} pools.")
 
             # Bulk Insert/Update into pool_daily_metrics
-            logging.info(f"Bulk inserting/updating {len(metrics_to_insert)} metrics into the database...")
+            logger.info(f"Bulk inserting/updating {len(metrics_to_insert)} metrics into the database...")
             for metric in metrics_to_insert:
                 connection.execute(
                     text("""
@@ -280,7 +280,7 @@ def calculate_pool_metrics():
 
             connection.commit()
             # Now handle historical metrics for filtered pools to ensure 7 months of data
-            logging.info("Checking for missing historical metrics for filtered pools...")
+            logger.info("Checking for missing historical metrics for filtered pools...")
 
             # Fetch filtered pools
             filtered_pools_query = text("""
@@ -289,7 +289,7 @@ def calculate_pool_metrics():
             """)
             filtered_pool_ids = [row[0] for row in connection.execute(filtered_pools_query).fetchall()]
 
-            logging.info(f"Processing historical metrics for {len(filtered_pool_ids)} filtered pools...")
+            logger.info(f"Processing historical metrics for {len(filtered_pool_ids)} filtered pools...")
 
             historical_metrics_to_insert = []
 
@@ -315,7 +315,7 @@ def calculate_pool_metrics():
                 missing_dates = all_dates - existing_dates
 
                 if missing_dates:
-                    logging.info(f"Pool {pool_id} has {len(missing_dates)} missing dates in last 6 months.")
+                    logger.info(f"Pool {pool_id} has {len(missing_dates)} missing dates in last 6 months.")
 
                     # Fetch all raw data for this pool in the last 7 months
                     all_raw_query = text("""
@@ -383,7 +383,7 @@ def calculate_pool_metrics():
 
             # Bulk insert historical metrics
             if historical_metrics_to_insert:
-                logging.info(f"Bulk inserting {len(historical_metrics_to_insert)} historical metrics for filtered pools...")
+                logger.info(f"Bulk inserting {len(historical_metrics_to_insert)} historical metrics for filtered pools...")
                 for metric in historical_metrics_to_insert:
                     connection.execute(
                         text("""
@@ -430,32 +430,32 @@ def calculate_pool_metrics():
                         }
                     )
 
-            logging.info("Historical metrics calculation for filtered pools completed.")
-            logging.info("Pool metrics calculation completed successfully.")
+            logger.info("Historical metrics calculation for filtered pools completed.")
+            logger.info("Pool metrics calculation completed successfully.")
             
             # Print comprehensive summary
-            print("\n" + "="*60)
-            print("📊 POOL METRICS CALCULATION SUMMARY")
-            print("="*60)
-            print(f"📥 Total pools processed: {len(unique_pool_ids)}")
-            print(f"📈 Metrics calculated per pool:")
-            print("   • Rolling APY (7d & 30d)")
-            print("   • APY standard deviation (7d & 30d)")
-            print("   • APY delta (today vs yesterday)")
-            print("   • Standard deviation deltas")
-            print(f"💾 Records updated in: pool_daily_metrics")
-            print(f"📅 Date: {date.today()}")
+            logger.info("\n" + "="*60)
+            logger.info("📊 POOL METRICS CALCULATION SUMMARY")
+            logger.info("="*60)
+            logger.info(f"📥 Total pools processed: {len(unique_pool_ids)}")
+            logger.info(f"📈 Metrics calculated per pool:")
+            logger.info("   • Rolling APY (7d & 30d)")
+            logger.info("   • APY standard deviation (7d & 30d)")
+            logger.info("   • APY delta (today vs yesterday)")
+            logger.info("   • Standard deviation deltas")
+            logger.info(f"💾 Records updated in: pool_daily_metrics")
+            logger.info(f"📅 Date: {date.today()}")
             if len(metrics_to_insert) > 0:
-                print(f"✅ Successfully processed: {len(metrics_to_insert)} pool metrics")
-            print("="*60)
+                logger.info(f"✅ Successfully processed: {len(metrics_to_insert)} pool metrics")
+            logger.info("="*60)
 
     except Exception as e:
-        logging.error(f"Error during pool metrics calculation: {e}")
-        print("\n" + "="*60)
-        print("❌ POOL METRICS CALCULATION FAILED")
-        print("="*60)
-        print(f"Error: {str(e)}")
-        print("="*60)
+        logger.error(f"Error during pool metrics calculation: {e}")
+        logger.error("\n" + "="*60)
+        logger.error("❌ POOL METRICS CALCULATION FAILED")
+        logger.error("="*60)
+        logger.error(f"Error: {str(e)}")
+        logger.error("="*60)
     finally:
         if conn:
             conn.dispose()

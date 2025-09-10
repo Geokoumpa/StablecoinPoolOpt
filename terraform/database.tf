@@ -1,22 +1,17 @@
-# Private Service Connection for Cloud SQL - using existing PSC connection
-# Commenting out since there's already an existing PSC range "psc-range" in the project
-# resource "google_compute_global_address" "private_ip_address" {
-#   name          = "defi-private-ip-address"
-#   purpose       = "VPC_PEERING"
-#   address_type  = "INTERNAL"
-#   prefix_length = 16
-#   network       = "projects/${var.project_id}/global/networks/default"
-#
-#   depends_on = [google_project_service.project_services["servicenetworking.googleapis.com"]]
-# }
-#
-# resource "google_service_networking_connection" "private_vpc_connection" {
-#   network                 = "projects/${var.project_id}/global/networks/default"
-#   service                 = "servicenetworking.googleapis.com"
-#   reserved_peering_ranges = [google_compute_global_address.private_ip_address.name]
-#
-#   depends_on = [google_project_service.project_services["servicenetworking.googleapis.com"]]
-# }
+# Private Service Connection - using existing psc-range
+# No need to create new resources
+
+resource "google_service_networking_connection" "private_vpc_connection" {
+  provider = google-beta
+  network = "projects/${var.project_id}/global/networks/default"
+  service = "servicenetworking.googleapis.com"
+
+  reserved_peering_ranges = ["psc-range"]
+
+  depends_on = [
+    google_project_service.project_services["servicenetworking.googleapis.com"]
+  ]
+}
 
 # Cloud SQL PostgreSQL instance
 resource "google_sql_database_instance" "main_instance" {
@@ -43,7 +38,8 @@ resource "google_sql_database_instance" "main_instance" {
     }
 
     ip_configuration {
-      ipv4_enabled = true
+      ipv4_enabled    = false  # Disable public IP for security
+      private_network = "projects/${var.project_id}/global/networks/default"
     }
 
     database_flags {
@@ -65,7 +61,8 @@ resource "google_sql_database_instance" "main_instance" {
   }
 
   depends_on = [
-    google_project_service.project_services["sqladmin.googleapis.com"]
+    google_project_service.project_services["sqladmin.googleapis.com"],
+    google_service_networking_connection.private_vpc_connection
   ]
 }
 

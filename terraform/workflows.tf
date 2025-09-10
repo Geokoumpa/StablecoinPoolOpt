@@ -48,7 +48,7 @@ resource "google_project_iam_member" "workflow_cloud_run_viewer" {
 resource "google_cloud_scheduler_job" "daily_pipeline_trigger" {
   name        = "daily-defi-pipeline-trigger"
   description = "Triggers the DeFi pipeline workflow daily"
-  schedule    = "0 2 * * *" # 2 AM every day
+  schedule    = "1 0 * * *" # 00:01 UTC every day
   time_zone   = "UTC"
 
   http_target {

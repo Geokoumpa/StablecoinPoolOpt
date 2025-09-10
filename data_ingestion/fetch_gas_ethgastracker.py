@@ -3,6 +3,7 @@ import json
 import csv
 import os
 import sys
+import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from database.db_utils import get_db_connection
@@ -10,6 +11,8 @@ from psycopg2 import extras
 from api_clients.ethgastracker_client import get_hourly_gas_averages_past_week
 from sqlalchemy import text
 import numpy as np # Import numpy
+
+logger = logging.getLogger(__name__)
 
 def fetch_crypto_open_prices_from_raw_data(engine, symbols=['ETH', 'BTC']) -> pd.DataFrame:
     """
@@ -90,7 +93,7 @@ def wei_to_gwei(wei_value):
         gwei_decimal = wei_decimal / Decimal("1000000000")  # 10^9
         return gwei_decimal.quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError) as e:
-        print(f"Error converting wei to gwei for value '{wei_value}': {e}")
+        logger.error(f"Error converting wei to gwei for value '{wei_value}': {e}")
         return Decimal("0.00")
 
 
@@ -108,7 +111,7 @@ def parse_date(date_str):
         parsed_date = datetime.strptime(date_str, "%m/%d/%Y")
         return parsed_date.strftime("%Y-%m-%d")
     except ValueError as e:
-        print(f"Error parsing date '{date_str}': {e}")
+        logger.error(f"Error parsing date '{date_str}': {e}")
         return None
 
 
@@ -132,7 +135,7 @@ def check_historical_data_exists(engine, target_date):
             count = result.scalar_one()
             return count > 0
     except Exception as e:
-        print(f"Error checking historical data existence: {e}")
+        logger.error(f"Error checking historical data existence: {e}")
         return False
 
 
@@ -149,11 +152,11 @@ def import_historical_gas_data_from_csv(engine, csv_filepath):
         bool: True if import was successful, False otherwise
     """
     if not os.path.exists(csv_filepath):
-        print(f"CSV file not found: {csv_filepath}")
+        logger.error(f"CSV file not found: {csv_filepath}")
         return False
 
     try:
-        print(f"Starting import from {csv_filepath}")
+        logger.info(f"Starting import from {csv_filepath}")
 
         imported_count = 0
         skipped_count = 0
@@ -171,14 +174,14 @@ def import_historical_gas_data_from_csv(engine, csv_filepath):
                         wei_value = row.get('Value (Wei)', '').strip()
 
                         if not date_str or not wei_value:
-                            print(f"Row {row_num}: Missing date or value, skipping")
+                            logger.warning(f"Row {row_num}: Missing date or value, skipping")
                             skipped_count += 1
                             continue
 
                         # Parse and convert data
                         formatted_date = parse_date(date_str)
                         if not formatted_date:
-                            print(f"Row {row_num}: Could not parse date '{date_str}', skipping")
+                            logger.warning(f"Row {row_num}: Could not parse date '{date_str}', skipping")
                             skipped_count += 1
                             continue
 
@@ -202,22 +205,22 @@ def import_historical_gas_data_from_csv(engine, csv_filepath):
 
                         # Progress indicator
                         if imported_count % 100 == 0:
-                            print(f"Imported {imported_count} records...")
+                            logger.info(f"Imported {imported_count} records...")
 
                     except Exception as e:
-                        print(f"Row {row_num}: Error processing row - {e}")
+                        logger.error(f"Row {row_num}: Error processing row - {e}")
                         error_count += 1
                         continue
 
-        print(f"\nImport completed successfully!")
-        print(f"Records imported: {imported_count}")
-        print(f"Records skipped: {skipped_count}")
-        print(f"Errors encountered: {error_count}")
+        logger.info(f"\nImport completed successfully!")
+        logger.info(f"Records imported: {imported_count}")
+        logger.info(f"Records skipped: {skipped_count}")
+        logger.info(f"Errors encountered: {error_count}")
 
         return True
 
     except Exception as e:
-        print(f"Error during import: {e}")
+        logger.error(f"Error during import: {e}")
         return False
 
 
@@ -226,7 +229,7 @@ def fetch_gas_ethgastracker():
     try:
         engine = get_db_connection()
         if not engine:
-            print("Could not establish database connection. Exiting.")
+            logger.error("Could not establish database connection. Exiting.")
             return
 
         # Check if historical data for 6 months ago exists, if not, import from CSV
@@ -234,28 +237,28 @@ def fetch_gas_ethgastracker():
         target_date = six_months_ago.strftime("%Y-%m-%d")
 
         if not check_historical_data_exists(engine, target_date):
-            print(f"No historical data found for {target_date} (6 months ago). Importing from CSV...")
+            logger.info(f"No historical data found for {target_date} (6 months ago). Importing from CSV...")
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             csv_filepath = os.path.join(project_root, "AvgGasPrice.csv")
             success = import_historical_gas_data_from_csv(engine, csv_filepath)
             if success:
-                print("Historical data import completed successfully.")
+                logger.info("Historical data import completed successfully.")
             else:
-                print("Historical data import failed, but continuing with current data fetch.")
+                logger.warning("Historical data import failed, but continuing with current data fetch.")
         else:
-            print(f"Historical data for {target_date} already exists. Skipping CSV import.")
+            logger.info(f"Historical data for {target_date} already exists. Skipping CSV import.")
 
         # Fetch the full raw historical data response using the API client
         raw_response_data = get_hourly_gas_averages_past_week()
-        print(f"Debug: raw_response_data content: {raw_response_data}")
+        logger.debug(f"Debug: raw_response_data content: {raw_response_data}")
         
         if not raw_response_data:
-            print("No historical gas data fetched. Skipping database insertion.")
+            logger.warning("No historical gas data fetched. Skipping database insertion.")
             return
 
         # Extract individual hourly data points from the nested 'data' array
         historical_data_points = raw_response_data.get('data', {}).get('data', [])
-        print(f"Debug: historical_data_points content: {historical_data_points}")
+        logger.debug(f"Debug: historical_data_points content: {historical_data_points}")
 
         # Insert the entire raw response into raw_ethgastracker_hourly_gas_data
         current_date = datetime.now(timezone.utc).date()
@@ -271,11 +274,11 @@ def fetch_gas_ethgastracker():
                     if existing_count == 0:
                         query = text(f"INSERT INTO raw_ethgastracker_hourly_gas_data (raw_json_data) VALUES (:raw_json_data);")
                         conn.execute(query, {"raw_json_data": extras.Json(raw_response_data)})
-                        print("Successfully inserted raw EthGasTracker response.")
+                        logger.info("Successfully inserted raw EthGasTracker response.")
                     else:
-                        print("Raw data already exists for today in raw_ethgastracker_hourly_gas_data, skipping insertion.")
+                        logger.info("Raw data already exists for today in raw_ethgastracker_hourly_gas_data, skipping insertion.")
         except Exception as e:
-            print(f"Error inserting data into raw_ethgastracker_hourly_gas_data: {e}")
+            logger.error(f"Error inserting data into raw_ethgastracker_hourly_gas_data: {e}")
 
         # Prepare records for bulk insert into gas_fees_hourly
         records_to_insert = []
@@ -291,7 +294,7 @@ def fetch_gas_ethgastracker():
                     'timestamp': timestamp,
                     'gas_price_gwei': gas_price_gwei
                 })
-        print(f"Debug: records_to_insert content: {records_to_insert}")
+        logger.debug(f"Debug: records_to_insert content: {records_to_insert}")
 
         hourly_df = pd.DataFrame() # Initialize hourly_df
         enriched_historical_data = pd.DataFrame() # Initialize enriched_historical_data
@@ -313,7 +316,7 @@ def fetch_gas_ethgastracker():
                         # Use 'left' merge to keep all existing gas_fees_daily dates
                         enriched_historical_data = pd.merge(existing_gas_fees_daily, crypto_prices_df, left_index=True, right_index=True, how='left', suffixes=('_old', None))
             except Exception as e:
-                print(f"Error inserting hourly gas data or processing daily aggregates: {e}")
+                logger.error(f"Error inserting hourly gas data or processing daily aggregates: {e}")
         
         # Prioritize new crypto prices over old ones if there's a conflict
         # This block should only execute if enriched_historical_data was successfully created
@@ -345,14 +348,14 @@ def fetch_gas_ethgastracker():
             final_daily_data = daily_aggregates_from_api.combine_first(enriched_historical_data)
         else:
             final_daily_data = enriched_historical_data
-            print("No new hourly gas data fetched. Only updating crypto prices for existing daily records.")
+            logger.info("No new hourly gas data fetched. Only updating crypto prices for existing daily records.")
 
-        print("\n--- Debug: final_daily_data before insertion ---")
-        print(final_daily_data.head())
-        print(final_daily_data.tail())
-        print(f"Shape: {final_daily_data.shape}")
-        print(f"Date range: {final_daily_data.index.min()} to {final_daily_data.index.max()}")
-        print(f"Null counts in final_daily_data:\n{final_daily_data.isnull().sum()}")
+        logger.debug("\n--- Debug: final_daily_data before insertion ---")
+        logger.debug(final_daily_data.head())
+        logger.debug(final_daily_data.tail())
+        logger.debug(f"Shape: {final_daily_data.shape}")
+        logger.debug(f"Date range: {final_daily_data.index.min()} to {final_daily_data.index.max()}")
+        logger.debug(f"Null counts in final_daily_data:\n{final_daily_data.isnull().sum()}")
 
         daily_records_to_insert = []
         for date, row in final_daily_data.iterrows():
@@ -400,13 +403,13 @@ def fetch_gas_ethgastracker():
                             processed_records.append(processed_record)
 
                         conn.execute(query, processed_records)
-                        print(f"Successfully bulk inserted/updated {len(daily_records_to_insert)} records into gas_fees_daily.")
+                        logger.info(f"Successfully bulk inserted/updated {len(daily_records_to_insert)} records into gas_fees_daily.")
             except Exception as e:
-                print(f"Error during bulk insert/update into gas_fees_daily: {e}")
+                logger.error(f"Error during bulk insert/update into gas_fees_daily: {e}")
         else:
-            print("No valid daily gas data points to insert/update into gas_fees_daily.")
+            logger.warning("No valid daily gas data points to insert/update into gas_fees_daily.")
     except Exception as e: # Catch a broader exception for issues during API call or processing
-        print(f"Error during EthGasTracker data fetch or processing: {e}")
+        logger.error(f"Error during EthGasTracker data fetch or processing: {e}")
     finally:
         if engine:
             engine.dispose()

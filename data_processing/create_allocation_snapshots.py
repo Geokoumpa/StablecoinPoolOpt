@@ -6,7 +6,7 @@ from database.db_utils import get_db_connection
 import pandas as pd
 from sqlalchemy import text
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def fetch_dynamic_lists(engine):
     """Fetches current dynamic lists from individual tables."""
@@ -27,7 +27,7 @@ def create_allocation_snapshots():
     Creates snapshots of current dynamic lists and stores them in allocation_parameters
     for use by subsequent filtering and processing steps.
     """
-    logging.info("Creating allocation parameter snapshots...")
+    logger.info("Creating allocation parameter snapshots...")
     engine = None
     try:
         engine = get_db_connection()
@@ -75,7 +75,7 @@ def create_allocation_snapshots():
             base_params = result.fetchone()
 
             if not base_params:
-                logging.warning("No base allocation parameters found. Using defaults.")
+                logger.warning("No base allocation parameters found. Using defaults.")
                 # Create default parameters
                 base_params = (
                     0.05, 0.25, 0.0004, 4, False,  # Basic params
@@ -162,14 +162,14 @@ def create_allocation_snapshots():
                     "icebox_recovery_c_days": base_params[30]
                 })
 
-            logging.info(f"Created allocation parameter snapshot with run_id: {run_id}")
-            logging.info(f"Approved protocols: {len(dynamic_lists['approved_protocols'])}")
-            logging.info(f"Approved tokens: {len(dynamic_lists['approved_tokens'])}")
-            logging.info(f"Blacklisted tokens: {len(dynamic_lists['blacklisted_tokens'])}")
-            logging.info(f"Icebox tokens: {len(dynamic_lists['icebox_tokens'])}")
+            logger.info(f"Created allocation parameter snapshot with run_id: {run_id}")
+            logger.info(f"Approved protocols: {len(dynamic_lists['approved_protocols'])}")
+            logger.info(f"Approved tokens: {len(dynamic_lists['approved_tokens'])}")
+            logger.info(f"Blacklisted tokens: {len(dynamic_lists['blacklisted_tokens'])}")
+            logger.info(f"Icebox tokens: {len(dynamic_lists['icebox_tokens'])}")
 
     except Exception as e:
-        logging.error(f"Error creating allocation snapshots: {e}")
+        logger.error(f"Error creating allocation snapshots: {e}")
         raise
 
 if __name__ == "__main__":

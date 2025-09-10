@@ -1,5 +1,8 @@
+import logging
 import pandas as pd
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 def preprocess_data(df: pd.DataFrame, exogenous_cols: list = None) -> pd.DataFrame:
     """

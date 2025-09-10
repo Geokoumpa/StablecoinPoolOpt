@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import json
 from database.db_utils import get_db_connection
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def process_icebox_logic():
     """
@@ -11,7 +11,7 @@ def process_icebox_logic():
     Identifies tokens that breach thresholds and adds them to icebox_tokens.
     Identifies tokens that meet recovery criteria and removes them from icebox_tokens.
     """
-    logging.info("Starting Icebox logic processing...")
+    logger.info("Starting Icebox logic processing...")
     conn = None
     try:
         conn = get_db_connection()
@@ -22,7 +22,7 @@ def process_icebox_logic():
             latest_params = result.fetchone()
 
             if not latest_params:
-                logging.warning("No allocation parameters found. Skipping Icebox logic.")
+                logger.warning("No allocation parameters found. Skipping Icebox logic.")
                 return
 
             other_dynamic_limits = latest_params[0]
@@ -36,12 +36,12 @@ def process_icebox_logic():
             icebox_recovery_c_days_threshold = other_dynamic_limits.get('icebox_recovery_c_days_threshold', 3) if other_dynamic_limits else 3
 
             if approved_tokens_snapshot:
-                logging.debug(f"approved_tokens_snapshot raw: {approved_tokens_snapshot}")
+                logger.debug(f"approved_tokens_snapshot raw: {approved_tokens_snapshot}")
                 if isinstance(approved_tokens_snapshot, str):
                     try:
                         approved_tokens_snapshot = json.loads(approved_tokens_snapshot)
                     except Exception:
-                        logging.warning(f"Could not decode approved_tokens_snapshot: {approved_tokens_snapshot}")
+                        logger.warning(f"Could not decode approved_tokens_snapshot: {approved_tokens_snapshot}")
                         approved_tokens_snapshot = []
                 if isinstance(approved_tokens_snapshot, list):
                     approved_tokens = {token['token_symbol'] for token in approved_tokens_snapshot if isinstance(token, dict) and 'token_symbol' in token}
@@ -80,7 +80,7 @@ def process_icebox_logic():
                     try:
                         current_price = float(val) if val is not None else None
                     except Exception:
-                        logging.warning(f"Could not convert current_price for {token_symbol}: {val}")
+                        logger.warning(f"Could not convert current_price for {token_symbol}: {val}")
                         current_price = None
                     timestamp = row[8] # This is data_timestamp from raw_coinmarketcap_ohlcv
 
@@ -112,7 +112,7 @@ def process_icebox_logic():
                             """),
                             {"token_symbol": token_symbol, "reason": reason}
                         )
-                        logging.info(f"Token {token_symbol} added to Icebox. Reason: {reason}")
+                        logger.info(f"Token {token_symbol} added to Icebox. Reason: {reason}")
                         continue # Move to next token if already added for this reason
 
                     # Check for OHLCV Close Threshold (C)
@@ -141,7 +141,7 @@ def process_icebox_logic():
                             """),
                             {"token_symbol": token_symbol, "reason": reason}
                         )
-                        logging.info(f"Token {token_symbol} added to Icebox. Reason: {reason}")
+                        logger.info(f"Token {token_symbol} added to Icebox. Reason: {reason}")
                         continue
 
             # 2. Identify tokens to remove from icebox_tokens (recovery criteria)
@@ -165,7 +165,7 @@ def process_icebox_logic():
                     try:
                         current_price = float(current_price_result[0])
                     except Exception:
-                        logging.warning(f"Could not convert current_price for recovery check {token_symbol}: {current_price_result[0]}")
+                        logger.warning(f"Could not convert current_price for recovery check {token_symbol}: {current_price_result[0]}")
                         current_price = None
 
                 # Check for Recovery Low Threshold (L)
@@ -206,13 +206,13 @@ def process_icebox_logic():
                         """),
                         {"removed_timestamp": datetime.now(timezone.utc), "token_symbol": token_symbol}
                     )
-                    logging.info(f"Token {token_symbol} removed from Icebox (recovery).")
+                    logger.info(f"Token {token_symbol} removed from Icebox (recovery).")
 
             connection.commit()
-            logging.info("Icebox logic processing completed successfully.")
+            logger.info("Icebox logic processing completed successfully.")
 
     except Exception as e:
-        logging.error(f"Error during Icebox logic processing: {e}")
+        logger.error(f"Error during Icebox logic processing: {e}")
     finally:
         if conn:
             conn.dispose()

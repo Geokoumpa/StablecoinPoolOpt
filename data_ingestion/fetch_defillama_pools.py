@@ -1,8 +1,11 @@
 import requests
 import json
+import logging
 from datetime import datetime, timezone
 from database.db_utils import get_db_connection
 from psycopg2.extras import execute_values
+
+logger = logging.getLogger(__name__)
 
 def insert_raw_defillama_pools(engine, raw_json_data):
     from sqlalchemy import text
@@ -23,11 +26,11 @@ def insert_raw_defillama_pools(engine, raw_json_data):
                     # Insert new data
                     query = text(f"INSERT INTO raw_defillama_pools (raw_json_data) VALUES (:raw_json_data);")
                     conn.execute(query, {"raw_json_data": extras.Json(raw_json_data)})
-                    print(f"Successfully inserted raw data into raw_defillama_pools.")
+                    logger.info(f"Successfully inserted raw data into raw_defillama_pools.")
                 else:
-                    print(f"Raw data already exists for today in raw_defillama_pools, skipping insertion.")
+                    logger.info(f"Raw data already exists for today in raw_defillama_pools, skipping insertion.")
     except Exception as e:
-        print(f"Error inserting data into raw_defillama_pools: {e}")
+        logger.error(f"Error inserting data into raw_defillama_pools: {e}")
 
 def update_pools_metadata_bulk(conn, pools_data):
     """
@@ -43,7 +46,7 @@ def update_pools_metadata_bulk(conn, pools_data):
         apy = pool_data.get('apy')
 
         if not all([pool_id, chain, project, symbol]):
-            print(f"Skipping pool with missing essential data: {pool_data}")
+            logger.warning(f"Skipping pool with missing essential data: {pool_data}")
             continue
         
         values_to_insert.append((
@@ -51,7 +54,7 @@ def update_pools_metadata_bulk(conn, pools_data):
         ))
 
     if not values_to_insert:
-        print("No valid pools to insert after filtering.")
+        logger.info("No valid pools to insert after filtering.")
         return
 
     try:
@@ -76,9 +79,9 @@ def update_pools_metadata_bulk(conn, pools_data):
                 template=None,
                 page_size=100
             )
-        print(f"Successfully inserted/updated {len(values_to_insert)} pools.")
+        logger.info(f"Successfully inserted/updated {len(values_to_insert)} pools.")
     except Exception as e:
-        print(f"Error during bulk update of pools metadata: {e}")
+        logger.error(f"Error during bulk update of pools metadata: {e}")
 
 def fetch_defillama_pools():
     url = "https://yields.llama.fi/pools"
@@ -86,10 +89,10 @@ def fetch_defillama_pools():
     try:
         engine = get_db_connection()
         if not engine:
-            print("Could not establish database connection. Exiting.")
+            logger.error("Could not establish database connection. Exiting.")
             return
 
-        print("Fetching DeFiLlama pools data...")
+        logger.info("Fetching DeFiLlama pools data...")
         response = requests.get(url)
         response.raise_for_status()  # Raise an exception for HTTP errors
         raw_data = response.json()
@@ -111,23 +114,23 @@ def fetch_defillama_pools():
             update_pools_metadata_bulk(engine, pools_data)
 
         # Print detailed summary
-        print("\n" + "="*60)
-        print("📥 DEFILLAMA POOLS INGESTION SUMMARY")
-        print("="*60)
-        print(f"🌐 API endpoint: {url}")
-        print(f"📊 Total pools from API: {total_pools_from_api:,}")
-        print(f"✅ Valid pools processed: {processed_pools:,}")
-        print(f"❌ Skipped (missing data): {total_pools_from_api - processed_pools:,}")
-        print(f"💾 Raw data stored in: raw_defillama_pools")
-        print(f"🔄 Pools metadata updated in: pools")
+        logger.info("\n" + "="*60)
+        logger.info("📥 DEFILLAMA POOLS INGESTION SUMMARY")
+        logger.info("="*60)
+        logger.info(f"🌐 API endpoint: {url}")
+        logger.info(f"📊 Total pools from API: {total_pools_from_api:,}")
+        logger.info(f"✅ Valid pools processed: {processed_pools:,}")
+        logger.info(f"❌ Skipped (missing data): {total_pools_from_api - processed_pools:,}")
+        logger.info(f"💾 Raw data stored in: raw_defillama_pools")
+        logger.info(f"🔄 Pools metadata updated in: pools")
         if total_pools_from_api > 0:
-            print(f"📊 Processing success rate: {(processed_pools/total_pools_from_api*100):.1f}%")
-        print("="*60)
+            logger.info(f"📊 Processing success rate: {(processed_pools/total_pools_from_api*100):.1f}%")
+        logger.info("="*60)
         
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching DeFiLlama pools: {e}")
+        logger.error(f"Error fetching DeFiLlama pools: {e}")
     except json.JSONDecodeError as e:
-        print(f"Error decoding JSON response: {e}")
+        logger.error(f"Error decoding JSON response: {e}")
     finally:
         if engine:
             engine.dispose()

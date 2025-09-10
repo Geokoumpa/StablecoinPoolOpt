@@ -78,18 +78,6 @@ resource "google_secret_manager_secret_version" "main_asset_holding_address_vers
 }
 
 # VPC Access Connector for private Cloud SQL access
-resource "google_vpc_access_connector" "connector" {
-  name          = "defi-vpc-connector"
-  region        = var.region
-  ip_cidr_range = "10.8.0.0/28"
-  network       = "default"
-  machine_type  = "e2-micro"
-  
-  # Note: min/max_instances and min/max_throughput are set to 0 in actual deployment
-  # This indicates automatic scaling configuration
-  
-  depends_on = [google_project_service.project_services["vpcaccess.googleapis.com"]]
-}
 
 # Enable Cloud Run API
 resource "google_project_service" "run_api" {
@@ -106,6 +94,12 @@ resource "google_project_service" "secret_manager_api" {
 }
 
 # Cloud Run Jobs for each pipeline step
+resource "google_project_iam_member" "cloud_run_vpc_access" {
+  project = var.project_id
+  role    = "roles/vpcaccess.user"
+  member  = "serviceAccount:${google_service_account.cloud_run_sa.email}"
+}
+
 resource "google_cloud_run_v2_job" "pipeline_step" {
   for_each = toset([
     "apply_migrations",
@@ -128,15 +122,23 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
     "post_slack_notification"
   ])
 
-  name     = "pipeline-step-${replace(each.key, "_", "-")}"
-  location = var.region
-  project  = var.project_id
+  name               = "pipeline-step-${replace(each.key, "_", "-")}"
+  location           = var.region
+  project            = var.project_id
+  deletion_protection = false
 
   template {
     template {
       service_account = google_service_account.cloud_run_sa.email
+      
+      # VPC Access for private Cloud SQL connectivity
+      vpc_access {
+        connector = google_vpc_access_connector.cloud_sql_connector.id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
+      
       containers {
-        image = "gcr.io/${var.project_id}/defi-pipeline:${each.key}"
+        image = "gcr.io/${var.project_id}/defi-pipeline:${replace(each.key, "_", "-")}"
 
         env {
           name  = "SCRIPT_NAME"
@@ -148,7 +150,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
         }
         env {
           name  = "DB_HOST"
-          value = google_sql_database_instance.main_instance.public_ip_address
+          value = google_sql_database_instance.main_instance.private_ip_address
         }
         env {
           name  = "DB_PORT"
@@ -159,10 +161,10 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
           value = google_sql_database.defiyieldopt_database.name
         }
         env {
-          name = "DB_PASS"
+          name = "DB_PASSWORD"
           value_source {
             secret_key_ref {
-              secret  = google_secret_manager_secret.db_password.id
+              secret  = google_secret_manager_secret.db_password.secret_id
               version = "latest"
             }
           }
@@ -234,16 +236,12 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
           }
         }
       }
-      vpc_access {
-        connector = google_vpc_access_connector.connector.id
-        egress    = "ALL_TRAFFIC"
-      }
       timeout = "1800s" # Set timeout to 30 minutes
     }
   }
 
   depends_on = [
     google_project_service.run_api,
-    google_vpc_access_connector.connector
+    google_vpc_access_connector.cloud_sql_connector
   ]
 }

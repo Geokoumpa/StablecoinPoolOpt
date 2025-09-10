@@ -5,7 +5,7 @@ from database.db_utils import get_db_connection
 import pandas as pd
 from sqlalchemy import text
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def fetch_dynamic_lists(engine):
     """Fetches current dynamic lists from individual tables."""
@@ -26,7 +26,7 @@ def update_allocation_snapshots():
     Updates the snapshots in the latest allocation_parameters entry with current dynamic lists.
     This is called after icebox logic has updated the icebox_tokens table.
     """
-    logging.info("Updating allocation parameter snapshots...")
+    logger.info("Updating allocation parameter snapshots...")
     engine = None
     try:
         engine = get_db_connection()
@@ -59,14 +59,14 @@ def update_allocation_snapshots():
                     "timestamp": datetime.now()
                 })
 
-            logging.info("Updated allocation parameter snapshots with latest dynamic lists")
-            logging.info(f"Approved protocols: {len(dynamic_lists['approved_protocols'])}")
-            logging.info(f"Approved tokens: {len(dynamic_lists['approved_tokens'])}")
-            logging.info(f"Blacklisted tokens: {len(dynamic_lists['blacklisted_tokens'])}")
-            logging.info(f"Icebox tokens: {len(dynamic_lists['icebox_tokens'])}")
+            logger.info("Updated allocation parameter snapshots with latest dynamic lists")
+            logger.info(f"Approved protocols: {len(dynamic_lists['approved_protocols'])}")
+            logger.info(f"Approved tokens: {len(dynamic_lists['approved_tokens'])}")
+            logger.info(f"Blacklisted tokens: {len(dynamic_lists['blacklisted_tokens'])}")
+            logger.info(f"Icebox tokens: {len(dynamic_lists['icebox_tokens'])}")
 
     except Exception as e:
-        logging.error(f"Error updating allocation snapshots: {e}")
+        logger.error(f"Error updating allocation snapshots: {e}")
         raise
 
 if __name__ == "__main__":

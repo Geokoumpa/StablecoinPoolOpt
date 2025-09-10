@@ -20,7 +20,10 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Copy application code
 COPY --chown=appuser:appuser . .
 
-# Create entrypoint script with better error handling
+# Set Python path to include the application directory
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# Create entrypoint script with universal pipeline runner
 RUN echo '#!/bin/bash\n\
 set -e\n\
 if [ -z "$SCRIPT_NAME" ]; then\n\
@@ -29,7 +32,8 @@ if [ -z "$SCRIPT_NAME" ]; then\n\
 fi\n\
 echo "Starting DeFi Pipeline - Script: $SCRIPT_NAME"\n\
 echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"\n\
-exec python main_pipeline.py' > /app/entrypoint.sh \
+echo "PYTHONPATH: $PYTHONPATH"\n\
+exec python pipeline_runner.py "$SCRIPT_NAME"' > /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh \
     && chown appuser:appuser /app/entrypoint.sh
 

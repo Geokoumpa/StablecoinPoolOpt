@@ -15,8 +15,13 @@ output "database_user" {
 }
 
 output "database_host" {
-  description = "The IP address of the Cloud SQL instance."
-  value       = google_sql_database_instance.main_instance.public_ip_address
+  description = "The private IP address of the Cloud SQL instance."
+  value       = google_sql_database_instance.main_instance.private_ip_address
+}
+
+output "database_public_ip" {
+  description = "The public IP address of the Cloud SQL instance (disabled for security)."
+  value       = "Public IP disabled for security - using private connectivity"
 }
 
 # Outputs for Cloud Run pipeline jobs
@@ -37,11 +42,6 @@ output "daily_scheduler_id" {
 }
 
 
-# Output for VPC Connector
-output "vpc_connector_id" {
-  description = "The resource ID of the VPC Access Connector."
-  value       = google_vpc_access_connector.connector.id
-}
 
 # Output for Service Accounts
 output "cloud_run_service_account_email" {

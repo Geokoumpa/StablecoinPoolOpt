@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -8,6 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.db_utils import get_db_connection
 
+logger = logging.getLogger(__name__)
 class LedgerManager:
     def __init__(self):
         # Access config variables directly, e.g. config.DB_HOST, config.DB_NAME, etc.
@@ -85,7 +87,7 @@ class LedgerManager:
         self.cur.execute(upsert_query, (date, token_symbol, start_balance, end_balance, daily_nav,
                                       realized_yield_yesterday, realized_yield_ytd))
         self.conn.commit()
-        print(f"Daily ledger record upserted for {token_symbol} on {date}")
+        logger.info(f"Daily ledger record upserted for {token_symbol} on {date}")
 
     def manage_ledger(self):
         today = datetime.now(timezone.utc).date()
@@ -106,14 +108,14 @@ class LedgerManager:
         processed_tokens = 0
         price_errors = 0
 
-        print(f"Processing ledger for {today}...")
+        logger.info(f"Processing ledger for {today}...")
 
         # Process each token separately according to the new schema
         for token, current_balance in current_token_balances.items():
             try:
                 price = self.get_ohlcv_price(token, today)
                 if price is None:
-                    print(f"Warning: Could not get price for {token}")
+                    logger.warning(f"Could not get price for {token}")
                     price_errors += 1
                     price = Decimal('1.0')  # Fallback price
                 
@@ -158,22 +160,22 @@ class LedgerManager:
                 processed_tokens += 1
                 
             except Exception as e:
-                print(f"Error processing {token}: {e}")
+                logger.error(f"Error processing {token}: {e}")
 
         # Print comprehensive summary
-        print("\n" + "="*60)
-        print("📊 DAILY LEDGER MANAGEMENT SUMMARY")
-        print("="*60)
-        print(f"📅 Date processed: {today}")
-        print(f"🪙 Tokens processed: {processed_tokens}")
-        print(f"💰 Total portfolio NAV: ${total_nav:,.2f}")
+        logger.info("\n" + "="*60)
+        logger.info("📊 DAILY LEDGER MANAGEMENT SUMMARY")
+        logger.info("="*60)
+        logger.info(f"📅 Date processed: {today}")
+        logger.info(f"🪙 Tokens processed: {processed_tokens}")
+        logger.info(f"💰 Total portfolio NAV: ${total_nav:,.2f}")
         if processed_tokens > 0:
-            print(f"📈 Average yield yesterday: {(total_yield_yesterday/processed_tokens):.2f}%")
-            print(f"📊 Average yield YTD: {(total_yield_ytd/processed_tokens):.2f}%")
+            logger.info(f"📈 Average yield yesterday: {(total_yield_yesterday/processed_tokens):.2f}%")
+            logger.info(f"📊 Average yield YTD: {(total_yield_ytd/processed_tokens):.2f}%")
         if price_errors > 0:
-            print(f"⚠️  Price fetch errors: {price_errors}")
-        print(f"💾 Data stored in: daily_ledger")
-        print("="*60)
+            logger.info(f"⚠️  Price fetch errors: {price_errors}")
+        logger.info(f"💾 Data stored in: daily_ledger")
+        logger.info("="*60)
 
 if __name__ == "__main__":
     with LedgerManager() as manager:

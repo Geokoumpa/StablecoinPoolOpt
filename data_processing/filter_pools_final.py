@@ -1,14 +1,14 @@
 import logging
 from database.db_utils import get_db_connection
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def filter_pools_final():
     """
     Final filtering phase: Apply TVL, APY, and icebox token filtering to pre-filtered pools.
     Only processes pools that passed pre-filtering and adds final exclusions.
     """
-    logging.info("Starting final pool filtering (icebox)...")
+    logger.info("Starting final pool filtering (icebox)...")
     engine = None
     conn = None
     trans = None
@@ -32,13 +32,13 @@ def filter_pools_final():
             pool_tvl_limit, pool_apy_limit = filter_params
         else:
             pool_tvl_limit, pool_apy_limit = None, None
-            logging.warning("No allocation parameters found for TVL/APY filtering.")
+            logger.warning("No allocation parameters found for TVL/APY filtering.")
 
-        print("=== Final Pool Filtering Criteria ===")
-        print(f"Icebox Tokens: {icebox_tokens}")
-        print(f"Pool TVL Limit: {pool_tvl_limit}")
-        print(f"Pool APY Limit: {pool_apy_limit}")
-        print("=====================================")
+        logger.info("=== Final Pool Filtering Criteria ===")
+        logger.info(f"Icebox Tokens: {icebox_tokens}")
+        logger.info(f"Pool TVL Limit: {pool_tvl_limit}")
+        logger.info(f"Pool APY Limit: {pool_apy_limit}")
+        logger.info("=====================================")
 
         # Fetch pools that passed pre-filtering (not filtered out)
         cur.execute("""
@@ -49,7 +49,7 @@ def filter_pools_final():
         """)
         pre_filtered_pools = cur.fetchall()
 
-        logging.info(f"Processing {len(pre_filtered_pools)} pre-filtered pools for final filtering...")
+        logger.info(f"Processing {len(pre_filtered_pools)} pre-filtered pools for final filtering...")
 
         for pool_id, symbol, tvl, apy, existing_reason in pre_filtered_pools:
             additional_reasons = []
@@ -86,41 +86,41 @@ def filter_pools_final():
                     WHERE pool_id = %s AND date = CURRENT_DATE;
                 """, ('; '.join(combined_reasons), pool_id))
 
-                logging.info(f"Pool {pool_id} finally filtered out. Additional reasons: {'; '.join(additional_reasons)}.")
+                logger.info(f"Pool {pool_id} finally filtered out. Additional reasons: {'; '.join(additional_reasons)}.")
 
         conn.commit()
         
         # Log final statistics
         cur.execute("""
-            SELECT COUNT(*) FROM pool_daily_metrics 
+            SELECT COUNT(*) FROM pool_daily_metrics
             WHERE date = CURRENT_DATE AND is_filtered_out = FALSE;
         """)
         final_count = cur.fetchone()[0]
         
         cur.execute("""
-            SELECT COUNT(*) FROM pool_daily_metrics 
+            SELECT COUNT(*) FROM pool_daily_metrics
             WHERE date = CURRENT_DATE AND is_filtered_out = TRUE;
         """)
         filtered_count = cur.fetchone()[0]
 
-        logging.info(f"Final filtering completed successfully.")
+        logger.info(f"Final filtering completed successfully.")
         
         # Print detailed summary
-        print("\n" + "="*60)
-        print("🏁 FINAL POOL FILTERING SUMMARY")
-        print("="*60)
-        print(f"📥 Input pools (pre-filtered): {len(pre_filtered_pools)}")
-        print(f"📦 Icebox tokens checked: {len(icebox_tokens)}")
-        print(f"💰 TVL limit: ${pool_tvl_limit:,.0f}" if pool_tvl_limit else "💰 TVL limit: N/A")
-        print(f"📈 APY limit: {pool_apy_limit:.2%}" if pool_apy_limit else "📈 APY limit: N/A")
-        print(f"✅ Final approved pools: {final_count}")
-        print(f"❌ Total filtered out pools: {filtered_count}")
+        logger.info("\n" + "="*60)
+        logger.info("🏁 FINAL POOL FILTERING SUMMARY")
+        logger.info("="*60)
+        logger.info(f"📥 Input pools (pre-filtered): {len(pre_filtered_pools)}")
+        logger.info(f"📦 Icebox tokens checked: {len(icebox_tokens)}")
+        logger.info(f"💰 TVL limit: ${pool_tvl_limit:,.0f}" if pool_tvl_limit else "💰 TVL limit: N/A")
+        logger.info(f"📈 APY limit: {pool_apy_limit:.2%}" if pool_apy_limit else "📈 APY limit: N/A")
+        logger.info(f"✅ Final approved pools: {final_count}")
+        logger.info(f"❌ Total filtered out pools: {filtered_count}")
         if len(pre_filtered_pools) > 0:
-            print(f"📊 Final approval rate: {(final_count/len(pre_filtered_pools)*100):.1f}%")
-        print("="*60)
+            logger.info(f"📊 Final approval rate: {(final_count/len(pre_filtered_pools)*100):.1f}%")
+        logger.info("="*60)
 
     except Exception as e:
-        logging.error(f"Error during final pool filtering: {e}")
+        logger.error(f"Error during final pool filtering: {e}")
         if conn:
             conn.rollback()
         raise

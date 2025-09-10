@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 from datetime import timedelta
 from skforecast.recursive import ForecasterRecursive
@@ -6,6 +7,8 @@ from xgboost import XGBRegressor
 from database.db_utils import get_db_connection
 from forecasting.data_preprocessing import preprocess_data
 from optuna.distributions import IntDistribution, FloatDistribution
+
+logger = logging.getLogger(__name__)
 
 def has_sufficient_data(df: pd.DataFrame) -> bool:
     """
@@ -63,15 +66,15 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     Trains a forecasting model for a specific pool's APY and TVL,
     generates forecasts, and persists the model.
     """
-    print(f"Processing pool: {pool_id}")
+    logger.info(f"Processing pool: {pool_id}")
 
     # Fetch data - now includes exogenous variables from pool_daily_metrics
     data = fetch_pool_data(pool_id)
-    print(f"Pool {pool_id} raw fetched data:\n{data}\nShape: {data.shape}")
+    logger.info(f"Pool {pool_id} raw fetched data:\n{data}\nShape: {data.shape}")
 
     # Check data sufficiency
     if not has_sufficient_data(data):
-        print(f"No sufficient data for pool {pool_id}. Skipping.")
+        logger.info(f"No sufficient data for pool {pool_id}. Skipping.")
         return {}
 
     # Ensure data is properly formatted
@@ -86,16 +89,16 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     # Check if we have sufficient exogenous data
     has_missing_exog = data[exogenous_cols].isna().any().any()
     if has_missing_exog:
-        print(f"Pool {pool_id} has missing exogenous data, filling with forward fill...")
+        logger.info(f"Pool {pool_id} has missing exogenous data, filling with forward fill...")
         data[exogenous_cols] = data[exogenous_cols].ffill()
 
     has_missing_exog_after_ffill = data[exogenous_cols].isna().any().any()
     if has_missing_exog_after_ffill:
-        print(f"Pool {pool_id} still has missing exogenous data after forward fill, using backward fill...")
+        logger.info(f"Pool {pool_id} still has missing exogenous data after forward fill, using backward fill...")
         data[exogenous_cols] = data[exogenous_cols].bfill()
     
     if data.shape[0] < 14:
-        print(f"Pool {pool_id} has less than 14 rows, skipping.")
+        logger.info(f"Pool {pool_id} has less than 14 rows, skipping.")
         return {}
 
     # Apply preprocessing
@@ -118,7 +121,7 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
         data_processed = data_processed.asfreq('D')
         data_processed = data_processed.ffill() # Fill missing dates if any
 
-    print(f"Pool {pool_id} processed dataset:\n{data_processed}\nShape: {data_processed.shape}")
+    logger.info(f"Pool {pool_id} processed dataset:\n{data_processed}\nShape: {data_processed.shape}")
 
     # Define forecasters for APY and TVL with fixed lags of 7 to align with experimental approach
     forecaster_apy = ForecasterRecursive(
@@ -131,12 +134,12 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     )
 
     # Hyperparameter tuning (example for APY, can be extended for TVL)
-    print(f"Starting hyperparameter tuning for APY for pool {pool_id}...")
-    print(f"Data processed length: {len(data_processed)}")
+    logger.info(f"Starting hyperparameter tuning for APY for pool {pool_id}...")
+    logger.info(f"Data processed length: {len(data_processed)}")
 
         # Check for NaN values in target and exogenous data
-    print(f"NaN in target (apy_7d): {data_processed['apy_7d'].isna().sum()}")
-    print(f"NaN in exogenous data: {data_processed[exogenous_cols].isna().sum()}")
+    logger.info(f"NaN in target (apy_7d): {data_processed['apy_7d'].isna().sum()}")
+    logger.info(f"NaN in exogenous data: {data_processed[exogenous_cols].isna().sum()}")
 
     # Define additional exogenous features including lagged variables
     additional_features = ['day_of_week', 'day_of_year', 'month', 'year', 'week_of_year', 'quarter',
@@ -145,15 +148,15 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
 
     # Filter out features that don't exist in the dataset
     available_additional_features = [feat for feat in additional_features if feat in data_processed.columns]
-    print(f"Available additional features: {available_additional_features}")
+    logger.info(f"Available additional features: {available_additional_features}")
 
     # Combine shifted exogenous with additional features
     exog_features = [f'{col}_shifted' for col in exogenous_cols] + available_additional_features
-    print(f"Exogenous features for forecasting: {exog_features}")
+    logger.info(f"Exogenous features for forecasting: {exog_features}")
 
     # Check for NaN in exogenous features
     exog_data = data_processed[exog_features]
-    print(f"NaN values in exogenous features: {exog_data.isna().sum().sum()}")
+    logger.info(f"NaN values in exogenous features: {exog_data.isna().sum().sum()}")
 
     # Drop rows with NaN values to ensure clean data for forecasting
     # Include TVL data in the combined dataset for cleaning
@@ -163,12 +166,12 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     
     combined_data = pd.concat([data_processed[data_columns], exog_data], axis=1)
     combined_data_clean = combined_data.dropna()
-    print(f"Data length after dropping NaN: {len(combined_data_clean)} (was {len(combined_data)})")
-    print(f"Columns in combined_data_clean: {combined_data_clean.columns.tolist()}")
+    logger.info(f"Data length after dropping NaN: {len(combined_data_clean)} (was {len(combined_data)})")
+    logger.info(f"Columns in combined_data_clean: {combined_data_clean.columns.tolist()}")
 
     min_data_length_for_cv = 15  # Minimum required for basic forecasting
     if len(combined_data_clean) < min_data_length_for_cv:
-        print(f"After dropping NaN values, not enough data for forecasting. "
+        logger.info(f"After dropping NaN values, not enough data for forecasting. "
               f"Found {len(combined_data_clean)} records, need at least {min_data_length_for_cv}. Skipping pool {pool_id}.")
         return {}
 
@@ -202,7 +205,7 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     print(f"Debug: data_length={data_length}, min_lags={min_lags}, min_train_size_required={min_train_size_required}, min_data_length_for_cv={min_data_length_for_cv}")
 
     if data_length < min_data_length_for_cv:
-        print(f"Not enough data points for cross-validation with lags={min_lags} and steps={steps}. "
+        logger.info(f"Not enough data points for cross-validation with lags={min_lags} and steps={steps}. "
               f"Found {data_length} records, need at least {min_data_length_for_cv}. Skipping pool {pool_id}.")
         return {}
 
@@ -210,13 +213,13 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     
     if data_length < 45:
         # For smaller datasets, use simple validation but ensure we have enough training data
-        print(f"Small dataset ({data_length} points), using simple train-test split")
+        logger.info(f"Small dataset ({data_length} points), using simple train-test split")
         initial_train_size = max(min_train_size_required, data_length - steps_int)
         # Ensure initial_train_size is strictly less than data_length
         if initial_train_size >= data_length:
             initial_train_size = data_length - 1
 
-        print(f"Creating CV with initial_train_size: {initial_train_size}, data_length: {data_length}")
+        logger.info(f"Creating CV with initial_train_size: {initial_train_size}, data_length: {data_length}")
         cv = TimeSeriesFold(
             steps=steps_int,
             initial_train_size=initial_train_size,
@@ -233,7 +236,7 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
             initial_train_size = max(min_train_size_required, data_length - steps_int)
             n_splits = 1
 
-        print(f"Using {n_splits} splits with initial_train_size: {initial_train_size}, test_size: {test_size}, data_length: {data_length}")
+        logger.info(f"Using {n_splits} splits with initial_train_size: {initial_train_size}, test_size: {test_size}, data_length: {data_length}")
         cv = TimeSeriesFold(
             steps=steps_int,
             initial_train_size=initial_train_size,
@@ -248,21 +251,21 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     import numpy as np
     
     if not np.isfinite(y_clean).all():
-        print("Warning: Found infinite values in target variable, replacing with NaN and dropping")
+        logger.warning("Found infinite values in target variable, replacing with NaN and dropping")
         y_clean = y_clean.replace([float('inf'), float('-inf')], float('nan')).dropna()
         exog_data_clean = exog_data_clean.loc[y_clean.index]
     
     if not np.isfinite(exog_data_clean).all().all():
-        print("Warning: Found infinite values in exogenous variables, replacing with NaN and dropping")
+        logger.warning("Found infinite values in exogenous variables, replacing with NaN and dropping")
         finite_mask = np.isfinite(exog_data_clean).all(axis=1)
         y_clean = y_clean[finite_mask]
         exog_data_clean = exog_data_clean[finite_mask]
     
-    print(f"Final clean data length: {len(y_clean)}")
+    logger.info(f"Final clean data length: {len(y_clean)}")
     
     # Additional validation to avoid any potential array comparison issues
     if len(y_clean) != len(exog_data_clean):
-        print(f"Mismatch in data lengths: y_clean={len(y_clean)}, exog_data_clean={len(exog_data_clean)}")
+        logger.warning(f"Mismatch in data lengths: y_clean={len(y_clean)}, exog_data_clean={len(exog_data_clean)}")
         return {}
     
     # Reset indices to ensure proper alignment
@@ -270,11 +273,11 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     exog_data_clean = exog_data_clean.reset_index(drop=True)
     
     # Ensure all data is finite
-    print(f"Y data check - finite: {np.isfinite(y_clean).all()}, any NaN: {y_clean.isna().any()}")
-    print(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().any().any()}")
+    logger.info(f"Y data check - finite: {np.isfinite(y_clean).all()}, any NaN: {y_clean.isna().any()}")
+    logger.info(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().any().any()}")
 
     # Skip Bayesian optimization for now and use default parameters to test if that's the issue
-    print("Skipping Bayesian search and using default parameters to avoid array ambiguity...")
+    logger.info("Skipping Bayesian search and using default parameters to avoid array ambiguity...")
     default_params = {
         'n_estimators': 150,
         'max_depth': 4,
@@ -282,39 +285,39 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
         'random_state': 123
     }
     forecaster_apy.regressor.set_params(**default_params)
-    print(f"Using default hyperparameters for APY: {default_params}")
+    logger.info(f"Using default hyperparameters for APY: {default_params}")
 
     # Train forecasters with default parameters
-    print(f"Training forecasters for pool {pool_id}...")
+    logger.info(f"Training forecasters for pool {pool_id}...")
     training_exog_cols = [f'{col}_shifted' for col in exogenous_cols] + ['day_of_week', 'day_of_year', 'month']
     training_exog_cols = [col for col in training_exog_cols if col in exog_data_clean.columns]
     
     # Prepare clean TVL data similarly to APY data
     tvl_data_available = 'tvl_usd' in data_processed_clean.columns
     if tvl_data_available:
-        print(f"TVL data available for pool {pool_id}")
+        logger.info(f"TVL data available for pool {pool_id}")
         # Use the same cleaning approach as APY data - get TVL from combined_data_clean
         tvl_clean = combined_data_clean['tvl_usd'].astype(float) if 'tvl_usd' in combined_data_clean.columns else data_processed_clean['tvl_usd'].loc[combined_data_clean.index].astype(float)
         
         # Debug TVL data
-        print(f"TVL data before cleaning - shape: {tvl_clean.shape}, sample values: {tvl_clean.head().tolist()}")
-        print(f"TVL data stats - min: {tvl_clean.min()}, max: {tvl_clean.max()}, mean: {tvl_clean.mean()}")
+        logger.info(f"TVL data before cleaning - shape: {tvl_clean.shape}, sample values: {tvl_clean.head().tolist()}")
+        logger.info(f"TVL data stats - min: {tvl_clean.min()}, max: {tvl_clean.max()}, mean: {tvl_clean.mean()}")
         
         # Handle infinite values in TVL
         if not np.isfinite(tvl_clean).all():
-            print("Warning: Found infinite values in TVL data, replacing with NaN and using available data")
+            logger.warning("Found infinite values in TVL data, replacing with NaN and using available data")
             tvl_clean = tvl_clean.replace([float('inf'), float('-inf')], float('nan'))
             finite_mask = np.isfinite(tvl_clean)
             y_clean = y_clean[finite_mask]
             tvl_clean = tvl_clean[finite_mask]
             exog_data_clean = exog_data_clean[finite_mask]
-            print(f"TVL data after infinite value cleanup - shape: {tvl_clean.shape}")
+            logger.info(f"TVL data after infinite value cleanup - shape: {tvl_clean.shape}")
         
         # Reset indices to ensure alignment
         tvl_clean = tvl_clean.reset_index(drop=True)
-        print(f"Final TVL data - shape: {tvl_clean.shape}, sample values: {tvl_clean.head().tolist()}")
+        logger.info(f"Final TVL data - shape: {tvl_clean.shape}, sample values: {tvl_clean.head().tolist()}")
     else:
-        print(f"No TVL data available for pool {pool_id}")
+        logger.info(f"No TVL data available for pool {pool_id}")
     
     # Get training exogenous data
     training_exog_data = exog_data_clean[training_exog_cols]
@@ -338,9 +341,9 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     forecast_start_date = today
     
     if last_date.date() >= today.date():
-        print(f"Pool {pool_id} has data up to {last_date.date()} (today or future), forecasting for today {forecast_start_date.date()}")
+        logger.info(f"Pool {pool_id} has data up to {last_date.date()} (today or future), forecasting for today {forecast_start_date.date()}")
     else:
-        print(f"Pool {pool_id} has data up to {last_date.date()} (yesterday), forecasting for today {forecast_start_date.date()}")
+        logger.info(f"Pool {pool_id} has data up to {last_date.date()} (yesterday), forecasting for today {forecast_start_date.date()}")
     
     future_dates = pd.date_range(start=forecast_start_date, periods=steps_int, freq='D')
 
@@ -365,16 +368,16 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     forecast_apy = forecaster_apy.predict(steps=steps_int, exog=future_exog_filtered)
     
     if tvl_data_available:
-        print(f"Generating TVL forecast for pool {pool_id}")
+        logger.info(f"Generating TVL forecast for pool {pool_id}")
         forecast_tvl = forecaster_tvl.predict(steps=steps_int, exog=future_exog_filtered)
-        print(f"TVL forecast generated: {forecast_tvl.tolist()}")
+        logger.info(f"TVL forecast generated: {forecast_tvl.tolist()}")
     else:
         # If no TVL data available, use a simple estimate based on the last known value
-        print(f"No TVL data available for forecasting, using fallback method for pool {pool_id}")
+        logger.info(f"No TVL data available for forecasting, using fallback method for pool {pool_id}")
         last_tvl = data_processed_clean['tvl_usd'].iloc[-1] if 'tvl_usd' in data_processed_clean.columns else 0
-        print(f"Last known TVL value: {last_tvl}")
+        logger.info(f"Last known TVL value: {last_tvl}")
         forecast_tvl = pd.Series([last_tvl] * steps_int, index=future_dates)
-        print(f"TVL forecast (fallback): {forecast_tvl.tolist()}")
+        logger.info(f"TVL forecast (fallback): {forecast_tvl.tolist()}")
 
     # Update pool_daily_metrics with forecasted values
     engine = get_db_connection()
@@ -423,7 +426,7 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
         
         conn.commit()
     
-    print(f"Forecasts for pool {pool_id} updated in pool_daily_metrics.")
+    logger.info(f"Forecasts for pool {pool_id} updated in pool_daily_metrics.")
 
     return {
         'pool_id': pool_id,
@@ -449,10 +452,10 @@ if __name__ == "__main__":
     # Use filtered pools by default (pools that passed final filtering including icebox)
     filtered_pool_ids = get_filtered_pool_ids()
     if not filtered_pool_ids:
-        print("No filtered pools found in the database to forecast.")
+        logger.info("No filtered pools found in the database to forecast.")
         exit()
     
-    print(f"Found {len(filtered_pool_ids)} filtered pools to forecast.")
+    logger.info(f"Found {len(filtered_pool_ids)} filtered pools to forecast.")
     
     # Track statistics
     successful_forecasts = 0
@@ -460,7 +463,7 @@ if __name__ == "__main__":
     skipped_forecasts = 0
     
     for pool_id in filtered_pool_ids:
-        print(f"Processing pool: {pool_id}")
+        logger.info(f"Processing pool: {pool_id}")
         try:
             result = train_and_forecast_pool(pool_id, steps=1) # Forecast for 1 day ahead
             if isinstance(result, dict) and result:
@@ -468,16 +471,16 @@ if __name__ == "__main__":
             else:
                 skipped_forecasts += 1
         except Exception as e:
-            print(f"Error forecasting for pool {pool_id}: {e}")
+            logger.error(f"Error forecasting for pool {pool_id}: {e}")
             failed_forecasts += 1
     
     # Print final summary
-    print("\n" + "="*60)
-    print("📊 FORECAST POOLS SUMMARY")
-    print("="*60)
-    print(f"Total pools processed: {len(filtered_pool_ids)}")
-    print(f"✅ Successful forecasts: {successful_forecasts}")
-    print(f"⏭️  Skipped (insufficient data): {skipped_forecasts}")
-    print(f"❌ Failed forecasts: {failed_forecasts}")
-    print(f"📈 Success rate: {(successful_forecasts/len(filtered_pool_ids)*100):.1f}%")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("📊 FORECAST POOLS SUMMARY")
+    logger.info("="*60)
+    logger.info(f"Total pools processed: {len(filtered_pool_ids)}")
+    logger.info(f"✅ Successful forecasts: {successful_forecasts}")
+    logger.info(f"⏭️  Skipped (insufficient data): {skipped_forecasts}")
+    logger.info(f"❌ Failed forecasts: {failed_forecasts}")
+    logger.info(f"📈 Success rate: {(successful_forecasts/len(filtered_pool_ids)*100):.1f}%")
+    logger.info("="*60)

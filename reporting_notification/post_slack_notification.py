@@ -17,7 +17,7 @@ class SlackNotifier:
         Sends a formatted message to Slack via webhook.
         """
         if not self.webhook_url:
-            print("Slack webhook URL not configured. Skipping notification.")
+            logger.warning("Slack webhook URL not configured. Skipping notification.")
             return
 
         payload = {
@@ -38,9 +38,9 @@ class SlackNotifier:
                 headers={'Content-Type': 'application/json'}
             )
             response.raise_for_status()
-            print("Slack notification sent successfully!")
+            logger.info("Slack notification sent successfully!")
         except requests.exceptions.RequestException as e:
-            print(f"Error sending Slack notification: {e}")
+            logger.error(f"Error sending Slack notification: {e}")
 
 if __name__ == "__main__":
     notifier = SlackNotifier()

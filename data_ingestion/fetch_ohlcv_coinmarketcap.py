@@ -1,15 +1,18 @@
 import json
+import logging
 from datetime import datetime, timezone, timedelta
 from database.db_utils import get_db_connection
 from config import COINMARKETCAP_API_KEY
 from api_clients.coinmarketcap_client import get_historical_ohlcv_data
+
+logger = logging.getLogger(__name__)
 
 def fetch_ohlcv_coinmarketcap(api_key):
     engine = None
     try:
         engine = get_db_connection()
         if not engine:
-            print("Could not establish database connection. Exiting.")
+            logger.error("Could not establish database connection. Exiting.")
             return
 
         # Fetch approved tokens from database
@@ -25,10 +28,10 @@ def fetch_ohlcv_coinmarketcap(api_key):
         symbols = ['BTC', 'ETH'] + approved_symbols
 
         if not symbols:
-            print("No symbols to fetch. Exiting.")
+            logger.warning("No symbols to fetch. Exiting.")
             return
 
-        print(f"Fetching OHLCV data for symbols: {symbols}")
+        logger.info(f"Fetching OHLCV data for symbols: {symbols}")
 
         for symbol in symbols:
             # Check existing history for this symbol
@@ -46,19 +49,19 @@ def fetch_ohlcv_coinmarketcap(api_key):
                 days_diff = (max_date - min_date).days
                 if days_diff >= 365:
                     count = 1  # Fetch only previous day
-                    print(f"Symbol {symbol} has {days_diff} days of history (>=365), fetching 1 day.")
+                    logger.info(f"Symbol {symbol} has {days_diff} days of history (>=365), fetching 1 day.")
                 else:
                     count = 365  # Fetch 1 year history
-                    print(f"Symbol {symbol} has {days_diff} days of history (<365), fetching 365 days.")
+                    logger.info(f"Symbol {symbol} has {days_diff} days of history (<365), fetching 365 days.")
             else:
                 count = 365  # No history, fetch 1 year
-                print(f"Symbol {symbol} has no history, fetching 365 days.")
+                logger.info(f"Symbol {symbol} has no history, fetching 365 days.")
 
             # Get historical data using the API client
             historical_quotes = get_historical_ohlcv_data(symbol=symbol, count=count)
 
             if not historical_quotes:
-                print(f"No historical data fetched for {symbol}. Skipping database insertion.")
+                logger.warning(f"No historical data fetched for {symbol}. Skipping database insertion.")
                 continue
 
             try:
@@ -98,18 +101,18 @@ def fetch_ohlcv_coinmarketcap(api_key):
                         raw_conn.connection.commit()
                     finally:
                         raw_conn.close()
-                    print(f"Successfully bulk upserted {len(bulk_data)} CoinMarketCap OHLCV records for {symbol}.")
+                    logger.info(f"Successfully bulk upserted {len(bulk_data)} CoinMarketCap OHLCV records for {symbol}.")
                 else:
-                    print(f"No valid data to upsert for {symbol}.")
+                    logger.warning(f"No valid data to upsert for {symbol}.")
 
-                print(f"Successfully fetched and processed CoinMarketCap OHLCV data for {symbol}.")
+                logger.info(f"Successfully fetched and processed CoinMarketCap OHLCV data for {symbol}.")
             except Exception as e:  # Catch a broader exception for issues during processing/insertion
-                print(f"Error processing or inserting CoinMarketCap OHLCV for {symbol}: {e}")
+                logger.error(f"Error processing or inserting CoinMarketCap OHLCV for {symbol}: {e}")
     finally:
         if engine:
             engine.dispose()
 if __name__ == "__main__":
     if not COINMARKETCAP_API_KEY:
-        print("COINMARKETCAP_API_KEY environment variable not set in config.py.")
+        logger.error("COINMARKETCAP_API_KEY environment variable not set in config.py.")
     else:
         fetch_ohlcv_coinmarketcap(COINMARKETCAP_API_KEY)

@@ -120,7 +120,7 @@ def should_force_reallocation(previous_allocation, dynamic_lists):
     # For demonstration, let's assume if any pool in previous_allocation has a null forecasted_apy,
     # it means it's no longer available or relevant for today's forecast.
     if previous_allocation['forecasted_apy'].isnull().any():
-        print("Previous allocation contains pools with no current forecasted APY, forcing reallocation.")
+        logger.info("Previous allocation contains pools with no current forecasted APY, forcing reallocation.")
         return True
 
     return False
@@ -135,7 +135,7 @@ def calculate_net_yield(allocations_df, total_usd_value, conversion_rate, gas_fe
 
     # Ensure 'forecasted_apy' is available in the DataFrame
     if 'forecasted_apy' not in allocations_df.columns:
-        print("Warning: 'forecasted_apy' not found in allocations_df. Cannot calculate net yield.")
+        logger.warning("'forecasted_apy' not found in allocations_df. Cannot calculate net yield.")
         return 0.0
 
     daily_yield = (allocations_df['allocated_percentage'] * allocations_df['forecasted_apy']).sum()
@@ -194,11 +194,11 @@ def store_allocation_parameters_snapshot(conn, alloc_params, dynamic_lists):
         
         cursor.execute(insert_query, values)
         conn.commit()
-        print(f"Allocation parameters snapshot stored with run_id: {run_id}")
+        logger.info(f"Allocation parameters snapshot stored with run_id: {run_id}")
         return run_id
     except Exception as e:
         conn.rollback()
-        print(f"Error storing allocation parameters snapshot: {e}")
+        logger.error(f"Error storing allocation parameters snapshot: {e}")
         raise
 
 def store_asset_allocations(conn, run_id, allocations_df):
@@ -217,7 +217,7 @@ def store_asset_allocations(conn, run_id, allocations_df):
         existing_count = cursor.fetchone()[0]
         
         if existing_count > 0:
-            print(f"Asset allocations already exist for today ({current_date}). Checking if update is needed...")
+            logger.info(f"Asset allocations already exist for today ({current_date}). Checking if update is needed...")
             
             # Delete existing allocations for today before inserting new ones
             cursor.execute("""
@@ -227,7 +227,7 @@ def store_asset_allocations(conn, run_id, allocations_df):
                     WHERE DATE(timestamp) = %s
                 );
             """, (current_date,))
-            print(f"Removed {cursor.rowcount} existing allocation records for today")
+            logger.info(f"Removed {cursor.rowcount} existing allocation records for today")
         
         # Insert new allocations
         for index, row in allocations_df.iterrows():
@@ -243,37 +243,37 @@ def store_asset_allocations(conn, run_id, allocations_df):
             ))
         
         conn.commit()
-        print(f"Asset allocations stored for run_id: {run_id} (total: {len(allocations_df)} allocations)")
+        logger.info(f"Asset allocations stored for run_id: {run_id} (total: {len(allocations_df)} allocations)")
         
     except Exception as e:
         conn.rollback()
-        print(f"Error storing asset allocations: {e}")
+        logger.error(f"Error storing asset allocations: {e}")
         raise
 
 def optimize_allocations():
     """
     Orchestrates the asset allocation optimization process.
     """
-    print("Starting asset allocation optimization...")
+    logger.info("Starting asset allocation optimization...")
     conn = None
     try:
         conn = get_db_connection()
         
         # 1. Read forecasted APY and TVL for selected pools
         pool_metrics = fetch_pool_daily_metrics(conn)
-        print(f"Fetched {len(pool_metrics)} pool daily metrics.")
+        logger.info(f"Fetched {len(pool_metrics)} pool daily metrics.")
 
         # 2. Read current account balances and liquidity portfolio
         current_ledger = fetch_daily_ledger(conn)
-        print(f"Fetched {len(current_ledger)} current ledger entries.")
+        logger.info(f"Fetched {len(current_ledger)} current ledger entries.")
 
         # 3. Read configurable parameters from allocation_parameters
         alloc_params = fetch_allocation_parameters(conn)
-        print(f"Fetched allocation parameters: {alloc_params}")
+        logger.info(f"Fetched allocation parameters: {alloc_params}")
 
         # Prepare data for optimization
         if pool_metrics.empty:
-            print("No pools available for optimization after filtering. Exiting.")
+            logger.info("No pools available for optimization after filtering. Exiting.")
             return
 
         # Convert relevant columns to numpy arrays for cvxpy
@@ -331,25 +331,25 @@ def optimize_allocations():
         problem = cp.Problem(objective, constraints)
         problem.solve(solver=cp.ECOS) # Specify a solver, ECOS is a good general-purpose one
 
-        print(f"Optimization status: {problem.status}")
+        logger.info(f"Optimization status: {problem.status}")
         if problem.status in ["optimal", "optimal_near"]:
-            print(f"Optimal value: {problem.value}")
+            logger.info(f"Optimal value: {problem.value}")
             allocations = pd.DataFrame({
                 'pool_id': pool_metrics['pool_id'],
                 'allocated_percentage': x.value,
                 'allocated_usd': x.value * total_usd_value
             })
             allocations = allocations[allocations['allocated_percentage'] > 1e-6] # Filter out very small allocations
-            print("Optimal Allocations:")
-            print(allocations)
+            logger.info("Optimal Allocations:")
+            logger.info(allocations)
         else:
-            print("No optimal solution found.")
-            print(f"Problem status: {problem.status}")
-            print(f"Problem value: {problem.value}")
+            logger.info("No optimal solution found.")
+            logger.info(f"Problem status: {problem.status}")
+            logger.info(f"Problem value: {problem.value}")
 
         # Fetch previous allocation for comparison
         previous_allocation = fetch_previous_allocation(conn)
-        print(f"Fetched previous allocation: {len(previous_allocation)} entries.")
+        logger.info(f"Fetched previous allocation: {len(previous_allocation)} entries.")
 
         # Calculate net forecasted yield for the new optimal allocation
         net_forecasted_yield_new_allocation = 0.0
@@ -359,7 +359,7 @@ def optimize_allocations():
                 alloc_params.get('conversion_rate', 0.0004), # Default conversion rate
                 alloc_params.get('gas_fee_rate', 0.001) # Default gas fee rate
             )
-            print(f"Net forecasted yield for new allocation: {net_forecasted_yield_new_allocation:.4f} USD")
+            logger.info(f"Net forecasted yield for new allocation: {net_forecasted_yield_new_allocation:.4f} USD")
 
         # Calculate net yield from existing allocation
         net_forecasted_yield_previous_allocation = 0.0
@@ -371,31 +371,32 @@ def optimize_allocations():
                 alloc_params.get('conversion_rate', 0.0004),
                 alloc_params.get('gas_fee_rate', 0.001)
             )
-            print(f"Net forecasted yield for previous allocation: {net_forecasted_yield_previous_allocation:.4f} USD")
+            logger.info(f"Net forecasted yield for previous allocation: {net_forecasted_yield_previous_allocation:.4f} USD")
 
         # 7. Force reallocation if any token, pool, or protocol is no longer approved/available
         dynamic_lists = fetch_dynamic_lists(conn)
+        logger.info(f"Dynamic lists fetched: {dynamic_lists}")
         force_reallocate = should_force_reallocation(previous_allocation, dynamic_lists)
 
         final_allocations = pd.DataFrame()
         run_id = None
 
         if force_reallocate or (net_forecasted_yield_new_allocation > net_forecasted_yield_previous_allocation and problem.status in ["optimal", "optimal_near"]):
-            print("Decision: Full reallocation based on higher forecasted yield or forced reallocation.")
+            logger.info("Decision: Full reallocation based on higher forecasted yield or forced reallocation.")
             if problem.status in ["optimal", "optimal_near"]:
                 final_allocations = allocations
             else:
-                print("No optimal solution found for full reallocation, but forced reallocation is active. Fallback strategy needed.")
+                logger.info("No optimal solution found for full reallocation, but forced reallocation is active. Fallback strategy needed.")
                 # Fallback: e.g., keep current allocation or move to safe assets
                 final_allocations = previous_allocation # For now, keep previous if no new optimal
         else:
-            print("Decision: Reallocate only yesterday's yield.")
+            logger.info("Decision: Reallocate only yesterday's yield.")
             # Fetch yesterday's realized yield from daily_ledger
             yesterday_yield_row = current_ledger[current_ledger['token_symbol'] == 'TOTAL_YIELD'] # Assuming a 'TOTAL_YIELD' entry
             yesterday_realized_yield = yesterday_yield_row['end_of_day_balance'].iloc[0] if not yesterday_yield_row.empty else 0.0
             
             if yesterday_realized_yield > 0:
-                print(f"Optimizing for yesterday's realized yield: {yesterday_realized_yield} USD")
+                logger.info(f"Optimizing for yesterday's realized yield: {yesterday_realized_yield} USD")
                 # Re-run optimization for only yesterday's yield
                 # This requires a new optimization problem instance with total_usd_value = yesterday_realized_yield
                 # and potentially different constraints (e.g., min_pools=1 if profit_optimization is True)
@@ -425,23 +426,23 @@ def optimize_allocations():
                 yield_problem.solve(solver=cp.ECOS)
 
                 if yield_problem.status in ["optimal", "optimal_near"]:
-                    print(f"Optimal yield reallocation value: {yield_problem.value}")
+                    logger.info(f"Optimal yield reallocation value: {yield_problem.value}")
                     yield_allocations = pd.DataFrame({
                         'pool_id': pool_metrics['pool_id'],
                         'allocated_percentage': yield_x.value,
                         'allocated_usd': yield_x.value * yesterday_realized_yield
                     })
                     yield_allocations = yield_allocations[yield_allocations['allocated_percentage'] > 1e-6]
-                    print("Optimal Yield Allocations:")
-                    print(yield_allocations)
+                    logger.info("Optimal Yield Allocations:")
+                    logger.info(yield_allocations)
                     final_allocations = yield_allocations # This would be added to existing, not replace
                     # This part needs careful handling: merge yield_allocations with previous_allocation
                     # For now, just showing the yield allocation.
                 else:
-                    print("No optimal solution found for yield reallocation. Keeping previous allocation.")
+                    logger.info("No optimal solution found for yield reallocation. Keeping previous allocation.")
                     final_allocations = previous_allocation # Keep previous if yield reallocation fails
             else:
-                print("No yield generated yesterday or yield is zero. Keeping previous allocation.")
+                logger.info("No yield generated yesterday or yield is zero. Keeping previous allocation.")
                 final_allocations = previous_allocation
 
         # 8. Store optimization parameters (snapshots)
@@ -451,49 +452,49 @@ def optimize_allocations():
         if not final_allocations.empty:
             store_asset_allocations(conn, run_id, final_allocations)
         else:
-            print("No final allocations to store.")
+            logger.info("No final allocations to store.")
 
         # Print comprehensive summary
-        print("\n" + "="*70)
-        print("💰 ASSET ALLOCATION OPTIMIZATION SUMMARY")
-        print("="*70)
-        print(f"📊 Input pools analyzed: {len(pool_metrics)}")
-        print(f"📈 Current ledger entries: {len(current_ledger)}")
-        print(f"💵 Total USD value: ${total_usd_value:,.2f}")
-        print(f"🔄 Previous allocations: {len(previous_allocation)}")
+        logger.info("\n" + "="*70)
+        logger.info("💰 ASSET ALLOCATION OPTIMIZATION SUMMARY")
+        logger.info("="*70)
+        logger.info(f"📊 Input pools analyzed: {len(pool_metrics)}")
+        logger.info(f"📈 Current ledger entries: {len(current_ledger)}")
+        logger.info(f"💵 Total USD value: ${total_usd_value:,.2f}")
+        logger.info(f"🔄 Previous allocations: {len(previous_allocation)}")
         if not final_allocations.empty:
-            print(f"✅ Final allocations created: {len(final_allocations)}")
-            print(f"💎 Total allocated: ${final_allocations['allocated_usd'].sum():,.2f}")
-            print(f"📊 Allocation spread: {len(final_allocations)} pools")
+            logger.info(f"✅ Final allocations created: {len(final_allocations)}")
+            logger.info(f"💎 Total allocated: ${final_allocations['allocated_usd'].sum():,.2f}")
+            logger.info(f"📊 Allocation spread: {len(final_allocations)} pools")
             if 'allocated_percentage' in final_allocations.columns:
                 max_allocation = final_allocations['allocated_percentage'].max()
                 min_allocation = final_allocations['allocated_percentage'].min()
-                print(f"📈 Max pool allocation: {max_allocation:.2%}")
-                print(f"📉 Min pool allocation: {min_allocation:.2%}")
+                logger.info(f"📈 Max pool allocation: {max_allocation:.2%}")
+                logger.info(f"📉 Min pool allocation: {min_allocation:.2%}")
         else:
-            print("❌ No final allocations created")
+            logger.info("❌ No final allocations created")
         if run_id:
-            print(f"🆔 Run ID: {run_id}")
-        print(f"🔁 Forced reallocation: {'Yes' if force_reallocate else 'No'}")
+            logger.info(f"🆔 Run ID: {run_id}")
+        logger.info(f"🔁 Forced reallocation: {'Yes' if force_reallocate else 'No'}")
         if net_forecasted_yield_new_allocation > 0:
-            print(f"📈 New allocation net yield: ${net_forecasted_yield_new_allocation:.4f}")
+            logger.info(f"📈 New allocation net yield: ${net_forecasted_yield_new_allocation:.4f}")
         if net_forecasted_yield_previous_allocation > 0:
-            print(f"📊 Previous allocation net yield: ${net_forecasted_yield_previous_allocation:.4f}")
-        print("="*70)
+            logger.info(f"📊 Previous allocation net yield: ${net_forecasted_yield_previous_allocation:.4f}")
+        logger.info("="*70)
 
     except Exception as e:
-        print(f"An error occurred during optimization: {e}")
-        print("\n" + "="*70)
-        print("❌ ASSET ALLOCATION OPTIMIZATION FAILED")
-        print("="*70)
-        print(f"Error: {str(e)}")
-        print("="*70)
+        logger.error(f"An error occurred during optimization: {e}")
+        logger.error("\n" + "="*70)
+        logger.error("❌ ASSET ALLOCATION OPTIMIZATION FAILED")
+        logger.error("="*70)
+        logger.error(f"Error: {str(e)}")
+        logger.error("="*70)
         if conn:
             conn.rollback() # Rollback any changes if an error occurs
     finally:
         if conn:
             conn.close()
-            print("Database connection closed.")
+            logger.info("Database connection closed.")
 
 if __name__ == "__main__":
     optimize_allocations()

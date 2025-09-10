@@ -4,7 +4,7 @@ from tqdm import tqdm
 from database.db_utils import get_db_connection
 from data_ingestion.fetch_defillama_pool_history import fetch_defillama_pool_history
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def get_pre_filtered_pool_ids() -> list:
     """
@@ -25,7 +25,7 @@ def fetch_filtered_pool_histories():
     Fetches historical data for all pools that passed pre-filtering.
     This runs after pre-filtering but before final filtering (icebox).
     """
-    logging.info("Starting to fetch filtered pool histories...")
+    logger.info("Starting to fetch filtered pool histories...")
     
     try:
         # Clear the table before fetching new data
@@ -40,10 +40,10 @@ def fetch_filtered_pool_histories():
         filtered_pool_ids = get_pre_filtered_pool_ids()
         
         if not filtered_pool_ids:
-            logging.warning("No pre-filtered pools found to fetch historical data for.")
+            logger.warning("No pre-filtered pools found to fetch historical data for.")
             return
             
-        logging.info(f"Found {len(filtered_pool_ids)} pre-filtered pools to fetch histories for.")
+        logger.info(f"Found {len(filtered_pool_ids)} pre-filtered pools to fetch histories for.")
         
         success_count = 0
         error_count = 0
@@ -54,15 +54,15 @@ def fetch_filtered_pool_histories():
                 fetch_defillama_pool_history(pool_id)
                 success_count += 1
             except Exception as e:
-                logging.error(f"Error fetching history for pre-filtered pool {pool_id}: {e}")
+                logger.error(f"Error fetching history for pre-filtered pool {pool_id}: {e}")
                 error_count += 1
                 # Continue with next pool instead of failing entire process
         
-        logging.info(f"Filtered pool histories fetch completed.")
-        logging.info(f"Success: {success_count}, Errors: {error_count}")
+        logger.info(f"Filtered pool histories fetch completed.")
+        logger.info(f"Success: {success_count}, Errors: {error_count}")
         
     except Exception as e:
-        logging.error(f"Error during filtered pool histories fetch: {e}")
+        logger.error(f"Error during filtered pool histories fetch: {e}")
         raise
 
 if __name__ == "__main__":

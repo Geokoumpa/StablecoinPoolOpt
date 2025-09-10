@@ -2,10 +2,13 @@ import time
 import requests
 import json
 import os
+import logging
 from datetime import datetime, timezone
 from database.db_utils import get_db_connection
 from psycopg2 import extras
 from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
 
 def fetch_defillama_pool_history(pool_id):
     url = f"https://yields.llama.fi/chart/{pool_id}"
@@ -15,7 +18,7 @@ def fetch_defillama_pool_history(pool_id):
     delay = 1  # Start with a 1-second delay
     start_time = time.time()
 
-    print(f"Fetching pool history for: {pool_id}")
+    logger.info(f"Fetching pool history for: {pool_id}")
     
     for i in range(retries):
         try:
@@ -29,7 +32,7 @@ def fetch_defillama_pool_history(pool_id):
 
             # Ensure chart_data is a list
             if not isinstance(chart_data, list):
-                print(f"Warning: Expected a list of data points for pool {pool_id}, but got {type(chart_data)}. Skipping.")
+                logger.warning(f"Expected a list of data points for pool {pool_id}, but got {type(chart_data)}. Skipping.")
                 return
 
             data_points = len(chart_data)
@@ -46,7 +49,7 @@ def fetch_defillama_pool_history(pool_id):
                         'timestamp': timestamp
                     })
                 else:
-                    print(f"Warning: Data point missing timestamp for pool {pool_id}. Skipping.")
+                    logger.warning(f"Data point missing timestamp for pool {pool_id}. Skipping.")
             
             # Perform bulk insert
             if records_to_insert:
@@ -74,52 +77,52 @@ def fetch_defillama_pool_history(pool_id):
                                 processed_records.append(processed_record)
 
                             connection.execute(query, processed_records)
-                            print(f"Successfully bulk inserted {len(records_to_insert)} records into raw_defillama_pool_history.")
+                            logger.info(f"Successfully bulk inserted {len(records_to_insert)} records into raw_defillama_pool_history.")
                 except Exception as e:
-                    print(f"Error during bulk insert into raw_defillama_pool_history: {e}")
+                    logger.error(f"Error during bulk insert into raw_defillama_pool_history: {e}")
             
             # Calculate processing time
             processing_time = time.time() - start_time
             
             # Print summary
-            print("\n" + "="*50)
-            print("📈 POOL HISTORY INGESTION SUMMARY")
-            print("="*50)
-            print(f"🏊 Pool ID: {pool_id}")
-            print(f"🌐 API endpoint: {url}")
-            print(f"📊 Data points fetched: {data_points:,}")
-            print(f"💾 Data stored in: raw_defillama_pool_history")
-            print(f"⏱️  Processing time: {processing_time:.2f}s")
-            print(f"🔄 Attempts: {i+1}/{retries}")
-            print("="*50)
+            logger.info("\n" + "="*50)
+            logger.info("📈 POOL HISTORY INGESTION SUMMARY")
+            logger.info("="*50)
+            logger.info(f"🏊 Pool ID: {pool_id}")
+            logger.info(f"🌐 API endpoint: {url}")
+            logger.info(f"📊 Data points fetched: {data_points:,}")
+            logger.info(f"💾 Data stored in: raw_defillama_pool_history")
+            logger.info(f"⏱️  Processing time: {processing_time:.2f}s")
+            logger.info(f"🔄 Attempts: {i+1}/{retries}")
+            logger.info("="*50)
             return  # Success, exit the loop
             
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching DeFiLlama pool history for {pool_id}: {e}")
+            logger.error(f"Error fetching DeFiLlama pool history for {pool_id}: {e}")
             if i < retries - 1:
-                print(f"Retrying in {delay} seconds...")
+                logger.info(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
                 delay *= backoff_factor
             else:
                 processing_time = time.time() - start_time
-                print("\n" + "="*50)
-                print("❌ POOL HISTORY INGESTION FAILED")
-                print("="*50)
-                print(f"🏊 Pool ID: {pool_id}")
-                print(f"🌐 API endpoint: {url}")
-                print(f"🔄 Failed after {retries} attempts")
-                print(f"⏱️  Total time: {processing_time:.2f}s")
-                print("="*50)
+                logger.error("\n" + "="*50)
+                logger.error("❌ POOL HISTORY INGESTION FAILED")
+                logger.error("="*50)
+                logger.error(f"🏊 Pool ID: {pool_id}")
+                logger.error(f"🌐 API endpoint: {url}")
+                logger.error(f"🔄 Failed after {retries} attempts")
+                logger.error(f"⏱️  Total time: {processing_time:.2f}s")
+                logger.error("="*50)
         except json.JSONDecodeError as e:
             processing_time = time.time() - start_time
-            print(f"Error decoding JSON for pool {pool_id}: {e}")
-            print("\n" + "="*50)
-            print("❌ POOL HISTORY INGESTION FAILED")
-            print("="*50)
-            print(f"🏊 Pool ID: {pool_id}")
-            print(f"📋 Error: JSON decode failure")
-            print(f"⏱️  Processing time: {processing_time:.2f}s")
-            print("="*50)
+            logger.error(f"Error decoding JSON for pool {pool_id}: {e}")
+            logger.error("\n" + "="*50)
+            logger.error("❌ POOL HISTORY INGESTION FAILED")
+            logger.error("="*50)
+            logger.error(f"🏊 Pool ID: {pool_id}")
+            logger.error(f"📋 Error: JSON decode failure")
+            logger.error(f"⏱️  Processing time: {processing_time:.2f}s")
+            logger.error("="*50)
             break  # Do not retry on JSON decoding errors
         finally:
             if conn:

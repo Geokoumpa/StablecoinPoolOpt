@@ -2,17 +2,17 @@ import logging
 from database.db_utils import get_db_connection
 from sqlalchemy import text
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def filter_pools_pre():
     """
     Pre-filtering phase: Filter pools based on approved protocols, approved tokens, and blacklisted tokens.
     Does NOT filter based on TVL, APY, or icebox tokens (those come from final filtering).
     """
-    logging.info("Starting pre-pool filtering...")
+    logger.info("Starting pre-pool filtering...")
     engine = get_db_connection()
     if not engine:
-        logging.error("Could not establish database connection. Exiting.")
+        logger.error("Could not establish database connection. Exiting.")
         return
 
     with engine.connect() as conn:
@@ -30,7 +30,7 @@ def filter_pools_pre():
             filter_params = result.fetchone()
 
             if not filter_params:
-                logging.warning("No allocation parameters found for filtering. Skipping pre-pool filtering.")
+                logger.warning("No allocation parameters found for filtering. Skipping pre-pool filtering.")
                 trans.rollback()
                 return
 
@@ -49,14 +49,14 @@ def filter_pools_pre():
             result = conn.execute(text("SELECT token_symbol FROM blacklisted_tokens;"))
             blacklisted_tokens = {row[0] for row in result.fetchall()}
 
-            print("=== Pre-Pool Filtering Criteria and Thresholds ===")
-            print(f"Token Marketcap Limit: {token_marketcap_limit}")
-            print(f"Pool Pair TVL Ratio Min: {pool_pair_tvl_ratio_min}")
-            print(f"Pool Pair TVL Ratio Max: {pool_pair_tvl_ratio_max}")
-            print(f"Approved Protocols: {approved_protocols}")
-            print(f"Approved Tokens: {approved_tokens}")
-            print(f"Blacklisted Tokens: {blacklisted_tokens}")
-            print("================================================")
+            logger.info("=== Pre-Pool Filtering Criteria and Thresholds ===")
+            logger.info(f"Token Marketcap Limit: {token_marketcap_limit}")
+            logger.info(f"Pool Pair TVL Ratio Min: {pool_pair_tvl_ratio_min}")
+            logger.info(f"Pool Pair TVL Ratio Max: {pool_pair_tvl_ratio_max}")
+            logger.info(f"Approved Protocols: {approved_protocols}")
+            logger.info(f"Approved Tokens: {approved_tokens}")
+            logger.info(f"Blacklisted Tokens: {blacklisted_tokens}")
+            logger.info("================================================")
 
             # Fetch all pools for pre-filtering
             result = conn.execute(text("""
@@ -150,7 +150,7 @@ def filter_pools_pre():
                     )
 
                 if is_filtered_out:
-                    logging.info(f"Pool {pool_id} pre-filtered out. Reasons: {'; '.join(filter_reason)}.")
+                    logger.info(f"Pool {pool_id} pre-filtered out. Reasons: {'; '.join(filter_reason)}.")
 
             # Log final statistics
             result = conn.execute(text("""
@@ -167,24 +167,24 @@ def filter_pools_pre():
 
             total_pools = approved_count + filtered_count
 
-            logging.info("Pre-pool filtering completed successfully.")
+            logger.info("Pre-pool filtering completed successfully.")
 
             # Print detailed summary
-            print("\n" + "="*60)
-            print("🔍 PRE-POOL FILTERING SUMMARY")
-            print("="*60)
-            print(f"📊 Total pools processed: {total_pools}")
-            print(f"📋 Approved protocols: {len(approved_protocols)}")
-            print(f"🪙 Approved tokens: {len(approved_tokens)}")
-            print(f"🛑 Blacklisted tokens: {len(blacklisted_tokens)}")
-            print(f"✅ Pools approved (passed pre-filtering): {approved_count}")
-            print(f"❌ Pools filtered out: {filtered_count}")
-            print(f"📊 Approval rate: {(approved_count/total_pools*100):.1f}%" if total_pools > 0 else "N/A")
-            print("="*60)
+            logger.info("\n" + "="*60)
+            logger.info("🔍 PRE-POOL FILTERING SUMMARY")
+            logger.info("="*60)
+            logger.info(f"📊 Total pools processed: {total_pools}")
+            logger.info(f"📋 Approved protocols: {len(approved_protocols)}")
+            logger.info(f"🪙 Approved tokens: {len(approved_tokens)}")
+            logger.info(f"🛑 Blacklisted tokens: {len(blacklisted_tokens)}")
+            logger.info(f"✅ Pools approved (passed pre-filtering): {approved_count}")
+            logger.info(f"❌ Pools filtered out: {filtered_count}")
+            logger.info(f"📊 Approval rate: {(approved_count/total_pools*100):.1f}%" if total_pools > 0 else "N/A")
+            logger.info("="*60)
 
             trans.commit()
         except Exception as e:
-            logging.error(f"Error during pre-pool filtering: {e}")
+            logger.error(f"Error during pre-pool filtering: {e}")
             trans.rollback()
             raise
     engine.dispose()

@@ -3,9 +3,12 @@ from datetime import timedelta
 from skforecast.recursive import ForecasterRecursive
 from skforecast.model_selection import bayesian_search_forecaster, TimeSeriesFold
 from xgboost import XGBRegressor
+import logging
 from database.db_utils import get_db_connection
 from forecasting.data_preprocessing import preprocess_data
 from optuna.distributions import IntDistribution, FloatDistribution
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_gas_data_for_forecasting() -> pd.DataFrame:
@@ -33,7 +36,7 @@ def fetch_gas_data_for_forecasting() -> pd.DataFrame:
         df = pd.read_sql(query, conn, parse_dates=['date'], index_col='date')
         
         if df.empty:
-            print("No sufficient gas fee, ETH, or BTC data found in gas_fees_daily table.")
+            logger.warning("No sufficient gas fee, ETH, or BTC data found in gas_fees_daily table.")
             return df
         
         # Ensure timezone awareness
@@ -52,7 +55,7 @@ def calculate_gas_rolling_metrics(df: pd.DataFrame) -> pd.DataFrame:
     Calculate rolling metrics for gas fee data on the fly.
     """
     if df.empty or len(df) < 7:
-        print(f"Insufficient data for rolling calculations. Found {len(df)} records, need at least 7.")
+        logger.warning(f"Insufficient data for rolling calculations. Found {len(df)} records, need at least 7.")
         return df
     
     # Rolling averages
@@ -86,23 +89,23 @@ def train_and_forecast_gas_fees() -> dict:
     """
     Trains a forecasting model for gas fees and generates single-step ahead forecast.
     """
-    print("Processing gas fee forecasts...")
+    logger.info("Processing gas fee forecasts...")
 
     # Fetch daily data including ETH and BTC prices
     daily_merged = fetch_gas_data_for_forecasting()
 
     if daily_merged.empty:
-        print("No sufficient data for gas fee forecasting. Skipping.")
+        logger.warning("No sufficient data for gas fee forecasting. Skipping.")
         return {}
 
     # Print merged dataset for debugging
-    print(f"Merged dataset shape: {daily_merged.shape}")
-    print(f"Merged dataset columns: {daily_merged.columns.tolist()}")
-    print(f"Date range: {daily_merged.index.min()} to {daily_merged.index.max()}")
-    print(f"Sample of merged data:")
-    print(daily_merged.head(10))
-    print(f"Data types:")
-    print(daily_merged.dtypes)
+    logger.debug(f"Merged dataset shape: {daily_merged.shape}")
+    logger.debug(f"Merged dataset columns: {daily_merged.columns.tolist()}")
+    logger.debug(f"Date range: {daily_merged.index.min()} to {daily_merged.index.max()}")
+    logger.debug(f"Sample of merged data:")
+    logger.debug(daily_merged.head(10))
+    logger.debug(f"Data types:")
+    logger.debug(daily_merged.dtypes)
 
     # Define exogenous columns for gas fee forecasting
     exogenous_cols = ['eth_open', 'btc_open', 'rolling_avg_gas_7d', 'rolling_avg_gas_30d',
@@ -126,11 +129,11 @@ def train_and_forecast_gas_fees() -> dict:
         data_processed_daily = data_processed_daily.asfreq('D')
         data_processed_daily = data_processed_daily.ffill()
 
-    print(f"Gas fee processed dataset:\n{data_processed_daily}\nShape: {data_processed_daily.shape}")
+    logger.debug(f"Gas fee processed dataset:\n{data_processed_daily}\nShape: {data_processed_daily.shape}")
 
     # Check for sufficient data
     if len(data_processed_daily) < 14:
-        print(f"Gas fee data has less than 14 rows, skipping.")
+        logger.warning(f"Gas fee data has less than 14 rows, skipping.")
         return {}
 
     # Define additional exogenous features including lagged variables
@@ -139,19 +142,19 @@ def train_and_forecast_gas_fees() -> dict:
 
     # Filter out features that don't exist in the dataset
     available_additional_features = [feat for feat in additional_features if feat in data_processed_daily.columns]
-    print(f"Available additional features: {available_additional_features}")
+    logger.debug(f"Available additional features: {available_additional_features}")
 
     # Combine shifted exogenous with additional features
     exog_features = [f'{col}_shifted' for col in exogenous_cols] + available_additional_features
-    print(f"Exogenous features for forecasting: {exog_features}")
+    logger.debug(f"Exogenous features for forecasting: {exog_features}")
 
     # Check for NaN values in target and exogenous data
-    print(f"NaN in target (actual_avg_gas_gwei): {data_processed_daily['actual_avg_gas_gwei'].isna().sum()}")
-    print(f"NaN in exogenous data: {data_processed_daily[exogenous_cols].isna().sum()}")
+    logger.debug(f"NaN in target (actual_avg_gas_gwei): {data_processed_daily['actual_avg_gas_gwei'].isna().sum()}")
+    logger.debug(f"NaN in exogenous data: {data_processed_daily[exogenous_cols].isna().sum()}")
 
     # Check for NaN in exogenous features
     exog_data = data_processed_daily[exog_features]
-    print(f"NaN values in exogenous features: {exog_data.isna().sum().sum()}")
+    logger.debug(f"NaN values in exogenous features: {exog_data.isna().sum().sum()}")
 
     # Drop rows with NaN values to ensure clean data for forecasting
     # Start with average gas data only to ensure we can always forecast
@@ -159,12 +162,12 @@ def train_and_forecast_gas_fees() -> dict:
     
     combined_data = pd.concat([data_processed_daily[data_columns], exog_data], axis=1)
     combined_data_clean = combined_data.dropna()
-    print(f"Data length after dropping NaN (avg gas only): {len(combined_data_clean)} (was {len(combined_data)})")
-    print(f"Columns in combined_data_clean: {combined_data_clean.columns.tolist()}")
+    logger.info(f"Data length after dropping NaN (avg gas only): {len(combined_data_clean)} (was {len(combined_data)})")
+    logger.debug(f"Columns in combined_data_clean: {combined_data_clean.columns.tolist()}")
 
     min_data_length_for_cv = 15  # Minimum required for basic forecasting
     if len(combined_data_clean) < min_data_length_for_cv:
-        print(f"After dropping NaN values, not enough data for forecasting. "
+        logger.warning(f"After dropping NaN values, not enough data for forecasting. "
               f"Found {len(combined_data_clean)} records, need at least {min_data_length_for_cv}. Skipping gas fee forecasting.")
         return {}
 
@@ -176,7 +179,7 @@ def train_and_forecast_gas_fees() -> dict:
     if 'actual_max_gas_gwei' in data_processed_daily.columns:
         max_gas_series = data_processed_daily['actual_max_gas_gwei'].loc[combined_data_clean.index]
         data_processed_clean['actual_max_gas_gwei'] = max_gas_series
-        print(f"Added max gas data - non-null count: {max_gas_series.notna().sum()}")
+        logger.info(f"Added max gas data - non-null count: {max_gas_series.notna().sum()}")
 
     # Define forecasters for average and max daily gas price with fixed lags of 7
     forecaster_gas_price = ForecasterRecursive(
@@ -204,29 +207,29 @@ def train_and_forecast_gas_fees() -> dict:
     max_gas_column_exists = 'actual_max_gas_gwei' in data_processed_clean.columns
     if max_gas_column_exists:
         y_max_clean = data_processed_clean['actual_max_gas_gwei'].astype(float)
-        print(f"Max gas data before cleaning - shape: {y_max_clean.shape}, sample values: {y_max_clean.head().tolist()}")
-        print(f"Max gas data stats - min: {y_max_clean.min()}, max: {y_max_clean.max()}, mean: {y_max_clean.mean()}")
+        logger.debug(f"Max gas data before cleaning - shape: {y_max_clean.shape}, sample values: {y_max_clean.head().tolist()}")
+        logger.debug(f"Max gas data stats - min: {y_max_clean.min()}, max: {y_max_clean.max()}, mean: {y_max_clean.mean()}")
         
         # Check if we have sufficient non-NaN data points for training (need at least 15 for basic forecasting)
         valid_max_gas_count = y_max_clean.notna().sum()
         max_gas_data_available = valid_max_gas_count >= 15
-        print(f"Max gas fee data evaluation - column exists: {max_gas_column_exists}, valid data points: {valid_max_gas_count}, sufficient for training: {max_gas_data_available}")
+        logger.info(f"Max gas fee data evaluation - column exists: {max_gas_column_exists}, valid data points: {valid_max_gas_count}, sufficient for training: {max_gas_data_available}")
     else:
         max_gas_data_available = False
-        print("No max gas fee column available for forecasting")
+        logger.warning("No max gas fee column available for forecasting")
     
     # Ensure no infinite values using numpy
     import numpy as np
     
     if not np.isfinite(y_avg_clean).all():
-        print("Warning: Found infinite values in avg gas target variable, replacing with NaN and dropping")
+        logger.warning("Found infinite values in avg gas target variable, replacing with NaN and dropping")
         y_avg_clean = y_avg_clean.replace([float('inf'), float('-inf')], float('nan')).dropna()
         exog_data_clean = exog_data_clean.loc[y_avg_clean.index]
         if max_gas_data_available:
             y_max_clean = y_max_clean.loc[y_avg_clean.index]
     
     if max_gas_data_available and not np.isfinite(y_max_clean).all():
-        print("Warning: Found infinite values in max gas target variable, replacing with NaN and using available data")
+        logger.warning("Found infinite values in max gas target variable, replacing with NaN and using available data")
         y_max_clean = y_max_clean.replace([float('inf'), float('-inf')], float('nan'))
         finite_mask = np.isfinite(y_max_clean)
         y_avg_clean = y_avg_clean[finite_mask]
@@ -234,22 +237,22 @@ def train_and_forecast_gas_fees() -> dict:
         exog_data_clean = exog_data_clean[finite_mask]
     
     if not np.isfinite(exog_data_clean).all().all():
-        print("Warning: Found infinite values in exogenous variables, replacing with NaN and dropping")
+        logger.warning("Found infinite values in exogenous variables, replacing with NaN and dropping")
         finite_mask = np.isfinite(exog_data_clean).all(axis=1)
         y_avg_clean = y_avg_clean[finite_mask]
         exog_data_clean = exog_data_clean[finite_mask]
         if max_gas_data_available:
             y_max_clean = y_max_clean[finite_mask]
     
-    print(f"Final clean data length: {len(y_avg_clean)}")
+    logger.info(f"Final clean data length: {len(y_avg_clean)}")
     
     # Additional validation to avoid any potential array comparison issues
     if len(y_avg_clean) != len(exog_data_clean):
-        print(f"Mismatch in data lengths: y_avg_clean={len(y_avg_clean)}, exog_data_clean={len(exog_data_clean)}")
+        logger.warning(f"Mismatch in data lengths: y_avg_clean={len(y_avg_clean)}, exog_data_clean={len(exog_data_clean)}")
         return {}
     
     if max_gas_data_available and len(y_max_clean) != len(y_avg_clean):
-        print(f"Mismatch in max gas data length: y_max_clean={len(y_max_clean)}, y_avg_clean={len(y_avg_clean)}")
+        logger.warning(f"Mismatch in max gas data length: y_max_clean={len(y_max_clean)}, y_avg_clean={len(y_avg_clean)}")
         return {}
     
     # Reset indices to ensure proper alignment
@@ -259,14 +262,14 @@ def train_and_forecast_gas_fees() -> dict:
         y_max_clean = y_max_clean.reset_index(drop=True)
     
     # Ensure all data is finite
-    print(f"Avg gas data check - finite: {np.isfinite(y_avg_clean).all()}, any NaN: {y_avg_clean.isna().any()}")
-    print(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().any().any()}")
+    logger.info(f"Avg gas data check - finite: {np.isfinite(y_avg_clean).all()}, any NaN: {y_avg_clean.isna().any()}")
+    logger.info(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().any().any()}")
     if max_gas_data_available:
-        print(f"Max gas data check - finite: {np.isfinite(y_max_clean).all()}, any NaN: {y_max_clean.isna().any()}")
+        logger.info(f"Max gas data check - finite: {np.isfinite(y_max_clean).all()}, any NaN: {y_max_clean.isna().any()}")
 
     # Hyperparameter tuning using Optuna Bayesian search (10 trials)
-    print("Starting hyperparameter tuning for gas price...")
-    print(f"Data length: {len(y_avg_clean)}")
+    logger.info("Starting hyperparameter tuning for gas price...")
+    logger.info(f"Data length: {len(y_avg_clean)}")
 
     # Set up cross-validation for hyperparameter tuning
     data_length = int(len(y_avg_clean))
@@ -292,10 +295,10 @@ def train_and_forecast_gas_fees() -> dict:
         forecaster_gas_price.regressor.set_params(**default_params)
         if max_gas_data_available:
             forecaster_max_gas_price.regressor.set_params(**default_params)
-        print(f"Default hyperparameters for gas price: {default_params}")
+        logger.info(f"Default hyperparameters for gas price: {default_params}")
     else:
         # Skip Bayesian optimization for now and use default parameters to avoid array ambiguity...
-        print("Skipping Bayesian search and using default parameters to avoid array ambiguity...")
+        logger.info("Skipping Bayesian search and using default parameters to avoid array ambiguity...")
         default_params = {
             'n_estimators': 150,
             'max_depth': 4,
@@ -305,10 +308,10 @@ def train_and_forecast_gas_fees() -> dict:
         forecaster_gas_price.regressor.set_params(**default_params)
         if max_gas_data_available:
             forecaster_max_gas_price.regressor.set_params(**default_params)
-        print(f"Using default hyperparameters for gas price: {default_params}")
+        logger.info(f"Using default hyperparameters for gas price: {default_params}")
 
     # Train forecasters with best parameters
-    print("Training forecasters for gas fees...")
+    logger.info("Training forecasters for gas fees...")
     training_exog_cols = [f'{col}_shifted' for col in exogenous_cols] + ['day_of_week', 'day_of_year', 'month']
     training_exog_cols = [col for col in training_exog_cols if col in exog_data_clean.columns]
     
@@ -323,13 +326,13 @@ def train_and_forecast_gas_fees() -> dict:
     
     # Train max gas price forecaster if data is available
     if max_gas_data_available:
-        print("Training max gas price forecaster...")
+        logger.info("Training max gas price forecaster...")
         forecaster_max_gas_price.fit(
             y=y_max_clean,
             exog=training_exog_data
         )
     else:
-        print("No max gas price data available for training")
+        logger.info("No max gas price data available for training")
 
     # Always forecast for today, regardless of whether we have data up to yesterday or today
     last_date = data_processed_clean.index[-1]
@@ -340,9 +343,9 @@ def train_and_forecast_gas_fees() -> dict:
     steps_int = 1
     
     if last_date.date() >= today.date():
-        print(f"Gas fee data up to {last_date.date()} (today or future), forecasting for today {forecast_start_date.date()}")
+        logger.info(f"Gas fee data up to {last_date.date()} (today or future), forecasting for today {forecast_start_date.date()}")
     else:
-        print(f"Gas fee data up to {last_date.date()} (yesterday), forecasting for today {forecast_start_date.date()}")
+        logger.info(f"Gas fee data up to {last_date.date()} (yesterday), forecasting for today {forecast_start_date.date()}")
     
     future_dates = pd.date_range(start=forecast_start_date, periods=steps_int, freq='D')
 
@@ -368,12 +371,12 @@ def train_and_forecast_gas_fees() -> dict:
     forecast_avg_gas_price = forecaster_gas_price.predict(steps=steps_int, exog=future_exog_filtered)
     
     if max_gas_data_available:
-        print("Generating max gas price forecast...")
+        logger.info("Generating max gas price forecast...")
         forecast_max_gas_price = forecaster_max_gas_price.predict(steps=steps_int, exog=future_exog_filtered)
-        print(f"Max gas price forecast generated: {forecast_max_gas_price.tolist()}")
+        logger.info(f"Max gas price forecast generated: {forecast_max_gas_price.tolist()}")
     else:
         # If no sufficient max gas data for training, use statistical approach based on available max gas data
-        print("No sufficient max gas data for training, using statistical fallback based on recent max gas data")
+        logger.info("No sufficient max gas data for training, using statistical fallback based on recent max gas data")
         
         # Use the max gas data we already fetched (we know we have at least 7 days from EthGasTracker API)
         if 'actual_max_gas_gwei' in daily_merged.columns:
@@ -400,19 +403,19 @@ def train_and_forecast_gas_fees() -> dict:
                 # Ensure the forecast is reasonable (not negative and not too extreme)
                 forecast_max_gas_value = max(0.1, min(forecast_max_gas_value, mean_max_gas + 2 * std_max_gas))
                 
-                print(f"Recent max gas statistics - mean: {mean_max_gas:.2f}, median: {median_max_gas:.2f}, std: {std_max_gas:.2f}")
-                print(f"Statistical forecast max gas value: {forecast_max_gas_value:.2f}")
+                logger.info(f"Recent max gas statistics - mean: {mean_max_gas:.2f}, median: {median_max_gas:.2f}, std: {std_max_gas:.2f}")
+                logger.info(f"Statistical forecast max gas value: {forecast_max_gas_value:.2f}")
             else:
                 # Fallback if we don't have enough max gas data
                 forecast_max_gas_value = forecast_avg_gas_price.iloc[0] * 1.5
-                print(f"Insufficient max gas data ({len(recent_max_gas_values)} points), using avg * 1.5 fallback: {forecast_max_gas_value:.2f}")
+                logger.warning(f"Insufficient max gas data ({len(recent_max_gas_values)} points), using avg * 1.5 fallback: {forecast_max_gas_value:.2f}")
         else:
             # Ultimate fallback if no max gas column exists
             forecast_max_gas_value = forecast_avg_gas_price.iloc[0] * 1.5
-            print(f"No max gas data column found, using avg * 1.5 fallback: {forecast_max_gas_value:.2f}")
+            logger.warning(f"No max gas data column found, using avg * 1.5 fallback: {forecast_max_gas_value:.2f}")
         
         forecast_max_gas_price = pd.Series([forecast_max_gas_value] * steps_int, index=future_dates)
-        print(f"Max gas price forecast (statistical fallback): {forecast_max_gas_price.tolist()}")
+        logger.info(f"Max gas price forecast (statistical fallback): {forecast_max_gas_price.tolist()}")
 
     # Update gas_fees_daily with forecasted values
     engine = get_db_connection()
@@ -460,7 +463,7 @@ def train_and_forecast_gas_fees() -> dict:
         
         conn.commit()
     
-    print("Gas fee forecasts (avg and max) updated in gas_fees_daily.")
+    logger.info("Gas fee forecasts (avg and max) updated in gas_fees_daily.")
 
     return {
         'forecast_avg_gas_price': forecast_avg_gas_price.to_dict(),
@@ -471,4 +474,4 @@ if __name__ == "__main__":
     try:
         train_and_forecast_gas_fees() # Single-step ahead forecast for today
     except Exception as e:
-        print(f"Error during gas fee forecasting: {e}")
+        logger.error(f"Error during gas fee forecasting: {e}")

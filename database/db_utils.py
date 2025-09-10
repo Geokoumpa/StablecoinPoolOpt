@@ -1,9 +1,12 @@
+import logging
 import psycopg2
 from psycopg2 import extras
 from sqlalchemy import create_engine
 from config import DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT
 import os
 import re
+
+logger = logging.getLogger(__name__)
 
 # Memoization cache for database engines
 _engine_cache = {}
@@ -24,10 +27,10 @@ def get_db_connection(dbname=DB_NAME):
             max_overflow=20
         )
         _engine_cache[dbname] = engine
-        print(f"Database connection to {dbname} established successfully.")
+        logger.info(f"Database connection to {dbname} established successfully.")
         return engine
     except Exception as e:
-        print(f"Error connecting to database {dbname}: {e}")
+        logger.error(f"Error connecting to database {dbname}: {e}")
         return None
 
 def apply_migrations(migration_dir="database/migrations"):
@@ -45,15 +48,15 @@ def apply_migrations(migration_dir="database/migrations"):
                 exists = result.fetchone()
                 if not exists:
                     conn_postgres.execute(text(f"CREATE DATABASE {DB_NAME};"))
-                    print(f"Database '{DB_NAME}' created successfully.")
+                    logger.info(f"Database '{DB_NAME}' created successfully.")
         else:
-            print("Could not connect to 'postgres' database to check/create defiyieldopt. Exiting migration.")
+            logger.error("Could not connect to 'postgres' database to check/create defiyieldopt. Exiting migration.")
             return
 
         # Now connect to the actual application database
         engine = get_db_connection()
         if not engine:
-            print("Could not establish database connection to defiyieldopt. Exiting migration.")
+            logger.error("Could not establish database connection to defiyieldopt. Exiting migration.")
             return
 
         with engine.begin() as conn:
@@ -71,14 +74,14 @@ def apply_migrations(migration_dir="database/migrations"):
             for migration_file in migrations:
                 version_match = re.match(r"V(\d+)__.*\.sql", migration_file)
                 if not version_match:
-                    print(f"Skipping invalid migration file name: {migration_file}")
+                    logger.warning(f"Skipping invalid migration file name: {migration_file}")
                     continue
                 version = version_match.group(1)
 
                 result = conn.execute(text("SELECT 1 FROM applied_migrations WHERE version = :version"), {"version": version})
                 applied = result.fetchone()
                 if applied:
-                    print(f"Migration {migration_file} already applied. Skipping.")
+                    logger.info(f"Migration {migration_file} already applied. Skipping.")
                     continue
 
                 filepath = os.path.join(migration_dir, migration_file)
@@ -91,11 +94,11 @@ def apply_migrations(migration_dir="database/migrations"):
                     
                     conn.execute(text(sql_script))
                     conn.execute(text("INSERT INTO applied_migrations (version) VALUES (:version)"), {"version": version})
-                    print(f"Successfully applied migration: {migration_file}")
+                    logger.info(f"Successfully applied migration: {migration_file}")
 
-        print("All migrations applied successfully.")
+        logger.info("All migrations applied successfully.")
     except Exception as e:
-        print(f"Error applying migrations: {e}")
+        logger.error(f"Error applying migrations: {e}")
     finally:
         if engine_postgres:
             engine_postgres.dispose()
