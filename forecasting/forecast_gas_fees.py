@@ -4,6 +4,7 @@ from skforecast.recursive import ForecasterRecursive
 from skforecast.model_selection import bayesian_search_forecaster, TimeSeriesFold
 from xgboost import XGBRegressor
 import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 from database.db_utils import get_db_connection
 from forecasting.data_preprocessing import preprocess_data
 from optuna.distributions import IntDistribution, FloatDistribution
@@ -470,8 +471,11 @@ def train_and_forecast_gas_fees() -> dict:
         'forecast_max_gas_price': forecast_max_gas_price.to_dict()
     }
 
-if __name__ == "__main__":
+def main():
     try:
         train_and_forecast_gas_fees() # Single-step ahead forecast for today
     except Exception as e:
         logger.error(f"Error during gas fee forecasting: {e}")
+
+if __name__ == "__main__":
+    main()

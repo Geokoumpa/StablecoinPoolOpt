@@ -138,7 +138,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
       }
       
       containers {
-        image = "gcr.io/${var.project_id}/defi-pipeline:${replace(each.key, "_", "-")}"
+        image = "gcr.io/${var.project_id}/defi-pipeline:latest"
 
         env {
           name  = "SCRIPT_NAME"

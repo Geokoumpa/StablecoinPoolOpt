@@ -1,4 +1,5 @@
 import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 import pandas as pd
 from datetime import timedelta
 from skforecast.recursive import ForecasterRecursive
@@ -448,12 +449,12 @@ def get_filtered_pool_ids() -> list:
         df = pd.read_sql(query, conn)
         return df['pool_id'].tolist()
 
-if __name__ == "__main__":
+def main():
     # Use filtered pools by default (pools that passed final filtering including icebox)
     filtered_pool_ids = get_filtered_pool_ids()
     if not filtered_pool_ids:
         logger.info("No filtered pools found in the database to forecast.")
-        exit()
+        return
     
     logger.info(f"Found {len(filtered_pool_ids)} filtered pools to forecast.")
     
@@ -484,3 +485,6 @@ if __name__ == "__main__":
     logger.info(f"❌ Failed forecasts: {failed_forecasts}")
     logger.info(f"📈 Success rate: {(successful_forecasts/len(filtered_pool_ids)*100):.1f}%")
     logger.info("="*60)
+
+if __name__ == "__main__":
+    main()

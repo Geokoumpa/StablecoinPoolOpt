@@ -1,7 +1,9 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv() # Load environment variables from .env file
+# Load .env file only in development environment
+if os.getenv("ENVIRONMENT", "development") == "development":
+    load_dotenv()  # Load environment variables from .env file
 
 # Database Configuration
 DB_HOST = os.getenv("DB_HOST")

@@ -23,13 +23,23 @@ def fetch_crypto_open_prices_from_raw_data(engine, symbols=['ETH', 'BTC']) -> pd
     with engine.connect() as conn:
         for symbol in symbols:
             query = text("""
+                WITH daily_data AS (
+                    SELECT
+                        data_timestamp,
+                        (raw_json_data->'USD'->>'close')::numeric AS close_price
+                    FROM
+                        raw_coinmarketcap_ohlcv
+                    WHERE
+                        symbol = :symbol
+                    UNION ALL
+                    -- Ensure today's date is included for the LAG function to work correctly for today
+                    SELECT CAST(CURRENT_DATE AS TIMESTAMP), NULL
+                )
                 SELECT
                     data_timestamp AS date,
-                    (raw_json_data->>'open')::numeric AS open_price
+                    LAG(close_price, 1) OVER (ORDER BY data_timestamp) AS open_price
                 FROM
-                    raw_coinmarketcap_ohlcv
-                WHERE
-                    symbol = :symbol
+                    daily_data
                 ORDER BY
                     data_timestamp;
             """)
@@ -312,9 +322,9 @@ def fetch_gas_ethgastracker():
                         # Fetch ETH and BTC open prices from raw_coinmarketcap_ohlcv
                         crypto_prices_df = fetch_crypto_open_prices_from_raw_data(engine, symbols=['ETH', 'BTC'])
                         
-                        # Merge existing gas data with crypto prices to enrich historical records
-                        # Use 'left' merge to keep all existing gas_fees_daily dates
-                        enriched_historical_data = pd.merge(existing_gas_fees_daily, crypto_prices_df, left_index=True, right_index=True, how='left', suffixes=('_old', None))
+                        # Merge crypto prices with existing gas data to enrich historical records
+                        # Use 'outer' merge to ensure all dates from both sources are included
+                        enriched_historical_data = pd.merge(crypto_prices_df, existing_gas_fees_daily, left_index=True, right_index=True, how='outer', suffixes=(None, '_old'))
             except Exception as e:
                 logger.error(f"Error inserting hourly gas data or processing daily aggregates: {e}")
         
@@ -325,21 +335,26 @@ def fetch_gas_ethgastracker():
                 if f'{col}_old' in enriched_historical_data.columns:
                     enriched_historical_data[col] = enriched_historical_data[col].fillna(enriched_historical_data[f'{col}_old'])
                     enriched_historical_data = enriched_historical_data.drop(columns=[f'{col}_old'])
+            
+            # Forward fill any remaining gaps in crypto prices
+            enriched_historical_data['eth_open'] = enriched_historical_data['eth_open'].ffill()
+            enriched_historical_data['btc_open'] = enriched_historical_data['btc_open'].ffill()
 
         # If there's new hourly data, aggregate it to daily
         if not hourly_df.empty:
             hourly_df['timestamp'] = pd.to_datetime(hourly_df['timestamp'], utc=True)
             hourly_df = hourly_df.set_index('timestamp')
 
-            # Filter out today's data - only include data until yesterday
-            yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
-            yesterday_end = datetime.combine(yesterday, datetime.max.time()).replace(tzinfo=timezone.utc)
-            hourly_df_filtered = hourly_df[hourly_df.index <= yesterday_end]
-
-            daily_aggregates_from_api = hourly_df_filtered.resample('D').agg(
+            # Aggregate up to today's date
+            today_utc = pd.Timestamp.now(tz='UTC').normalize()
+            daily_aggregates_from_api = hourly_df.resample('D').agg(
                 actual_avg_gas_gwei=('gas_price_gwei', 'mean'),
                 actual_max_gas_gwei=('gas_price_gwei', 'max')
-            ).dropna()
+            )
+            
+            # Set today's gas fees to NaN as they are incomplete
+            if today_utc in daily_aggregates_from_api.index:
+                daily_aggregates_from_api.loc[today_utc, ['actual_avg_gas_gwei', 'actual_max_gas_gwei']] = np.nan
             daily_aggregates_from_api.index = daily_aggregates_from_api.index.normalize()
 
             # Combine the enriched historical data with the new daily aggregates from API

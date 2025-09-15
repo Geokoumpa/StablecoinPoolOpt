@@ -7,7 +7,10 @@ from api_clients.coinmarketcap_client import get_historical_ohlcv_data
 
 logger = logging.getLogger(__name__)
 
-def fetch_ohlcv_coinmarketcap(api_key):
+def fetch_ohlcv_coinmarketcap():
+    if not COINMARKETCAP_API_KEY:
+        logger.error("COINMARKETCAP_API_KEY not available from config.")
+        return
     engine = None
     try:
         engine = get_db_connection()
@@ -34,51 +37,28 @@ def fetch_ohlcv_coinmarketcap(api_key):
         logger.info(f"Fetching OHLCV data for symbols: {symbols}")
 
         for symbol in symbols:
-            # Check existing history for this symbol
-            with engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT MIN(data_timestamp), MAX(data_timestamp)
-                    FROM raw_coinmarketcap_ohlcv
-                    WHERE symbol = :symbol
-                """), {"symbol": symbol})
-                row = result.fetchone()
-                min_date = row[0] if row[0] else None
-                max_date = row[1] if row[1] else None
-
-            if min_date and max_date:
-                days_diff = (max_date - min_date).days
-                if days_diff >= 365:
-                    count = 1  # Fetch only previous day
-                    logger.info(f"Symbol {symbol} has {days_diff} days of history (>=365), fetching 1 day.")
-                else:
-                    count = 365  # Fetch 1 year history
-                    logger.info(f"Symbol {symbol} has {days_diff} days of history (<365), fetching 365 days.")
-            else:
-                count = 365  # No history, fetch 1 year
-                logger.info(f"Symbol {symbol} has no history, fetching 365 days.")
-
-            # Get historical data using the API client
-            historical_quotes = get_historical_ohlcv_data(symbol=symbol, count=count)
-
-            if not historical_quotes:
-                logger.warning(f"No historical data fetched for {symbol}. Skipping database insertion.")
+            logger.info(f"Fetching up to 365 days of OHLCV data for {symbol}.")
+            all_quotes = get_historical_ohlcv_data(symbol=symbol, count=365)
+            
+            if not all_quotes:
+                logger.warning(f"No historical data returned from API for {symbol}. Skipping database insertion.")
                 continue
 
             try:
                 from psycopg2 import extras  # Import extras for Json type and execute_values
                 # Collect all data for bulk upsert
                 bulk_data = []
-                for quote_data in historical_quotes:
+                for quote_data in all_quotes:
                     quote_usd = quote_data.get('quote', {}).get('USD', {})
-                    timestamp_str = quote_usd.get('timestamp')
+                    timestamp_str = quote_data.get('time_close')
 
-                    if timestamp_str:
+                    if timestamp_str and quote_usd:
                         # Ensure data_timestamp is timezone-aware and then convert to date for consistency
                         data_timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).astimezone(timezone.utc).date()
                         bulk_data.append({
                             "data_timestamp": data_timestamp,
                             "symbol": symbol,
-                            "raw_json_data": extras.Json(quote_usd)
+                            "raw_json_data": extras.Json(quote_data.get('quote'))
                         })
 
                 # Perform bulk upsert if there's data to insert
@@ -96,9 +76,9 @@ def fetch_ohlcv_coinmarketcap(api_key):
                     """
                     raw_conn = engine.raw_connection()
                     try:
-                        cursor = raw_conn.connection.cursor()
+                        cursor = raw_conn.driver_connection.cursor()
                         extras.execute_values(cursor, upsert_query, values)
-                        raw_conn.connection.commit()
+                        raw_conn.driver_connection.commit()
                     finally:
                         raw_conn.close()
                     logger.info(f"Successfully bulk upserted {len(bulk_data)} CoinMarketCap OHLCV records for {symbol}.")
@@ -112,7 +92,4 @@ def fetch_ohlcv_coinmarketcap(api_key):
         if engine:
             engine.dispose()
 if __name__ == "__main__":
-    if not COINMARKETCAP_API_KEY:
-        logger.error("COINMARKETCAP_API_KEY environment variable not set in config.py.")
-    else:
-        fetch_ohlcv_coinmarketcap(COINMARKETCAP_API_KEY)
+    fetch_ohlcv_coinmarketcap()

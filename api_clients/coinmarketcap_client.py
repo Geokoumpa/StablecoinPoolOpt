@@ -73,8 +73,16 @@ def get_latest_btc_price() -> float:
 def get_historical_ohlcv_data(symbol: str, count: int = 30) -> list:
     """
     Fetches historical OHLCV data for a given symbol from the CoinMarketCap API.
+    Implements exponential backoff on rate limiting (HTTP 429).
     """
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
+    import time
+    from config import COINMARKETCAP_API_KEY
+    
+    if not COINMARKETCAP_API_KEY:
+        logging.getLogger(__name__).error("COINMARKETCAP_API_KEY not available from config.")
+        return []
+
+    url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/ohlcv/historical"
     headers = {
         'Accepts': 'application/json',
         'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY,
@@ -82,26 +90,44 @@ def get_historical_ohlcv_data(symbol: str, count: int = 30) -> list:
     params = {
         'symbol': symbol,
         'time_period': 'daily',
-        'interval': 'daily',
         'convert': 'USD',
         'count': count,
         'skip_invalid': True
     }
 
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        raw_data = response.json()
-        return raw_data.get('data', {}).get('quotes', [])
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching historical OHLCV for {symbol}: {e}")
-        return []
-    except json.JSONDecodeError as e:
-        logger.error(f"Error decoding JSON response for {symbol}: {e}")
-        return []
-    except KeyError as e:
-        logger.error(f"Could not find expected data in CoinMarketCap historical response: {e}")
-        return []
+    max_retries = 5
+    backoff = 2
+
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code == 429:
+                logger.warning(f"Rate limited by CoinMarketCap for {symbol}. Attempt {attempt+1}/{max_retries}. Retrying in {backoff} seconds.")
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            response.raise_for_status()
+            raw_data = response.json()
+            data = raw_data.get('data', {})
+            # Case-insensitive search for the symbol in the response data
+            for key in data:
+                if key.lower() == symbol.lower():
+                    quotes_data = data[key]
+                    if quotes_data and isinstance(quotes_data, list) and 'quotes' in quotes_data[0]:
+                        return quotes_data[0]['quotes']
+            return []
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching historical OHLCV for {symbol}: {e}")
+            time.sleep(backoff)
+            backoff *= 2
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON response for {symbol}: {e}")
+            return []
+        except KeyError as e:
+            logger.error(f"Could not find expected data in CoinMarketCap historical response: {e}")
+            return []
+    logger.error(f"Failed to fetch historical OHLCV for {symbol} after {max_retries} attempts.")
+    return []
 
 if __name__ == "__main__":
     if not COINMARKETCAP_API_KEY:

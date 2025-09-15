@@ -6,8 +6,18 @@ from psycopg2 import extras
 from config import ETHERSCAN_API_KEY, MAIN_ASSET_HOLDING_ADDRESS
 
 logger = logging.getLogger(__name__)
+from config import ETHERSCAN_API_KEY, MAIN_ASSET_HOLDING_ADDRESS
 
-def fetch_account_data_etherscan(api_key, address):
+def fetch_account_data_etherscan():
+    if not ETHERSCAN_API_KEY:
+        logger.error("ETHERSCAN_API_KEY not available from config.")
+        return
+    if not MAIN_ASSET_HOLDING_ADDRESS:
+        logger.error("MAIN_ASSET_HOLDING_ADDRESS not available from config.")
+        return
+    
+    api_key = ETHERSCAN_API_KEY
+    address = MAIN_ASSET_HOLDING_ADDRESS
     base_url = "https://api.etherscan.io/api"
 
     engine = None
@@ -95,9 +105,4 @@ def fetch_account_data_etherscan(api_key, address):
             engine.dispose()
 
 if __name__ == "__main__":
-    if not ETHERSCAN_API_KEY:
-        logger.error("ETHERSCAN_API_KEY environment variable not set in config.py.")
-    elif not MAIN_ASSET_HOLDING_ADDRESS:
-        logger.error("MAIN_ASSET_HOLDING_ADDRESS environment variable not set in config.py.")
-    else:
-        fetch_account_data_etherscan(ETHERSCAN_API_KEY, MAIN_ASSET_HOLDING_ADDRESS)
+    fetch_account_data_etherscan()

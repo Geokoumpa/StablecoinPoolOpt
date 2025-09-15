@@ -21,17 +21,19 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_record)
 
 # Setup logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Remove any existing handlers
-for handler in logger.handlers[:]:
-    logger.removeHandler(handler)
-
-# Create a new handler and set the formatter
+# Configure root logger once
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(message)s', force=True)
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(JsonFormatter())
-logger.addHandler(handler)
+
+# Get root logger and remove existing handlers to avoid duplication
+root_logger = logging.getLogger()
+for h in root_logger.handlers[:]:
+    root_logger.removeHandler(h)
+root_logger.addHandler(handler)
+root_logger.setLevel(logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 
 # Add project root to Python path
@@ -44,11 +46,25 @@ def run_apply_migrations():
     from database.db_utils import apply_migrations
     apply_migrations()
 
-def run_module(module_path):
-    """Run a regular Python module."""
+def run_module(module_path, script_name):
+    """Run a regular Python module by importing and calling its main function."""
     import importlib
     module = importlib.import_module(module_path)
-    # The module's if __name__ == "__main__": block will execute
+    
+    # Call the function named after the script_name (e.g., 'create_allocation_snapshots')
+    if hasattr(module, script_name):
+        main_func = getattr(module, script_name)
+        logger.info(f"Calling main function: {script_name}()")
+        main_func()
+    elif hasattr(module, 'main'):
+        logger.info(f"Calling generic main() function")
+        module.main()
+    else:
+        # Fallback: try to run as if __main__
+        logger.warning(f"No main function found for {script_name} in {module_path}. Trying import side-effects only.")
+        # Optionally, could do: exec(open(module_path.replace('.', '/') + '.py').read(), {'__name__': '__main__'})
+        # But for safety, just import
+        pass  # Already imported
 
 def main():
     """Main entry point for pipeline runner."""
@@ -100,7 +116,7 @@ def main():
             if script_name in module_mapping:
                 module_path = module_mapping[script_name]
                 logger.info(f"Running module: {module_path}")
-                run_module(module_path)
+                run_module(module_path, script_name)  # Pass script_name to call correct func
                 logger.info(f"Module {script_name} completed successfully")
             else:
                 logger.error(f"Unknown script: {script_name}")

@@ -1,4 +1,6 @@
 import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
+
 import json
 from datetime import datetime
 from database.db_utils import get_db_connection

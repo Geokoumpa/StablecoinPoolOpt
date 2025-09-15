@@ -1,4 +1,6 @@
 import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
+
 from datetime import date, datetime, timezone, timedelta
 from database.db_utils import get_db_connection
 import pandas as pd
@@ -17,25 +19,43 @@ def fetch_exogenous_data(connection) -> pd.DataFrame:
     """
     # Fetch ETH open price data
     query_eth = """
+    WITH daily_data AS (
+        SELECT
+            data_timestamp,
+            (raw_json_data->'USD'->>'close')::numeric AS close_price
+        FROM
+            raw_coinmarketcap_ohlcv
+        WHERE
+            symbol = 'ETH'
+        UNION ALL
+        SELECT CAST(CURRENT_DATE AS TIMESTAMP), NULL
+    )
     SELECT
         data_timestamp AS date,
-        (raw_json_data->>'open')::float AS eth_open
+        LAG(close_price, 1) OVER (ORDER BY data_timestamp) AS eth_open
     FROM
-        raw_coinmarketcap_ohlcv
-    WHERE
-        symbol = 'ETH';
+        daily_data;
     """
     df_eth = pd.read_sql(query_eth, connection, parse_dates=['date'], index_col='date')
 
     # Fetch BTC open price data
     query_btc = """
+    WITH daily_data AS (
+        SELECT
+            data_timestamp,
+            (raw_json_data->'USD'->>'close')::numeric AS close_price
+        FROM
+            raw_coinmarketcap_ohlcv
+        WHERE
+            symbol = 'BTC'
+        UNION ALL
+        SELECT CAST(CURRENT_DATE AS TIMESTAMP), NULL
+    )
     SELECT
         data_timestamp AS date,
-        (raw_json_data->>'open')::float AS btc_open
+        LAG(close_price, 1) OVER (ORDER BY data_timestamp) AS btc_open
     FROM
-        raw_coinmarketcap_ohlcv
-    WHERE
-        symbol = 'BTC';
+        daily_data;
     """
     df_btc = pd.read_sql(query_btc, connection, parse_dates=['date'], index_col='date')
 
