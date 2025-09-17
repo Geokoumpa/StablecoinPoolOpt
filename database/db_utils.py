@@ -69,7 +69,10 @@ def apply_migrations(migration_dir="database/migrations"):
                 );
             """))
 
-            migrations = sorted([f for f in os.listdir(migration_dir) if f.endswith(".sql")])
+            migrations = sorted(
+                [f for f in os.listdir(migration_dir) if f.endswith(".sql")],
+                key=lambda f: int(re.match(r"V(\d+)__.*\.sql", f).group(1))
+            )
 
             for migration_file in migrations:
                 version_match = re.match(r"V(\d+)__.*\.sql", migration_file)

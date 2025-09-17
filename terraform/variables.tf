@@ -47,8 +47,8 @@ variable "database_password" {
   sensitive   = true
 }
 
-variable "etherscan_api_key" {
-  description = "The Etherscan API key for fetching account and gas data."
+variable "ethplorer_api_key" {
+  description = "The Ethplorer API key for fetching account and gas data."
   type        = string
   sensitive   = true
 }

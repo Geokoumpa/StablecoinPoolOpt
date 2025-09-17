@@ -89,7 +89,7 @@ def main():
                 "fetch_defillama_pools": "data_ingestion.fetch_defillama_pools",
                 "fetch_ohlcv_coinmarketcap": "data_ingestion.fetch_ohlcv_coinmarketcap", 
                 "fetch_gas_ethgastracker": "data_ingestion.fetch_gas_ethgastracker",
-                "fetch_account_data_etherscan": "data_ingestion.fetch_account_data_etherscan",
+                "fetch_account_transactions": "data_ingestion.fetch_account_transactions",
                 "fetch_filtered_pool_histories": "data_ingestion.fetch_filtered_pool_histories",
                 
                 # Data processing modules
@@ -100,6 +100,7 @@ def main():
                 "process_icebox_logic": "data_processing.process_icebox_logic",
                 "update_allocation_snapshots": "data_processing.update_allocation_snapshots",
                 "filter_pools_final": "data_processing.filter_pools_final",
+                "process_account_transactions": "data_processing.process_account_transactions",
                 
                 # Forecasting modules  
                 "forecast_pools": "forecasting.forecast_pools",

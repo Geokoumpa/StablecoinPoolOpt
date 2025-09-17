@@ -313,6 +313,26 @@ def fetch_gas_ethgastracker():
             try:
                 with engine.connect() as conn:
                     with conn.begin():
+                        # Insert hourly data into gas_fees_hourly
+                        hourly_columns = records_to_insert[0].keys()
+                        hourly_placeholders = ', '.join([f':{col}' for col in hourly_columns])
+                        hourly_column_names = ', '.join(hourly_columns)
+                        
+                        hourly_update_set_clauses = []
+                        for col in hourly_columns:
+                            if col != 'timestamp':
+                                hourly_update_set_clauses.append(f"{col} = EXCLUDED.{col}")
+                        hourly_update_clause_str = ", ".join(hourly_update_set_clauses)
+
+                        hourly_query = text(f"""
+                            INSERT INTO gas_fees_hourly ({hourly_column_names})
+                            VALUES ({hourly_placeholders})
+                            ON CONFLICT (timestamp) DO UPDATE SET
+                                {hourly_update_clause_str};
+                        """)
+                        conn.execute(hourly_query, records_to_insert)
+                        logger.info(f"Successfully bulk inserted/updated {len(records_to_insert)} records into gas_fees_hourly.")
+
                         # Fetch the newly inserted hourly data to calculate daily aggregates
                         hourly_df = pd.DataFrame(records_to_insert)
                         

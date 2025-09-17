@@ -11,7 +11,7 @@ resource "google_workflows_workflow" "main" {
     PIPELINE_STEP_FETCH_OHLCV_COINMARKETCAP_ID         = google_cloud_run_v2_job.pipeline_step["fetch_ohlcv_coinmarketcap"].id
     PIPELINE_STEP_FETCH_GAS_ETHGASTRACKER_ID           = google_cloud_run_v2_job.pipeline_step["fetch_gas_ethgastracker"].id
     PIPELINE_STEP_FETCH_DEFILLAMA_POOLS_ID             = google_cloud_run_v2_job.pipeline_step["fetch_defillama_pools"].id
-    PIPELINE_STEP_FETCH_ACCOUNT_DATA_ETHERSCAN_ID      = google_cloud_run_v2_job.pipeline_step["fetch_account_data_etherscan"].id
+    PIPELINE_STEP_FETCH_ACCOUNT_TRANSACTIONS_ID      = google_cloud_run_v2_job.pipeline_step["fetch_account_transactions"].id
     PIPELINE_STEP_FILTER_POOLS_PRE_ID                  = google_cloud_run_v2_job.pipeline_step["filter_pools_pre"].id
     PIPELINE_STEP_FETCH_FILTERED_POOL_HISTORIES_ID     = google_cloud_run_v2_job.pipeline_step["fetch_filtered_pool_histories"].id
     PIPELINE_STEP_CALCULATE_POOL_METRICS_ID            = google_cloud_run_v2_job.pipeline_step["calculate_pool_metrics"].id
@@ -24,6 +24,7 @@ resource "google_workflows_workflow" "main" {
     PIPELINE_STEP_OPTIMIZE_ALLOCATIONS_ID              = google_cloud_run_v2_job.pipeline_step["optimize_allocations"].id
     PIPELINE_STEP_MANAGE_LEDGER_ID                     = google_cloud_run_v2_job.pipeline_step["manage_ledger"].id
     PIPELINE_STEP_POST_SLACK_NOTIFICATION_ID           = google_cloud_run_v2_job.pipeline_step["post_slack_notification"].id
+    PIPELINE_STEP_PROCESS_ACCOUNT_TRANSACTIONS_ID      = google_cloud_run_v2_job.pipeline_step["process_account_transactions"].id
   }
 }
 

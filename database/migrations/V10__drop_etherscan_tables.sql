@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS raw_etherscan_account_transactions;
+DROP TABLE IF EXISTS raw_etherscan_account_balances;

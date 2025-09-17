@@ -25,17 +25,17 @@ resource "google_secret_manager_secret_version" "slack_webhook_url_version" {
   secret_data = var.slack_webhook_url
 }
 
-resource "google_secret_manager_secret" "etherscan_api_key" {
-  secret_id = "etherscan-api-key"
+resource "google_secret_manager_secret" "ethplorer_api_key" {
+  secret_id = "ethplorer-api-key"
 
   replication {
     auto {}
   }
 }
 
-resource "google_secret_manager_secret_version" "etherscan_api_key_version" {
-  secret      = google_secret_manager_secret.etherscan_api_key.id
-  secret_data = var.etherscan_api_key
+resource "google_secret_manager_secret_version" "ethplorer_api_key_version" {
+  secret      = google_secret_manager_secret.ethplorer_api_key.id
+  secret_data = var.ethplorer_api_key
 }
 
 resource "google_secret_manager_secret" "coinmarketcap_api_key" {
@@ -107,7 +107,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
     "fetch_ohlcv_coinmarketcap",
     "fetch_gas_ethgastracker",
     "fetch_defillama_pools",
-    "fetch_account_data_etherscan",
+    "fetch_account_transactions",
     "filter_pools_pre",
     "fetch_filtered_pool_histories",
     "calculate_pool_metrics",
@@ -119,7 +119,8 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
     "forecast_gas_fees",
     "optimize_allocations",
     "manage_ledger",
-    "post_slack_notification"
+    "post_slack_notification",
+    "process_account_transactions"
   ])
 
   name               = "pipeline-step-${replace(each.key, "_", "-")}"
@@ -198,7 +199,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
         }
 
         dynamic "env" {
-          for_each = contains(["fetch_account_data_etherscan"], each.key) ? [1] : []
+          for_each = contains(["fetch_account_transactions"], each.key) ? [1] : []
           content {
             name  = "MAIN_ASSET_HOLDING_ADDRESS"
             value_source {
@@ -211,12 +212,12 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
         }
 
         dynamic "env" {
-          for_each = contains(["fetch_account_data_etherscan"], each.key) ? [1] : []
+          for_each = contains(["fetch_account_transactions"], each.key) ? [1] : []
           content {
-            name  = "ETHERSCAN_API_KEY"
+            name  = "ETHPLORER_API_KEY"
             value_source {
               secret_key_ref {
-                secret  = google_secret_manager_secret.etherscan_api_key.id
+                secret  = google_secret_manager_secret.ethplorer_api_key.id
                 version = "latest"
               }
             }

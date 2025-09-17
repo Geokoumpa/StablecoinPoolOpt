@@ -71,7 +71,7 @@ def run_pipeline(phases=None):
             run_script("data_ingestion.fetch_ohlcv_coinmarketcap", "fetch_ohlcv_coinmarketcap.py")
             run_script("data_ingestion.fetch_gas_ethgastracker", "fetch_gas_ethgastracker.py")
             run_script("data_ingestion.fetch_defillama_pools", "fetch_defillama_pools.py")
-            run_script("data_ingestion.fetch_account_data_etherscan", "fetch_account_data_etherscan.py")
+            run_script("data_ingestion.fetch_account_transactions", "fetch_account_transactions.py")
             logger.info("Phase 1 completed successfully.")
         except Exception as e:
             logger.error(f"Error during Phase 1 (Initial Data Ingestion): {e}")
@@ -98,6 +98,7 @@ def run_pipeline(phases=None):
             # Update allocation snapshots after icebox logic
             run_script("data_processing.update_allocation_snapshots", "update_allocation_snapshots.py")
             run_script("data_processing.filter_pools_final", "filter_pools_final.py")
+            run_script("data_processing.process_account_transactions", "process_account_transactions.py")
             logger.info("Phase 3 completed successfully.")
         except Exception as e:
             logger.error(f"Error during Phase 3 (Pool Analysis & Final Filtering): {e}")
@@ -167,7 +168,7 @@ def run_pipeline(phases=None):
         logger.info("     • DeFiLlama pools data fetched")
         logger.info("     • CoinMarketCap OHLCV data fetched")
         logger.info("     • Gas tracker data fetched")
-        logger.info("     • Etherscan account data fetched")
+        logger.info("     • Ethplorer account data fetched")
     if "all" in phases or "phase2" in phases:
         logger.info("  ✅ Phase 2: Pre-Filtering & Pool History Ingestion")
         logger.info("     • Pre-filtering applied (no icebox)")
