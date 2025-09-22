@@ -225,6 +225,19 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
         }
 
         dynamic "env" {
+          for_each = contains(["process_account_transactions"], each.key) ? [1] : []
+          content {
+            name  = "ETHPLORER_API_KEY"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.ethplorer_api_key.id
+                version = "latest"
+              }
+            }
+          }
+        }
+
+        dynamic "env" {
           for_each = contains(["post_slack_notification"], each.key) ? [1] : []
           content {
             name  = "SLACK_WEBHOOK_URL"

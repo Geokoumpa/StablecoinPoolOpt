@@ -1,12 +1,19 @@
+import logging
 import cvxpy as cp
 import pandas as pd
 import json
 from datetime import datetime, date, timezone
 from uuid import uuid4
-
+ 
 from database.db_utils import get_db_connection
+ 
+# Configure module logger
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    # Basic configuration for standalone execution; other systems can configure logging separately
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def fetch_pool_daily_metrics(conn):
+def fetch_pool_daily_metrics(engine):
     """Fetches forecasted APY and TVL for selected pools."""
     query = """
     SELECT
@@ -24,14 +31,15 @@ def fetch_pool_daily_metrics(conn):
         pdm.stddev_apy_7d,
         pdm.stddev_apy_30d,
         pdm.stddev_apy_7d_delta,
-        pdm.stddev_apy_30d_delta
+        pdm.stddev_apy_30d_delta,
+        pdm.pool_group
     FROM pool_daily_metrics pdm
     JOIN pools p ON pdm.pool_id = p.pool_id
     WHERE pdm.date = CURRENT_DATE AND pdm.is_filtered_out = FALSE;
     """
-    return pd.read_sql(query, conn)
+    return pd.read_sql(query, engine)
 
-def fetch_daily_ledger(conn):
+def fetch_daily_ledger(engine):
     """Fetches current account balances and liquidity portfolio from the previous day."""
     query = """
     SELECT
@@ -40,9 +48,9 @@ def fetch_daily_ledger(conn):
     FROM daily_ledger
     WHERE date = CURRENT_DATE - INTERVAL '1 day';
     """
-    return pd.read_sql(query, conn)
+    return pd.read_sql(query, engine)
 
-def fetch_allocation_parameters(conn):
+def fetch_allocation_parameters(engine):
     """Fetches configurable parameters for allocation."""
     query = """
     SELECT *
@@ -50,17 +58,17 @@ def fetch_allocation_parameters(conn):
     ORDER BY timestamp DESC
     LIMIT 1;
     """
-    params = pd.read_sql(query, conn)
+    params = pd.read_sql(query, engine)
     if not params.empty:
         return params.iloc[0].to_dict()
     return {}
 
-def fetch_dynamic_lists(conn):
+def fetch_dynamic_lists(engine):
     """Fetches dynamic lists for snapshotting."""
-    approved_tokens = pd.read_sql("SELECT token_symbol FROM approved_tokens;", conn)['token_symbol'].tolist()
-    blacklisted_tokens = pd.read_sql("SELECT token_symbol FROM blacklisted_tokens;", conn)['token_symbol'].tolist()
-    approved_protocols = pd.read_sql("SELECT protocol_name FROM approved_protocols;", conn)['protocol_name'].tolist()
-    icebox_tokens = pd.read_sql("SELECT token_symbol FROM icebox_tokens;", conn)['token_symbol'].tolist()
+    approved_tokens = pd.read_sql("SELECT token_symbol FROM approved_tokens;", engine)['token_symbol'].tolist()
+    blacklisted_tokens = pd.read_sql("SELECT token_symbol FROM blacklisted_tokens;", engine)['token_symbol'].tolist()
+    approved_protocols = pd.read_sql("SELECT protocol_name FROM approved_protocols;", engine)['protocol_name'].tolist()
+    icebox_tokens = pd.read_sql("SELECT token_symbol FROM icebox_tokens;", engine)['token_symbol'].tolist()
     return {
         "approved_tokens": approved_tokens,
         "blacklisted_tokens": blacklisted_tokens,
@@ -68,7 +76,7 @@ def fetch_dynamic_lists(conn):
         "icebox_tokens": icebox_tokens,
     }
 
-def fetch_previous_allocation(conn):
+def fetch_previous_allocation(engine):
     """Fetches the most recent asset allocation."""
     query = """
     SELECT
@@ -87,7 +95,7 @@ def fetch_previous_allocation(conn):
     LEFT JOIN pool_daily_metrics pdm ON aa.pool_id = pdm.pool_id AND pdm.date = CURRENT_DATE
     ;
     """
-    return pd.read_sql(query, conn)
+    return pd.read_sql(query, engine)
 
 def should_force_reallocation(previous_allocation, dynamic_lists):
     """
@@ -256,19 +264,25 @@ def optimize_allocations():
     """
     logger.info("Starting asset allocation optimization...")
     conn = None
+    engine = None
     try:
-        conn = get_db_connection()
+        engine = get_db_connection()
+        if not engine:
+            logger.error("Could not establish database connection. Exiting optimization.")
+            return
+        # Obtain a DBAPI (psycopg2) connection so existing cursor/commit/rollback usage works
+        dbapi_conn = engine.raw_connection()
         
         # 1. Read forecasted APY and TVL for selected pools
-        pool_metrics = fetch_pool_daily_metrics(conn)
+        pool_metrics = fetch_pool_daily_metrics(engine)
         logger.info(f"Fetched {len(pool_metrics)} pool daily metrics.")
-
+ 
         # 2. Read current account balances and liquidity portfolio
-        current_ledger = fetch_daily_ledger(conn)
+        current_ledger = fetch_daily_ledger(engine)
         logger.info(f"Fetched {len(current_ledger)} current ledger entries.")
-
+ 
         # 3. Read configurable parameters from allocation_parameters
-        alloc_params = fetch_allocation_parameters(conn)
+        alloc_params = fetch_allocation_parameters(engine)
         logger.info(f"Fetched allocation parameters: {alloc_params}")
 
         # Prepare data for optimization
@@ -324,8 +338,27 @@ def optimize_allocations():
         if position_max_pct_pool_tvl is not None:
             constraints.append(x * total_usd_value <= position_max_pct_pool_tvl * forecasted_tvl)
 
-        # Group Allocation Limits (Removed as pool_group column is not available)
-        # This section will be re-evaluated if pool grouping logic is re-introduced with a different schema.
+        # Group Allocation Limits - enforce maximum allocation per pool group if available
+        if 'pool_group' in pool_metrics.columns:
+            # Normalize pool_group to integers and fill NaN with 4 (Other)
+            pool_metrics['pool_group'] = pool_metrics['pool_group'].fillna(4).astype(int)
+            # For each configured group max percentage, add a constraint limiting the sum of allocations
+            group_map = {
+                1: alloc_params.get('group1_max_pct'),
+                2: alloc_params.get('group2_max_pct'),
+                3: alloc_params.get('group3_max_pct'),
+            }
+            for group_id, max_pct in group_map.items():
+                if max_pct is not None:
+                    # Create a mask vector (0/1) for pools belonging to this group
+                    mask = (pool_metrics['pool_group'] == group_id).astype(float).values
+                    # If no pools in this group, skip adding constraint
+                    if mask.sum() == 0:
+                        logger.info(f"No pools present for Group {group_id}; skipping group constraint.")
+                    else:
+                        # Constrain the sum of weights allocated to this group to be <= configured max_pct
+                        constraints.append(cp.sum(cp.multiply(x, mask)) <= max_pct)
+                        logger.info(f"Applied group {group_id} allocation limit: {max_pct:.2%}")
 
         # Create and solve the problem
         problem = cp.Problem(objective, constraints)
@@ -334,12 +367,20 @@ def optimize_allocations():
         logger.info(f"Optimization status: {problem.status}")
         if problem.status in ["optimal", "optimal_near"]:
             logger.info(f"Optimal value: {problem.value}")
+            # Build allocations DataFrame from optimizer result and merge forecasted APY for net-yield calculations
             allocations = pd.DataFrame({
-                'pool_id': pool_metrics['pool_id'],
-                'allocated_percentage': x.value,
-                'allocated_usd': x.value * total_usd_value
+                'pool_id': pool_metrics['pool_id'].values,
+                'allocated_percentage': (x.value.flatten() if hasattr(x.value, "flatten") else x.value)
             })
-            allocations = allocations[allocations['allocated_percentage'] > 1e-6] # Filter out very small allocations
+            # Merge forecasted APY from pool_metrics so downstream functions have required fields
+            allocations = allocations.merge(
+                pool_metrics[['pool_id', 'forecasted_apy']],
+                on='pool_id',
+                how='left'
+            )
+            allocations['allocated_percentage'] = allocations['allocated_percentage'].astype(float)
+            allocations['allocated_usd'] = allocations['allocated_percentage'] * total_usd_value
+            allocations = allocations[allocations['allocated_percentage'] > 1e-6]  # Filter out very small allocations
             logger.info("Optimal Allocations:")
             logger.info(allocations)
         else:
@@ -348,9 +389,9 @@ def optimize_allocations():
             logger.info(f"Problem value: {problem.value}")
 
         # Fetch previous allocation for comparison
-        previous_allocation = fetch_previous_allocation(conn)
+        previous_allocation = fetch_previous_allocation(engine)
         logger.info(f"Fetched previous allocation: {len(previous_allocation)} entries.")
-
+ 
         # Calculate net forecasted yield for the new optimal allocation
         net_forecasted_yield_new_allocation = 0.0
         if problem.status in ["optimal", "optimal_near"] and not allocations.empty:
@@ -374,7 +415,7 @@ def optimize_allocations():
             logger.info(f"Net forecasted yield for previous allocation: {net_forecasted_yield_previous_allocation:.4f} USD")
 
         # 7. Force reallocation if any token, pool, or protocol is no longer approved/available
-        dynamic_lists = fetch_dynamic_lists(conn)
+        dynamic_lists = fetch_dynamic_lists(engine)
         logger.info(f"Dynamic lists fetched: {dynamic_lists}")
         force_reallocate = should_force_reallocation(previous_allocation, dynamic_lists)
 
@@ -446,11 +487,11 @@ def optimize_allocations():
                 final_allocations = previous_allocation
 
         # 8. Store optimization parameters (snapshots)
-        run_id = store_allocation_parameters_snapshot(conn, alloc_params, dynamic_lists)
+        run_id = store_allocation_parameters_snapshot(dbapi_conn, alloc_params, dynamic_lists)
         
         # 9. Store allocation results
         if not final_allocations.empty:
-            store_asset_allocations(conn, run_id, final_allocations)
+            store_asset_allocations(dbapi_conn, run_id, final_allocations)
         else:
             logger.info("No final allocations to store.")
 
@@ -489,12 +530,18 @@ def optimize_allocations():
         logger.error("="*70)
         logger.error(f"Error: {str(e)}")
         logger.error("="*70)
-        if conn:
-            conn.rollback() # Rollback any changes if an error occurs
+        if dbapi_conn:
+            dbapi_conn.rollback() # Rollback any changes if an error occurs
     finally:
-        if conn:
-            conn.close()
-            logger.info("Database connection closed.")
+        if dbapi_conn:
+            dbapi_conn.close()
+        if engine:
+            # dispose engine to release pooled connections
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+        logger.info("Database connection closed.")
 
 if __name__ == "__main__":
     optimize_allocations()

@@ -1,24 +1,18 @@
-import requests
 import json
 import logging
 from database.db_utils import get_db_connection
 from psycopg2 import extras
-from config import ETHPLORER_API_KEY, MAIN_ASSET_HOLDING_ADDRESS
+from config import MAIN_ASSET_HOLDING_ADDRESS
+from api_clients.ethplorer_client import get_address_history
 
 logger = logging.getLogger(__name__)
 
 def fetch_account_transactions():
-    if not ETHPLORER_API_KEY:
-        logger.error("ETHPLORER_API_KEY not available from config.")
-        return
     if not MAIN_ASSET_HOLDING_ADDRESS:
         logger.error("MAIN_ASSET_HOLDING_ADDRESS not available from config.")
         return
     
-    api_key = ETHPLORER_API_KEY
     address = MAIN_ASSET_HOLDING_ADDRESS
-    base_url = "https://api.ethplorer.io"
-
     engine = None
     try:
         engine = get_db_connection()
@@ -26,16 +20,13 @@ def fetch_account_transactions():
             logger.error("Could not establish database connection. Exiting.")
             return
 
-        # Fetch transaction history
-        transactions_params = {
-            'apiKey': api_key,
-            'limit': 100
-        }
+        # Fetch transaction history via consolidated Ethplorer client
         try:
-            response = requests.get(f"{base_url}/getAddressHistory/{address}", params=transactions_params)
-            response.raise_for_status()
-            raw_data = response.json()
-            
+            raw_data = get_address_history(address, limit=100)
+            if raw_data is None:
+                logger.error("Failed to fetch address history from Ethplorer.")
+                return
+
             # Remove duplicates
             unique_transactions = {t['transactionHash']: t for t in raw_data.get('operations', [])}.values()
             
@@ -58,10 +49,8 @@ def fetch_account_transactions():
                             logger.info(f"Raw data already exists for today in raw_ethplorer_account_transactions, skipping insertion.")
             except Exception as e:
                 logger.error(f"Error inserting data into raw_ethplorer_account_transactions: {e}")
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logger.error(f"Error fetching Ethplorer account transactions: {e}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Error decoding JSON response for account transactions: {e}")
     finally:
         if engine:
             engine.dispose()

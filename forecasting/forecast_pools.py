@@ -26,6 +26,135 @@ def has_sufficient_data(df: pd.DataFrame) -> bool:
     
     return valid_apy and valid_tvl
 
+
+def persist_forecasts(pool_id: str, future_dates: pd.DatetimeIndex, apy_series: pd.Series, tvl_series: pd.Series):
+    """
+    Persist forecasted APY and TVL into pool_daily_metrics table.
+    Reuses the same SQL update/insert pattern as the main training function.
+    """
+    engine = get_db_connection()
+    from sqlalchemy import text
+
+    # Make sure series are aligned with future_dates
+    apy_series = pd.Series(apy_series, index=future_dates)
+    tvl_series = pd.Series(tvl_series, index=future_dates)
+
+    with engine.connect() as conn:
+        for i, forecast_date in enumerate(future_dates):
+            forecast_date_str = forecast_date.strftime('%Y-%m-%d')
+            apy_forecast = float(apy_series.iloc[i])
+            tvl_forecast = float(tvl_series.iloc[i])
+
+            check_query = text("""
+            SELECT COUNT(*) as count FROM pool_daily_metrics
+            WHERE pool_id = :pool_id AND date = :forecast_date
+            """)
+            result = conn.execute(check_query, {"pool_id": pool_id, "forecast_date": forecast_date_str})
+            exists = result.fetchone()[0] > 0
+
+            if exists:
+                update_query = text("""
+                UPDATE pool_daily_metrics
+                SET forecasted_apy = :apy_forecast, forecasted_tvl = :tvl_forecast
+                WHERE pool_id = :pool_id AND date = :forecast_date
+                """)
+                conn.execute(update_query, {
+                    "apy_forecast": apy_forecast,
+                    "tvl_forecast": tvl_forecast,
+                    "pool_id": pool_id,
+                    "forecast_date": forecast_date_str
+                })
+            else:
+                insert_query = text("""
+                INSERT INTO pool_daily_metrics (pool_id, date, forecasted_apy, forecasted_tvl)
+                VALUES (:pool_id, :forecast_date, :apy_forecast, :tvl_forecast)
+                """)
+                conn.execute(insert_query, {
+                    "pool_id": pool_id,
+                    "forecast_date": forecast_date_str,
+                    "apy_forecast": apy_forecast,
+                    "tvl_forecast": tvl_forecast
+                })
+        conn.commit()
+
+
+def fallback_forecast_and_persist(pool_id: str, data: pd.DataFrame, steps: int = 1) -> dict:
+    """
+    Simple statistical fallback for pools with insufficient data.
+    - APY: mean of last up-to-7 non-null values if >=3 samples, otherwise last non-null,
+      otherwise global median across pools.
+    - TVL: last non-null TVL if present, otherwise global median TVL, otherwise 0.
+    Persists results into DB and returns the forecast dict.
+    """
+    steps_int = int(steps)
+    today = pd.Timestamp.now(tz='UTC').normalize()
+    future_dates = pd.date_range(start=today, periods=steps_int, freq='D')
+
+    # APY fallback
+    apy_nonnull = data['apy_7d'].dropna() if 'apy_7d' in data.columns else pd.Series(dtype=float)
+    if len(apy_nonnull) >= 3:
+        apy_val = float(apy_nonnull.tail(7).mean())
+    elif len(apy_nonnull) >= 1:
+        apy_val = float(apy_nonnull.iloc[-1])
+    else:
+        # Query global recent median APY
+        engine = get_db_connection()
+        try:
+            with engine.connect() as conn:
+                global_apy_df = pd.read_sql("""
+                    SELECT rolling_apy_7d as apy_7d
+                    FROM pool_daily_metrics
+                    WHERE rolling_apy_7d IS NOT NULL
+                    ORDER BY date DESC
+                    LIMIT 1000
+                """, conn)
+            if not global_apy_df.empty:
+                apy_val = float(global_apy_df['apy_7d'].median())
+            else:
+                apy_val = 0.0
+        except Exception:
+            apy_val = 0.0
+
+    # TVL fallback
+    tvl_val = 0.0
+    if 'tvl_usd' in data.columns and data['tvl_usd'].dropna().any():
+        tvl_val = float(data['tvl_usd'].dropna().iloc[-1])
+    else:
+        engine = get_db_connection()
+        try:
+            with engine.connect() as conn:
+                global_tvl_df = pd.read_sql("""
+                    SELECT actual_tvl as tvl_usd
+                    FROM pool_daily_metrics
+                    WHERE actual_tvl IS NOT NULL
+                    ORDER BY date DESC
+                    LIMIT 1000
+                """, conn)
+            if not global_tvl_df.empty:
+                tvl_val = float(global_tvl_df['tvl_usd'].median())
+            else:
+                tvl_val = 0.0
+        except Exception:
+            tvl_val = 0.0
+
+    # Create forecast series
+    apy_forecast = pd.Series([apy_val] * steps_int, index=future_dates)
+    tvl_forecast = pd.Series([tvl_val] * steps_int, index=future_dates)
+
+    # Persist forecasts
+    try:
+        persist_forecasts(pool_id, future_dates, apy_forecast, tvl_forecast)
+        logger.info(f"Fallback forecasts persisted for pool {pool_id}: apy={apy_val}, tvl={tvl_val}")
+    except Exception as e:
+        logger.error(f"Failed to persist fallback forecasts for pool {pool_id}: {e}")
+
+    return {
+        'pool_id': pool_id,
+        'forecast_apy': apy_forecast.to_dict(),
+        'forecast_tvl': tvl_forecast.to_dict(),
+        'used_fallback': True
+    }
+
 def fetch_pool_data(pool_id: str) -> pd.DataFrame:
     """
     Fetches last 210 days (7 months) of historical APY, TVL, and exogenous data for a specific pool.
@@ -75,8 +204,8 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
 
     # Check data sufficiency
     if not has_sufficient_data(data):
-        logger.info(f"No sufficient data for pool {pool_id}. Skipping.")
-        return {}
+        logger.info(f"No sufficient data for pool {pool_id}. Using fallback statistical estimator.")
+        return fallback_forecast_and_persist(pool_id, data, steps)
 
     # Ensure data is properly formatted
     if not isinstance(data.index, pd.DatetimeIndex):
@@ -99,8 +228,8 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
         data[exogenous_cols] = data[exogenous_cols].bfill()
     
     if data.shape[0] < 14:
-        logger.info(f"Pool {pool_id} has less than 14 rows, skipping.")
-        return {}
+        logger.info(f"Pool {pool_id} has less than 14 rows, using fallback statistical estimator.")
+        return fallback_forecast_and_persist(pool_id, data, steps)
 
     # Apply preprocessing
     data_processed = preprocess_data(data, exogenous_cols=exogenous_cols)
@@ -173,8 +302,8 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     min_data_length_for_cv = 15  # Minimum required for basic forecasting
     if len(combined_data_clean) < min_data_length_for_cv:
         logger.info(f"After dropping NaN values, not enough data for forecasting. "
-              f"Found {len(combined_data_clean)} records, need at least {min_data_length_for_cv}. Skipping pool {pool_id}.")
-        return {}
+              f"Found {len(combined_data_clean)} records, need at least {min_data_length_for_cv}. Using fallback estimator for pool {pool_id}.")
+        return fallback_forecast_and_persist(pool_id, data, steps)
 
     # Update data_processed and exog_data to clean versions
     # Use combined_data_clean directly since it already contains cleaned data
@@ -207,8 +336,8 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
 
     if data_length < min_data_length_for_cv:
         logger.info(f"Not enough data points for cross-validation with lags={min_lags} and steps={steps}. "
-              f"Found {data_length} records, need at least {min_data_length_for_cv}. Skipping pool {pool_id}.")
-        return {}
+              f"Found {data_length} records, need at least {min_data_length_for_cv}. Using fallback estimator for pool {pool_id}.")
+        return fallback_forecast_and_persist(pool_id, data, steps)
 
     steps_int = int(steps)  # Ensure steps is an integer
     
@@ -266,8 +395,8 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     
     # Additional validation to avoid any potential array comparison issues
     if len(y_clean) != len(exog_data_clean):
-        logger.warning(f"Mismatch in data lengths: y_clean={len(y_clean)}, exog_data_clean={len(exog_data_clean)}")
-        return {}
+        logger.warning(f"Mismatch in data lengths: y_clean={len(y_clean)}, exog_data_clean={len(exog_data_clean)} - using fallback estimator")
+        return fallback_forecast_and_persist(pool_id, data, steps)
     
     # Reset indices to ensure proper alignment
     y_clean = y_clean.reset_index(drop=True)
@@ -462,6 +591,7 @@ def main():
     successful_forecasts = 0
     failed_forecasts = 0
     skipped_forecasts = 0
+    fallback_forecasts = 0
     
     for pool_id in filtered_pool_ids:
         logger.info(f"Processing pool: {pool_id}")
@@ -469,6 +599,8 @@ def main():
             result = train_and_forecast_pool(pool_id, steps=1) # Forecast for 1 day ahead
             if isinstance(result, dict) and result:
                 successful_forecasts += 1
+                if result.get('used_fallback'):
+                    fallback_forecasts += 1
             else:
                 skipped_forecasts += 1
         except Exception as e:
@@ -481,6 +613,7 @@ def main():
     logger.info("="*60)
     logger.info(f"Total pools processed: {len(filtered_pool_ids)}")
     logger.info(f"✅ Successful forecasts: {successful_forecasts}")
+    logger.info(f"🟡 Fallback forecasts used: {fallback_forecasts}")
     logger.info(f"⏭️  Skipped (insufficient data): {skipped_forecasts}")
     logger.info(f"❌ Failed forecasts: {failed_forecasts}")
     logger.info(f"📈 Success rate: {(successful_forecasts/len(filtered_pool_ids)*100):.1f}%")
