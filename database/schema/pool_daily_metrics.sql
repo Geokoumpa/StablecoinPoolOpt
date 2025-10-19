@@ -6,6 +6,9 @@ CREATE TABLE pool_daily_metrics (
     forecasted_apy DECIMAL(20, 4),
     actual_tvl DECIMAL(20, 2),
     forecasted_tvl DECIMAL(20, 2),
+    eth_open DECIMAL(20, 8),
+    btc_open DECIMAL(20, 8),
+    gas_price_gwei DECIMAL(20, 4),
     is_filtered_out BOOLEAN DEFAULT FALSE,
     filter_reason TEXT,
     rolling_apy_7d DECIMAL(20, 4),
@@ -15,5 +18,6 @@ CREATE TABLE pool_daily_metrics (
     stddev_apy_30d DECIMAL(20, 4),
     stddev_apy_7d_delta DECIMAL(20, 4),
     stddev_apy_30d_delta DECIMAL(20, 4),
+    pool_group INTEGER,
     FOREIGN KEY (pool_id) REFERENCES pools(pool_id)
 );

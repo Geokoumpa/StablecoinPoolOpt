@@ -77,6 +77,19 @@ resource "google_secret_manager_secret_version" "main_asset_holding_address_vers
   secret_data = var.main_asset_holding_address
 }
 
+resource "google_secret_manager_secret" "cold_wallet_address" {
+  secret_id = "cold-wallet-address"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "cold_wallet_address_version" {
+  secret      = google_secret_manager_secret.cold_wallet_address.id
+  secret_data = var.cold_wallet_address
+}
+
 # VPC Access Connector for private Cloud SQL access
 
 # Enable Cloud Run API
@@ -144,6 +157,10 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
         env {
           name  = "SCRIPT_NAME"
           value = each.key
+        }
+        env {
+          name  = "ENVIRONMENT"
+          value = "production"
         }
         env {
           name  = "DB_USER"
@@ -244,6 +261,19 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
             value_source {
               secret_key_ref {
                 secret  = google_secret_manager_secret.slack_webhook_url.id
+                version = "latest"
+              }
+            }
+          }
+        }
+
+        dynamic "env" {
+          for_each = contains(["manage_ledger"], each.key) ? [1] : []
+          content {
+            name  = "COLD_WALLET_ADDRESS"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.cold_wallet_address.id
                 version = "latest"
               }
             }

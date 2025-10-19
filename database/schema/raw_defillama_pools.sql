@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS raw_defillama_pools (
     id SERIAL PRIMARY KEY,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    raw_json_data JSONB
+    raw_json_data JSONB,
+    insertion_timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

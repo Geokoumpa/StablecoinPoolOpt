@@ -25,7 +25,12 @@ def _get(endpoint: str, params: Optional[Dict] = None, timeout: int = 10) -> Opt
     try:
         resp = requests.get(f"{BASE_URL}{endpoint}", params=params, timeout=timeout)
         resp.raise_for_status()
-        return resp.json()
+        json_response = resp.json()
+        if isinstance(json_response, dict):
+            return json_response
+        else:
+            logger.warning(f"Ethplorer returned non-dict response for {endpoint}: {json_response}")
+            return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Ethplorer request failed for endpoint {endpoint}: {e}")
     except ValueError as e:

@@ -132,6 +132,7 @@ def run_pipeline(phases=None):
     if "all" in phases or "phase6" in phases:
         logger.info("--- Phase 6: Asset Allocation ---")
         try:
+            run_script("reporting_notification.manage_ledger", "manage_ledger.py")
             run_script("asset_allocation.optimize_allocations", "optimize_allocations.py")
             logger.info("Phase 6 completed successfully.")
         except Exception as e:
@@ -142,7 +143,6 @@ def run_pipeline(phases=None):
     if "all" in phases or "phase7" in phases:
         logger.info("--- Phase 7: Reporting & Notification ---")
         try:
-            run_script("reporting_notification.manage_ledger", "manage_ledger.py")
             run_script("reporting_notification.post_slack_notification", "post_slack_notification.py")
             logger.info("Phase 7 completed successfully.")
         except Exception as e:
@@ -192,10 +192,10 @@ def run_pipeline(phases=None):
         logger.info("     • Gas fee forecasts generated")
     if "all" in phases or "phase6" in phases:
         logger.info("  ✅ Phase 6: Asset Allocation")
+        logger.info("     • Daily balances updated")
         logger.info("     • Portfolio optimization completed")
     if "all" in phases or "phase7" in phases:
         logger.info("  ✅ Phase 7: Reporting & Notification")
-        logger.info("     • Daily ledger updated")
         logger.info("     • Slack notifications sent")
     logger.info("")
     logger.info("💾 Data stored in PostgreSQL database")

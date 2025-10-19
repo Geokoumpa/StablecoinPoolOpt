@@ -18,6 +18,9 @@ def filter_pools_pre():
     with engine.connect() as conn:
         trans = conn.begin()
         try:
+            # Reset currently_filtered_out flag for all pools
+            conn.execute(text("UPDATE pools SET currently_filtered_out = FALSE;"))
+
             # Fetch basic allocation parameters
             result = conn.execute(text("""
                 SELECT
@@ -151,6 +154,10 @@ def filter_pools_pre():
 
                 if is_filtered_out:
                     logger.info(f"Pool {pool_id} pre-filtered out. Reasons: {'; '.join(filter_reason)}.")
+                    conn.execute(
+                        text("UPDATE pools SET currently_filtered_out = TRUE WHERE pool_id = :pool_id;"),
+                        {"pool_id": pool_id}
+                    )
 
             # Log final statistics
             result = conn.execute(text("""

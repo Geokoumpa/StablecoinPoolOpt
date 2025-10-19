@@ -1,181 +1,258 @@
 import os
 import sys
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 # Add the project root to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.db_utils import get_db_connection
+from config import COLD_WALLET_ADDRESS, WARM_WALLET_ADDRESS
 
 logger = logging.getLogger(__name__)
+
+from sqlalchemy import text
+
 class LedgerManager:
     def __init__(self):
-        # Access config variables directly, e.g. config.DB_HOST, config.DB_NAME, etc.
+        self.engine = get_db_connection()
         self.conn = None
-        self.cur = None
 
     def __enter__(self):
-        self.conn = get_db_connection()
-        self.cur = self.conn.cursor()
+        self.conn = self.engine.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.cur:
-            self.cur.close()
         if self.conn:
             self.conn.close()
+        if self.engine:
+            self.engine.dispose()
 
-    def get_ohlcv_price(self, token_symbol, date):
-        """Fetches the closing price for a token on a given date."""
-        # Since the data is stored as JSONB and we need to extract the token symbol and price data
-        # The structure might be like: {"data": {"quotes": [{"quote": {"USD": {"close": price}}}]}}
-        # We'll need to adjust this query based on the actual CoinMarketCap API response structure
-        query = """
-        SELECT raw_json_data
-        FROM raw_coinmarketcap_ohlcv
-        WHERE raw_json_data::text LIKE %s
-        ORDER BY timestamp DESC
-        LIMIT 1;
+    def get_unallocated_balance(self, cold_wallet_address):
         """
-        # Search for entries containing the token symbol
-        self.cur.execute(query, (f'%{token_symbol}%',))
-        result = self.cur.fetchone()
+        Calculates the unallocated balance for each token from the cold wallet address.
+        Returns the net balance (incoming - outgoing) for tokens currently in the cold wallet.
+        This excludes funds that have been transferred to the warm wallet.
+        """
+        query = """
+        SELECT
+            at.token_symbol,
+            SUM(CASE 
+                WHEN LOWER(at.to_address) = LOWER(:cold_wallet_address) THEN at.value 
+                WHEN LOWER(at.from_address) = LOWER(:cold_wallet_address) THEN -at.value 
+                ELSE 0 
+            END) / (10 ^ MAX(at.token_decimals)) as net_balance
+        FROM account_transactions at
+        WHERE (LOWER(at.from_address) = LOWER(:cold_wallet_address) OR LOWER(at.to_address) = LOWER(:cold_wallet_address))
+          AND LOWER(at.to_address) NOT IN (SELECT LOWER(pool_address) FROM pools WHERE pool_address IS NOT NULL)
+          AND LOWER(at.from_address) NOT IN (SELECT LOWER(pool_address) FROM pools WHERE pool_address IS NOT NULL)
+          AND LOWER(at.to_address) != LOWER(:warm_wallet_address)
+          AND LOWER(at.from_address) != LOWER(:warm_wallet_address)
+        GROUP BY at.token_symbol
+        HAVING SUM(CASE 
+            WHEN LOWER(at.to_address) = LOWER(:cold_wallet_address) THEN at.value 
+            WHEN LOWER(at.from_address) = LOWER(:cold_wallet_address) THEN -at.value 
+            ELSE 0 
+        END) != 0;
+        """
+        result = self.conn.execute(text(query), {
+            "cold_wallet_address": cold_wallet_address,
+            "warm_wallet_address": WARM_WALLET_ADDRESS
+        })
+        balances = {}
+        for row in result.fetchall():
+            token_symbol = row[0]
+            net_balance = row[1]
+            balances[token_symbol] = net_balance
+            logger.debug(f"Unallocated balance for {token_symbol}: {net_balance}")
         
-        if result:
-            try:
-                # Extract the closing price from the JSON structure
-                # This is a simplified approach - the actual structure may vary
-                # For now, return a default value to prevent the pipeline from failing
-                return Decimal('1.0')  # Placeholder price
-            except (KeyError, TypeError, ValueError):
-                return Decimal('1.0')  # Fallback price
-        return Decimal('1.0')  # Default price if no data found
+        logger.info(f"Found {len(balances)} tokens with unallocated balances in cold wallet")
+        return balances
 
-    def get_previous_day_ledger(self, date, token_symbol):
-        """Fetches the ledger entry for the previous day for a specific token."""
+    def get_allocated_balances(self):
+        """
+        Identifies assets currently allocated in pools.
+        Returns net allocated balance (deposits - withdrawals) for each pool/token combination.
+        Tracks transactions from warm wallet to pools (since funds flow: cold → warm → pools).
+        """
         query = """
-        SELECT end_of_day_balance, daily_nav, realized_yield_yesterday, realized_yield_ytd
-        FROM daily_ledger
-        WHERE date = %s AND token_symbol = %s;
+        SELECT
+            p.pool_id,
+            at.token_symbol,
+            SUM(CASE 
+                WHEN LOWER(at.from_address) = LOWER(:warm_wallet_address) AND LOWER(at.to_address) = LOWER(p.pool_address) THEN at.value
+                WHEN LOWER(at.from_address) = LOWER(p.pool_address) AND LOWER(at.to_address) = LOWER(:warm_wallet_address) THEN -at.value
+                ELSE 0
+            END) / (10 ^ MAX(at.token_decimals)) as net_allocated
+        FROM account_transactions at
+        JOIN pools p ON (LOWER(at.to_address) = LOWER(p.pool_address) OR LOWER(at.from_address) = LOWER(p.pool_address))
+        WHERE (LOWER(at.from_address) = LOWER(:warm_wallet_address) OR LOWER(at.to_address) = LOWER(:warm_wallet_address))
+          AND p.pool_address IS NOT NULL
+        GROUP BY p.pool_id, at.token_symbol
+        HAVING SUM(CASE 
+            WHEN LOWER(at.from_address) = LOWER(:warm_wallet_address) AND LOWER(at.to_address) = LOWER(p.pool_address) THEN at.value
+            WHEN LOWER(at.from_address) = LOWER(p.pool_address) AND LOWER(at.to_address) = LOWER(:warm_wallet_address) THEN -at.value
+            ELSE 0
+        END) != 0;
         """
-        self.cur.execute(query, (date - timedelta(days=1), token_symbol))
-        return self.cur.fetchone()
+        result = self.conn.execute(text(query), {"warm_wallet_address": WARM_WALLET_ADDRESS})
+        allocations = []
+        for row in result.fetchall():
+            pool_id = row[0]
+            token_symbol = row[1]
+            net_allocated = row[2]
+            allocations.append((pool_id, token_symbol, net_allocated))
+            logger.debug(f"Allocated balance for pool {pool_id}, token {token_symbol}: {net_allocated}")
+        
+        logger.info(f"Found {len(allocations)} pool/token allocations")
+        return allocations
 
-    def record_daily_ledger(self, date, token_symbol, start_balance, end_balance, daily_nav,
-                            realized_yield_yesterday, realized_yield_ytd):
-        """Records the daily ledger entry for a specific token using upsert logic."""
-        # Use upsert logic to handle both insert and update cases
-        upsert_query = """
-        INSERT INTO daily_ledger (
-            date,
-            token_symbol,
-            start_of_day_balance,
-            end_of_day_balance,
-            daily_nav,
-            realized_yield_yesterday,
-            realized_yield_ytd
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (date, token_symbol) DO UPDATE SET
-            start_of_day_balance = EXCLUDED.start_of_day_balance,
-            end_of_day_balance = EXCLUDED.end_of_day_balance,
-            daily_nav = EXCLUDED.daily_nav,
-            realized_yield_yesterday = EXCLUDED.realized_yield_yesterday,
-            realized_yield_ytd = EXCLUDED.realized_yield_ytd;
+    def update_filtered_out_pools(self):
         """
-        self.cur.execute(upsert_query, (date, token_symbol, start_balance, end_balance, daily_nav,
-                                      realized_yield_yesterday, realized_yield_ytd))
+        Updates the currently_filtered_out flag for pools that are filtered out during pre-filtering.
+        """
+        # This function will be called from the pre-filtering script.
+        # For now, we'll just have a placeholder.
+        pass
+
+    def record_daily_balance(self, date, token_symbol, wallet_address, unallocated_balance, allocated_balance, pool_id):
+        """Records the daily balance entry for a specific token using upsert logic."""
+        # Check if record exists
+        check_query = """
+        SELECT id FROM daily_balances
+        WHERE date = :date AND token_symbol = :token_symbol AND wallet_address = :wallet_address AND pool_id = :pool_id;
+        """
+        result = self.conn.execute(text(check_query), {
+            "date": date,
+            "token_symbol": token_symbol,
+            "wallet_address": wallet_address,
+            "pool_id": pool_id
+        })
+        existing_record = result.fetchone()
+        
+        if existing_record:
+            # Update existing record
+            update_query = """
+            UPDATE daily_balances SET
+                unallocated_balance = :unallocated_balance,
+                allocated_balance = :allocated_balance
+            WHERE id = :id;
+            """
+            self.conn.execute(text(update_query), {
+                "id": existing_record[0],
+                "unallocated_balance": unallocated_balance,
+                "allocated_balance": allocated_balance
+            })
+        else:
+            # Insert new record
+            insert_query = """
+            INSERT INTO daily_balances (
+                date,
+                token_symbol,
+                wallet_address,
+                unallocated_balance,
+                allocated_balance,
+                pool_id
+            ) VALUES (:date, :token_symbol, :wallet_address, :unallocated_balance, :allocated_balance, :pool_id);
+            """
+            self.conn.execute(text(insert_query), {
+                "date": date,
+                "token_symbol": token_symbol,
+                "wallet_address": wallet_address,
+                "unallocated_balance": unallocated_balance,
+                "allocated_balance": allocated_balance,
+                "pool_id": pool_id
+            })
+        
         self.conn.commit()
-        logger.info(f"Daily ledger record upserted for {token_symbol} on {date}")
+        logger.info(f"Daily balance record upserted for {token_symbol} on {date}")
+
+    def clear_daily_records(self, date, wallet_address):
+        """
+        Clears existing daily balance records for the given date and wallet to avoid duplicates.
+        """
+        delete_query = """
+        DELETE FROM daily_balances
+        WHERE date = :date AND wallet_address = :wallet_address;
+        """
+        result = self.conn.execute(text(delete_query), {
+            "date": date,
+            "wallet_address": wallet_address
+        })
+        deleted_count = result.rowcount
+        if deleted_count > 0:
+            logger.info(f"Cleared {deleted_count} existing records for {date}")
+        self.conn.commit()
+
+    def log_ledger_summary(self, date, cold_wallet_address, unallocated_balances, allocated_balances):
+        """
+        Logs a comprehensive summary of the ledger management process.
+        """
+        logger.info("\n" + "="*60)
+        logger.info("📊 DAILY BALANCE MANAGEMENT SUMMARY")
+        logger.info("="*60)
+        logger.info(f"📅 Date processed: {date}")
+        logger.info(f"🔒 Cold wallet address: {cold_wallet_address}")
+        
+        # Calculate totals
+        total_unallocated = sum(float(balance) for balance in unallocated_balances.values())
+        total_allocated = sum(float(amount) for _, _, amount in allocated_balances)
+        
+        logger.info(f"💰 Unallocated balances: {len(unallocated_balances)} tokens, Total: ${total_unallocated:,.2f}")
+        for token, balance in unallocated_balances.items():
+            logger.info(f"   - {token}: ${float(balance):,.2f}")
+        
+        logger.info(f"💼 Allocated balances: {len(allocated_balances)} positions, Total: ${total_allocated:,.2f}")
+        for pool_id, token_symbol, amount in allocated_balances:
+            logger.info(f"   - Pool {pool_id[:8]}... ({token_symbol}): ${float(amount):,.2f}")
+        
+        logger.info(f"💾 Total assets tracked: ${total_unallocated + total_allocated:,.2f}")
+        logger.info(f"💾 Data stored in: daily_balances table")
+        logger.info("="*60)
 
     def manage_ledger(self):
         today = datetime.now(timezone.utc).date()
-        yesterday = today - timedelta(days=1)
-
-        # Placeholder for actual token balances (e.g., from a wallet or exchange API)
-        # For now, let's assume we fetch this from a hypothetical source or a previous step
-        current_token_balances = {
-            "USDC": Decimal('10000.00'),
-            "USDT": Decimal('5000.00'),
-            "DAI": Decimal('7500.00')
-        }
-
-        # Track summary data
-        total_nav = Decimal('0')
-        total_yield_yesterday = Decimal('0')
-        total_yield_ytd = Decimal('0')
-        processed_tokens = 0
-        price_errors = 0
+        cold_wallet_address = COLD_WALLET_ADDRESS
 
         logger.info(f"Processing ledger for {today}...")
+        logger.info(f"Cold wallet address: {cold_wallet_address}")
 
-        # Process each token separately according to the new schema
-        for token, current_balance in current_token_balances.items():
-            try:
-                price = self.get_ohlcv_price(token, today)
-                if price is None:
-                    logger.warning(f"Could not get price for {token}")
-                    price_errors += 1
-                    price = Decimal('1.0')  # Fallback price
-                
-                daily_nav = current_balance * price
-                total_nav += daily_nav
+        # Get current balances
+        unallocated_balances = self.get_unallocated_balance(cold_wallet_address)
+        allocated_balances = self.get_allocated_balances()
 
-                # Get previous day data for this token
-                previous_day_ledger = self.get_previous_day_ledger(today, token)
-                realized_yield_yesterday = Decimal('0')
-                realized_yield_ytd = Decimal('0')
+        # Clear existing records for today to avoid duplicates
+        self.clear_daily_records(today, cold_wallet_address)
 
-                if previous_day_ledger:
-                    prev_balance = previous_day_ledger[0]  # end_of_day_balance from previous day
-                    prev_nav = previous_day_ledger[1]  # daily_nav from previous day
-                    
-                    if prev_nav and prev_nav > 0:
-                        realized_yield_yesterday = ((daily_nav - prev_nav) / prev_nav) * Decimal('100')
-                        total_yield_yesterday += realized_yield_yesterday
+        # Record unallocated balances
+        logger.info(f"Recording {len(unallocated_balances)} unallocated token balances...")
+        for token, balance in unallocated_balances.items():
+            logger.debug(f"Recording unallocated balance: {token} = {balance}")
+            self.record_daily_balance(
+                date=today,
+                token_symbol=token,
+                wallet_address=cold_wallet_address,
+                unallocated_balance=Decimal(str(balance)),
+                allocated_balance=Decimal('0'),
+                pool_id=None
+            )
 
-                    # For YTD, get the first entry for this token
-                    self.cur.execute("SELECT daily_nav FROM daily_ledger WHERE token_symbol = %s ORDER BY date ASC LIMIT 1;", (token,))
-                    day_0_nav_result = self.cur.fetchone()
-                    if day_0_nav_result and day_0_nav_result[0] > 0:
-                        day_0_nav = day_0_nav_result[0]
-                        realized_yield_ytd = ((daily_nav - day_0_nav) / day_0_nav) * Decimal('100')
-                        total_yield_ytd += realized_yield_ytd
+        # Record allocated balances
+        logger.info(f"Recording {len(allocated_balances)} pool allocations...")
+        for pool_id, token_symbol, amount in allocated_balances:
+            logger.debug(f"Recording allocated balance: pool {pool_id}, token {token_symbol} = {amount}")
+            self.record_daily_balance(
+                date=today,
+                token_symbol=token_symbol,
+                wallet_address=cold_wallet_address,
+                unallocated_balance=Decimal('0'),
+                allocated_balance=Decimal(str(amount)),
+                pool_id=pool_id
+            )
 
-                    start_balance = prev_balance if prev_balance else current_balance
-                else:
-                    start_balance = current_balance
-
-                self.record_daily_ledger(
-                    date=today,
-                    token_symbol=token,
-                    start_balance=start_balance,
-                    end_balance=current_balance,
-                    daily_nav=daily_nav,
-                    realized_yield_yesterday=realized_yield_yesterday,
-                    realized_yield_ytd=realized_yield_ytd
-                )
-                
-                processed_tokens += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing {token}: {e}")
-
-        # Print comprehensive summary
-        logger.info("\n" + "="*60)
-        logger.info("📊 DAILY LEDGER MANAGEMENT SUMMARY")
-        logger.info("="*60)
-        logger.info(f"📅 Date processed: {today}")
-        logger.info(f"🪙 Tokens processed: {processed_tokens}")
-        logger.info(f"💰 Total portfolio NAV: ${total_nav:,.2f}")
-        if processed_tokens > 0:
-            logger.info(f"📈 Average yield yesterday: {(total_yield_yesterday/processed_tokens):.2f}%")
-            logger.info(f"📊 Average yield YTD: {(total_yield_ytd/processed_tokens):.2f}%")
-        if price_errors > 0:
-            logger.info(f"⚠️  Price fetch errors: {price_errors}")
-        logger.info(f"💾 Data stored in: daily_ledger")
-        logger.info("="*60)
+        # Log summary
+        self.log_ledger_summary(today, cold_wallet_address, unallocated_balances, allocated_balances)
 
 if __name__ == "__main__":
     with LedgerManager() as manager:

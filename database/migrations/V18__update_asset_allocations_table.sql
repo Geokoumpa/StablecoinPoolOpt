@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS asset_allocations;
+
 CREATE TABLE asset_allocations (
     id SERIAL PRIMARY KEY,
     run_id UUID NOT NULL,

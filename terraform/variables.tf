@@ -76,3 +76,9 @@ variable "slack_webhook_url" {
   type        = string
   sensitive   = true
 }
+
+variable "cold_wallet_address" {
+  description = "The cold wallet address for tracking investments."
+  type        = string
+  sensitive   = true
+}

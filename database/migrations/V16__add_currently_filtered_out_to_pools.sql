@@ -1,0 +1,2 @@
+ALTER TABLE pools
+ADD COLUMN currently_filtered_out BOOLEAN DEFAULT FALSE;

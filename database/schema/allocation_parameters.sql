@@ -29,5 +29,11 @@ CREATE TABLE allocation_parameters (
     group3_apy_delta_min DECIMAL(20, 4),
     group3_7d_stddev_min DECIMAL(20, 4),
     group3_30d_stddev_min DECIMAL(20, 4),
-    other_dynamic_limits JSONB
+    other_dynamic_limits JSONB,
+    icebox_ohlc_l_threshold_pct DECIMAL(5, 4),
+    icebox_ohlc_l_days_threshold INTEGER,
+    icebox_ohlc_c_threshold_pct DECIMAL(5, 4),
+    icebox_ohlc_c_days_threshold INTEGER,
+    icebox_recovery_l_days_threshold INTEGER,
+    icebox_recovery_c_days_threshold INTEGER
 );
