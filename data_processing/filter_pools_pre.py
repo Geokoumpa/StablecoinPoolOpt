@@ -1,4 +1,5 @@
 import logging
+import json
 from database.db_utils import get_db_connection
 from sqlalchemy import text
 
@@ -87,23 +88,40 @@ def filter_pools_pre():
                     tokens_in_symbol = symbol.split('-')
                     invalid_tokens = []
                     blacklisted_in_pool = []
+                    token_mappings = {}  # Store mappings from original to approved tokens
                     
                     for token in tokens_in_symbol:
-                        # Check for partial match with approved tokens
-                        has_approved_match = False
-                        for approved_token in approved_tokens:
-                            if approved_token.lower() in token.lower() or token.lower() in approved_token.lower():
-                                has_approved_match = True
-                                break
+                        # Use SQL to find the longest matching approved token
+                        token_match_query = text("""
+                            SELECT token_symbol
+                            FROM approved_tokens
+                            WHERE LOWER(token_symbol) = LOWER(:token)
+                               OR LOWER(:token) LIKE '%' || LOWER(token_symbol) || '%'
+                            ORDER BY LENGTH(token_symbol) DESC
+                            LIMIT 1;
+                        """)
+                        token_result = conn.execute(token_match_query, {"token": token})
+                        matched_approved_token = token_result.scalar()
                         
-                        if not has_approved_match:
+                        if matched_approved_token:
+                            # Store mapping if it's not an exact match
+                            if token.lower() != matched_approved_token.lower():
+                                token_mappings[token] = matched_approved_token
+                        else:
                             invalid_tokens.append(token)
                         
                         # Check for partial match with blacklisted tokens
-                        for blacklisted_token in blacklisted_tokens:
-                            if blacklisted_token.lower() in token.lower() or token.lower() in blacklisted_token.lower():
-                                blacklisted_in_pool.append(token)
-                                break
+                        blacklist_match_query = text("""
+                            SELECT token_symbol
+                            FROM blacklisted_tokens
+                            WHERE LOWER(token_symbol) = LOWER(:token)
+                               OR LOWER(:token) LIKE '%' || LOWER(token_symbol) || '%'
+                               OR LOWER(token_symbol) LIKE '%' || LOWER(:token) || '%'
+                            LIMIT 1;
+                        """)
+                        blacklist_result = conn.execute(blacklist_match_query, {"token": token})
+                        if blacklist_result.scalar():
+                            blacklisted_in_pool.append(token)
                     
                     if invalid_tokens:
                         filter_reason.append(f"Pool contains non-approved token(s): {', '.join(invalid_tokens)}.")
@@ -125,16 +143,21 @@ def filter_pools_pre():
                 )
                 existing_entry = result.fetchone()
 
+                # Convert token mappings to JSON for storage
+                normalized_tokens_json = json.dumps(token_mappings) if token_mappings else None
+                
                 if existing_entry:
                     conn.execute(
                         text("""
                             UPDATE pool_daily_metrics
-                            SET is_filtered_out = :is_filtered_out, filter_reason = :filter_reason
+                            SET is_filtered_out = :is_filtered_out, filter_reason = :filter_reason, 
+                                normalized_tokens = :normalized_tokens
                             WHERE pool_id = :pool_id AND date = CURRENT_DATE;
                         """),
                         {
                             "is_filtered_out": is_filtered_out,
                             "filter_reason": '; '.join(filter_reason) if filter_reason else None,
+                            "normalized_tokens": normalized_tokens_json,
                             "pool_id": pool_id
                         }
                     )
@@ -142,13 +165,14 @@ def filter_pools_pre():
                     conn.execute(
                         text("""
                             INSERT INTO pool_daily_metrics (
-                                pool_id, date, is_filtered_out, filter_reason
-                            ) VALUES (:pool_id, CURRENT_DATE, :is_filtered_out, :filter_reason);
+                                pool_id, date, is_filtered_out, filter_reason, normalized_tokens
+                            ) VALUES (:pool_id, CURRENT_DATE, :is_filtered_out, :filter_reason, :normalized_tokens);
                         """),
                         {
                             "pool_id": pool_id,
                             "is_filtered_out": is_filtered_out,
-                            "filter_reason": '; '.join(filter_reason) if filter_reason else None
+                            "filter_reason": '; '.join(filter_reason) if filter_reason else None,
+                            "normalized_tokens": normalized_tokens_json
                         }
                     )
 

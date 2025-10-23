@@ -141,6 +141,11 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
   project            = var.project_id
   deletion_protection = false
 
+  depends_on = [
+    google_project_service.run_api,
+    google_vpc_access_connector.cloud_sql_connector
+  ]
+
   template {
     template {
       service_account = google_service_account.cloud_run_sa.email
@@ -279,13 +284,21 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
             }
           }
         }
+
+        dynamic "env" {
+          for_each = contains(["manage_ledger"], each.key) ? [1] : []
+          content {
+            name  = "MAIN_ASSET_HOLDING_ADDRESS"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.main_asset_holding_address.id
+                version = "latest"
+              }
+            }
+          }
+        }
       }
       timeout = "1800s" # Set timeout to 30 minutes
     }
   }
-
-  depends_on = [
-    google_project_service.run_api,
-    google_vpc_access_connector.cloud_sql_connector
-  ]
 }

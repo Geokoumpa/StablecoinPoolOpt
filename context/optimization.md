@@ -14,17 +14,17 @@ The algorithm should take the following information as input:
 
 * Each pool can contain 1 or more tokens, this can be derived by its symbol, tokens will be split by "-", i.e. "DAI-USDC-USDT" contains 3 tokens, "GTUSDC" contains 1.
 * Pools that contain more than 1 tokens have an even distribution (i.e. 50% - 50% for pairs) which must be followed when allocating assets.
-* Conversions from and to various tokens cost a flat 0.0004 conversion rate
+* Conversions from and to various tokens cost a 0.0004 conversion rate
 * All transactions (allocations to / withdrawals from pools, conversions etc.) cost a gas fee
 * Yield reinvestment will initially be excluded from the model logic and will be handled manually
 * The objective is to maximize the overall yield, taking into account conversion fees and gas fees
 * Due the fact that one of the previous pipeline steps is to filter out pools not meeting a number  of criteria, it is possible that a pool becomes unapproved  while assets are already allocated to it.
 * When allocating to a pool, the formula is:
 
-    * Cost = amount * conversion_rate + 2 * gas_fee  (when the token needs to be converted)
-    * Cost = amount * conversion_rate + gas_fee  (when we already have sufficient amount of that token on the cold wallet)
+    * Cost = (amount * conversion_rate) + 2 * gas_fee  (when the token needs to be converted)
+    * Cost = (amount * conversion_rate) + gas_fee  (when we already have sufficient amount of that token on the cold wallet)
 
-* Withdrawing cost formulat is Cost = amount * conversion_rate + gas_fee (because we don't convert until it is needed during next allocation)
+* Withdrawing cost formula is Cost = amount * conversion_rate + gas_fee (because we don't convert until it is needed during next allocation)
 
 # Output
 

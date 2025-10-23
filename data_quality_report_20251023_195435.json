@@ -1,0 +1,469 @@
+{
+  "timestamp": "2025-10-23T19:54:35.128938",
+  "summary": {
+    "total_pools": 52,
+    "unique_protocols": 8,
+    "unique_chains": 1,
+    "apy_min": 6.0145,
+    "apy_max": 74.9685,
+    "apy_mean": 16.056840384615384,
+    "apy_median": 10.6304,
+    "tvl_min": 538533.13,
+    "tvl_max": 193044384.0,
+    "tvl_mean": 16870655.535192307,
+    "tvl_median": 4733410.25,
+    "total_tvl": 877274087.83,
+    "pools_with_token_mappings": 37,
+    "pools_with_token_changes": 37,
+    "invalid_token_mappings": 0,
+    "total_tokens_requested": 12,
+    "tokens_with_prices": 12,
+    "price_coverage_pct": 100.0,
+    "price_min": 0.9986643553553671,
+    "price_max": 1.0135598997465451,
+    "price_mean": 1.0010646820909372,
+    "price_median": 0.9999260886964407,
+    "gas_gwei": 0.29,
+    "eth_price_usd": 3808.122297957231,
+    "gas_fee_usd": 1.104355466407597e-06,
+    "warm_wallet_tokens": 0,
+    "allocated_positions": 3,
+    "total_warm_balance": 0,
+    "total_allocated_balance": 4564.5817090792,
+    "negative_balances": 0,
+    "param_tvl_limit_percentage": 0.05,
+    "param_max_alloc_percentage": 0.25,
+    "param_conversion_rate": 0.0004,
+    "param_min_pools": 4,
+    "param_profit_optimization": false,
+    "param_token_marketcap_limit": 35000000.0,
+    "param_pool_tvl_limit": 500000.0,
+    "param_pool_apy_limit": 0.06,
+    "param_pool_pair_tvl_ratio_min": 0.3,
+    "param_pool_pair_tvl_ratio_max": 0.5,
+    "total_aum": 4568.197952849774,
+    "token_universe_size": 12,
+    "tokens_without_prices": 0,
+    "estimated_transactions": 156,
+    "total_gas_cost_estimate": 0.00017227945275958512,
+    "gas_cost_as_pct_of_aum": 3.771278183164375e-06,
+    "total_pool_capacity": 43863704.391499996,
+    "overall_quality_score": 65.0,
+    "quality_assessment": "Fair"
+  },
+  "pool_data_quality": {
+    "total_records": 52,
+    "columns": [
+      "pool_id",
+      "symbol",
+      "chain",
+      "protocol",
+      "forecasted_apy",
+      "forecasted_tvl",
+      "normalized_tokens"
+    ],
+    "data_types": {
+      "pool_id": "object",
+      "symbol": "object",
+      "chain": "object",
+      "protocol": "object",
+      "forecasted_apy": "float64",
+      "forecasted_tvl": "float64",
+      "normalized_tokens": "object"
+    },
+    "null_counts": {
+      "pool_id": 0,
+      "symbol": 0,
+      "chain": 0,
+      "protocol": 0,
+      "forecasted_apy": 0,
+      "forecasted_tvl": 0,
+      "normalized_tokens": 15
+    },
+    "extreme_apy_pools": 2,
+    "low_tvl_pools": 0,
+    "mapping_issues": 37,
+    "invalid_mappings": 0
+  },
+  "token_price_quality": {
+    "requested_tokens": [
+      "BOLD",
+      "CRVUSD",
+      "GHO",
+      "LUSD",
+      "PYUSD",
+      "RLUSD",
+      "USDC",
+      "USDE",
+      "USDF",
+      "USDS",
+      "USDT",
+      "USDTB"
+    ],
+    "fetched_prices": {
+      "BOLD": 1.0007922399030302,
+      "CRVUSD": 0.9997516434110978,
+      "GHO": 0.9996713771007282,
+      "LUSD": 1.0013030680055486,
+      "PYUSD": 0.9996763401076415,
+      "RLUSD": 0.9998824875578572,
+      "USDC": 0.9999696898350243,
+      "USDE": 0.9993469786563336,
+      "USDF": 0.9986643553553671,
+      "USDS": 1.0135598997465451,
+      "USDT": 1.0001881354037199,
+      "USDTB": 0.9999699700083525
+    },
+    "missing_tokens": [],
+    "coverage_percentage": 100.0,
+    "price_stats": {
+      "count": 12,
+      "min": 0.9986643553553671,
+      "max": 1.0135598997465451,
+      "mean": 1.0010646820909372,
+      "median": 0.9999260886964407
+    }
+  },
+  "gas_fee_quality": {
+    "gas_gwei": 0.29,
+    "eth_price_usd": 3808.122297957231,
+    "gas_fee_usd": 1.104355466407597e-06,
+    "is_gas_fallback": "False",
+    "is_eth_fallback": "False",
+    "gas_abnormal": "True",
+    "eth_abnormal": "False"
+  },
+  "balance_quality": {
+    "warm_wallet": {},
+    "allocations": {
+      "326739f2-4650-4992-a8eb-a400e7790499_BOLD": 564.5817090792,
+      "a635df9a-4cfc-4d17-86d0-934ea441e79f_BOLD": 2000.0,
+      "dac71f4f-7b97-463a-b19f-9796c56c21f1_BOLD": 2000.0
+    },
+    "warm_wallet_total": 0,
+    "allocated_total": 4564.5817090792,
+    "has_data": true,
+    "negative_balance_count": 0
+  },
+  "parameter_quality": {
+    "parameters": {
+      "run_id": "c72c2ab8-42c4-4016-9c1b-74c0077c619c",
+      "timestamp": "2025-10-23 19:51:50.467471+00:00",
+      "tvl_limit_percentage": 0.05,
+      "max_alloc_percentage": 0.25,
+      "conversion_rate": 0.0004,
+      "min_pools": 4,
+      "profit_optimization": false,
+      "approved_tokens_snapshot": [
+        {
+          "token_symbol": "USDT"
+        },
+        {
+          "token_symbol": "USDC"
+        },
+        {
+          "token_symbol": "USDS"
+        },
+        {
+          "token_symbol": "DAI"
+        },
+        {
+          "token_symbol": "LUSD"
+        },
+        {
+          "token_symbol": "BOLD"
+        },
+        {
+          "token_symbol": "PYUSD"
+        },
+        {
+          "token_symbol": "USDP"
+        },
+        {
+          "token_symbol": "GUSD"
+        },
+        {
+          "token_symbol": "GHO"
+        },
+        {
+          "token_symbol": "RLUSD"
+        },
+        {
+          "token_symbol": "USDtb"
+        },
+        {
+          "token_symbol": "USD0"
+        },
+        {
+          "token_symbol": "USDG"
+        },
+        {
+          "token_symbol": "USDL"
+        },
+        {
+          "token_symbol": "USDM"
+        },
+        {
+          "token_symbol": "USDe"
+        },
+        {
+          "token_symbol": "USYC"
+        },
+        {
+          "token_symbol": "BUIDL"
+        },
+        {
+          "token_symbol": "FOBXX"
+        },
+        {
+          "token_symbol": "USDY"
+        },
+        {
+          "token_symbol": "USTB"
+        },
+        {
+          "token_symbol": "USCC"
+        },
+        {
+          "token_symbol": "OUSG"
+        },
+        {
+          "token_symbol": "TBILL"
+        },
+        {
+          "token_symbol": "USTBL"
+        },
+        {
+          "token_symbol": "crvUSD"
+        },
+        {
+          "token_symbol": "USDF"
+        }
+      ],
+      "blacklisted_tokens_snapshot": [
+        {
+          "token_symbol": "FRAX"
+        },
+        {
+          "token_symbol": "USDD"
+        },
+        {
+          "token_symbol": "MIM"
+        },
+        {
+          "token_symbol": "FRXUSD"
+        },
+        {
+          "token_symbol": "SUSD"
+        },
+        {
+          "token_symbol": "USD0++"
+        },
+        {
+          "token_symbol": "IUSDT"
+        },
+        {
+          "token_symbol": "IUSDC"
+        },
+        {
+          "token_symbol": "IDAI"
+        }
+      ],
+      "approved_protocols_snapshot": [
+        {
+          "protocol_name": "aave-v2"
+        },
+        {
+          "protocol_name": "aave-v3"
+        },
+        {
+          "protocol_name": "balancer-v2"
+        },
+        {
+          "protocol_name": "balancer-v3"
+        },
+        {
+          "protocol_name": "compound-v2"
+        },
+        {
+          "protocol_name": "compound-v3"
+        },
+        {
+          "protocol_name": "convex-finance"
+        },
+        {
+          "protocol_name": "crvusd"
+        },
+        {
+          "protocol_name": "curve-dex"
+        },
+        {
+          "protocol_name": "ethena-usde"
+        },
+        {
+          "protocol_name": "euler-v2"
+        },
+        {
+          "protocol_name": "fluid-lending"
+        },
+        {
+          "protocol_name": "goldfinch"
+        },
+        {
+          "protocol_name": "liquity-v1"
+        },
+        {
+          "protocol_name": "liquity-v2"
+        },
+        {
+          "protocol_name": "maple"
+        },
+        {
+          "protocol_name": "morpho-aave"
+        },
+        {
+          "protocol_name": "morpho-blue"
+        },
+        {
+          "protocol_name": "morpho-compound"
+        },
+        {
+          "protocol_name": "pendle"
+        },
+        {
+          "protocol_name": "sky-lending"
+        },
+        {
+          "protocol_name": "sparklend"
+        },
+        {
+          "protocol_name": "spectra-v2"
+        },
+        {
+          "protocol_name": "sushiswap"
+        },
+        {
+          "protocol_name": "sushiswap-v3"
+        },
+        {
+          "protocol_name": "uniswap-v2"
+        },
+        {
+          "protocol_name": "uniswap-v3"
+        },
+        {
+          "protocol_name": "yearn-finance"
+        }
+      ],
+      "icebox_tokens_snapshot": [],
+      "token_marketcap_limit": 35000000.0,
+      "pool_tvl_limit": 500000.0,
+      "pool_apy_limit": 0.06,
+      "pool_pair_tvl_ratio_min": 0.3,
+      "pool_pair_tvl_ratio_max": 0.5,
+      "group1_max_pct": null,
+      "group2_max_pct": null,
+      "group3_max_pct": null,
+      "position_max_pct_total_assets": null,
+      "position_max_pct_pool_tvl": null,
+      "group1_apy_delta_max": null,
+      "group1_7d_stddev_max": null,
+      "group1_30d_stddev_max": null,
+      "group2_apy_delta_max": null,
+      "group2_7d_stddev_max": null,
+      "group2_30d_stddev_max": null,
+      "group3_apy_delta_min": null,
+      "group3_7d_stddev_min": null,
+      "group3_30d_stddev_min": null,
+      "other_dynamic_limits": null,
+      "icebox_ohlc_l_threshold_pct": null,
+      "icebox_ohlc_l_days_threshold": null,
+      "icebox_ohlc_c_threshold_pct": null,
+      "icebox_ohlc_c_days_threshold": null,
+      "icebox_recovery_l_days_threshold": null,
+      "icebox_recovery_c_days_threshold": null
+    },
+    "has_fallback_values": false,
+    "abnormal_parameters": 0
+  },
+  "model_feasibility": {
+    "total_aum": 4568.197952849774,
+    "token_universe_size": 12,
+    "tokens_without_prices": 0,
+    "estimated_transactions": 156,
+    "total_gas_cost": 0.00017227945275958512,
+    "gas_cost_pct_of_aum": 3.771278183164375e-06,
+    "total_pool_capacity": 43863704.391499996,
+    "aum_exceeds_capacity": false,
+    "constraint_feasible": true
+  },
+  "abnormal_values": {
+    "pool_apy": [
+      {
+        "item": "0aeae5ff-b988-4127-b682-2910e3950d41 (SBOLD)",
+        "value": 60.9667,
+        "reason": "APY exceeds 50%",
+        "severity": "warning",
+        "detected_at": "2025-10-23T19:54:35.186868"
+      },
+      {
+        "item": "f8b4647d-d022-455d-8ed3-5cf87f21f298 (YSYBOLD)",
+        "value": 74.9685,
+        "reason": "APY exceeds 50%",
+        "severity": "warning",
+        "detected_at": "2025-10-23T19:54:35.187007"
+      }
+    ],
+    "pool_data_completeness": [
+      {
+        "item": "normalized_tokens",
+        "value": 15,
+        "reason": "15 NULL values in normalized_tokens",
+        "severity": "critical",
+        "detected_at": "2025-10-23T19:54:35.190088"
+      }
+    ],
+    "gas_fees": [
+      {
+        "item": "gas_gwei",
+        "value": 0.29,
+        "reason": "Gas price below 1 Gwei",
+        "severity": "warning",
+        "detected_at": "2025-10-23T19:54:35.214689"
+      }
+    ]
+  },
+  "fallback_values": {},
+  "recommendations": [
+    {
+      "recommendation": "Address critical data quality issues immediately",
+      "priority": "critical",
+      "details": [
+        "pool_data_completeness: 15 NULL values in normalized_tokens"
+      ],
+      "created_at": "2025-10-23T19:54:35.275624"
+    }
+  ],
+  "data_freshness": {
+    "pool_data": {
+      "date": "2025-10-23",
+      "record_count": "21721",
+      "has_current_data": true
+    },
+    "price_data": {
+      "sample_count": 10,
+      "avg_age_hours": 69.70979697527778,
+      "latest_timestamp": "2025-10-22 00:00:00+00:00"
+    },
+    "gas_data": {
+      "date": "2025-10-23",
+      "gas_gwei": 0.29,
+      "has_current_data": true
+    },
+    "balance_data": {
+      "date": "2025-10-23",
+      "record_count": "3",
+      "has_current_data": true
+    }
+  }
+}

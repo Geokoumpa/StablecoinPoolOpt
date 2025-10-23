@@ -40,11 +40,14 @@ def filter_pools_final():
         logger.info(f"Icebox Tokens: {icebox_tokens}")
         logger.info(f"Pool TVL Limit: {pool_tvl_limit}")
         logger.info(f"Pool APY Limit: {pool_apy_limit}")
+        logger.info("Using forecasted values when available, falling back to basic pool data")
         logger.info("=====================================")
 
         # Fetch pools that passed pre-filtering (not filtered out)
+        # Include both forecasted and actual pool data as fallback
         cur.execute("""
-            SELECT pdm.pool_id, p.symbol, p.tvl, p.apy, pdm.filter_reason
+            SELECT pdm.pool_id, p.symbol, pdm.forecasted_tvl, pdm.forecasted_apy, 
+                   p.tvl as basic_tvl, p.apy as basic_apy, pdm.filter_reason
             FROM pool_daily_metrics pdm
             JOIN pools p ON pdm.pool_id = p.pool_id
             WHERE pdm.date = CURRENT_DATE AND pdm.is_filtered_out = FALSE;
@@ -53,7 +56,7 @@ def filter_pools_final():
 
         logger.info(f"Processing {len(pre_filtered_pools)} pre-filtered pools for final filtering...")
 
-        for pool_id, symbol, tvl, apy, existing_reason in pre_filtered_pools:
+        for pool_id, symbol, forecasted_tvl, forecasted_apy, basic_tvl, basic_apy, existing_reason in pre_filtered_pools:
             additional_reasons = []
             should_filter_out = False
 
@@ -64,15 +67,24 @@ def filter_pools_final():
                     additional_reasons.append(f"Pool contains icebox token(s): {', '.join(icebox_found)}.")
                     should_filter_out = True
 
-            # Check TVL limit
-            if tvl is not None and pool_tvl_limit is not None and tvl < pool_tvl_limit:
-                additional_reasons.append(f"Pool TVL ({tvl:.2f}) below limit ({pool_tvl_limit}).")
+            # Check TVL limit - use forecasted if available, otherwise fall back to basic TVL
+            tvl_to_check = forecasted_tvl if forecasted_tvl is not None else basic_tvl
+            if tvl_to_check is not None and pool_tvl_limit is not None and tvl_to_check < pool_tvl_limit:
+                data_source = "forecasted" if forecasted_tvl is not None else "basic"
+                additional_reasons.append(f"Pool {data_source} TVL ({tvl_to_check:.2f}) below limit ({pool_tvl_limit}).")
                 should_filter_out = True
 
-            # Check APY limit
-            if apy is not None and pool_apy_limit is not None and apy < pool_apy_limit:
-                additional_reasons.append(f"Pool APY ({apy:.4f}) below limit ({pool_apy_limit:.4f}).")
-                should_filter_out = True
+            # Check APY limit - use forecasted if available, otherwise fall back to basic APY
+            # Note: forecasted_apy and basic_apy are stored as percentages (0.0633 = 0.0633%)
+            # pool_apy_limit is stored as decimal (0.0600 = 6% = 6.0%)
+            apy_to_check = forecasted_apy if forecasted_apy is not None else basic_apy
+            # Convert pool_apy_limit from decimal to percentage for comparison
+            if pool_apy_limit is not None:
+                apy_limit_percentage = pool_apy_limit * 100  # Convert 0.0600 to 6.0
+                if apy_to_check is not None and apy_to_check < apy_limit_percentage:
+                    data_source = "forecasted" if forecasted_apy is not None else "basic"
+                    additional_reasons.append(f"Pool {data_source} APY ({apy_to_check:.4f}%) below limit ({apy_limit_percentage:.2f}%).")
+                    should_filter_out = True
 
             if should_filter_out:
                 # Combine existing reasons with new ones

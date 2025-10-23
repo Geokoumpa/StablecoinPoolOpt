@@ -8,7 +8,7 @@ from decimal import Decimal
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.db_utils import get_db_connection
-from config import COLD_WALLET_ADDRESS, WARM_WALLET_ADDRESS
+from config import COLD_WALLET_ADDRESS, MAIN_ASSET_HOLDING_ADDRESS
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class LedgerManager:
         """
         result = self.conn.execute(text(query), {
             "cold_wallet_address": cold_wallet_address,
-            "warm_wallet_address": WARM_WALLET_ADDRESS
+            "warm_wallet_address": MAIN_ASSET_HOLDING_ADDRESS
         })
         balances = {}
         for row in result.fetchall():
@@ -96,7 +96,7 @@ class LedgerManager:
             ELSE 0
         END) != 0;
         """
-        result = self.conn.execute(text(query), {"warm_wallet_address": WARM_WALLET_ADDRESS})
+        result = self.conn.execute(text(query), {"warm_wallet_address": MAIN_ASSET_HOLDING_ADDRESS})
         allocations = []
         for row in result.fetchall():
             pool_id = row[0]
@@ -118,17 +118,28 @@ class LedgerManager:
 
     def record_daily_balance(self, date, token_symbol, wallet_address, unallocated_balance, allocated_balance, pool_id):
         """Records the daily balance entry for a specific token using upsert logic."""
-        # Check if record exists
-        check_query = """
-        SELECT id FROM daily_balances
-        WHERE date = :date AND token_symbol = :token_symbol AND wallet_address = :wallet_address AND pool_id = :pool_id;
-        """
-        result = self.conn.execute(text(check_query), {
-            "date": date,
-            "token_symbol": token_symbol,
-            "wallet_address": wallet_address,
-            "pool_id": pool_id
-        })
+        # Check if record exists - handle NULL wallet_address properly
+        if wallet_address is None:
+            check_query = """
+            SELECT id FROM daily_balances
+            WHERE date = :date AND token_symbol = :token_symbol AND wallet_address IS NULL AND pool_id = :pool_id;
+            """
+            result = self.conn.execute(text(check_query), {
+                "date": date,
+                "token_symbol": token_symbol,
+                "pool_id": pool_id
+            })
+        else:
+            check_query = """
+            SELECT id FROM daily_balances
+            WHERE date = :date AND token_symbol = :token_symbol AND wallet_address = :wallet_address AND pool_id = :pool_id;
+            """
+            result = self.conn.execute(text(check_query), {
+                "date": date,
+                "token_symbol": token_symbol,
+                "wallet_address": wallet_address,
+                "pool_id": pool_id
+            })
         existing_record = result.fetchone()
         
         if existing_record:
@@ -171,7 +182,9 @@ class LedgerManager:
     def clear_daily_records(self, date, wallet_address):
         """
         Clears existing daily balance records for the given date and wallet to avoid duplicates.
+        Also clears pool allocation records (where wallet_address is NULL).
         """
+        # Clear records for the specified wallet address
         delete_query = """
         DELETE FROM daily_balances
         WHERE date = :date AND wallet_address = :wallet_address;
@@ -182,7 +195,20 @@ class LedgerManager:
         })
         deleted_count = result.rowcount
         if deleted_count > 0:
-            logger.info(f"Cleared {deleted_count} existing records for {date}")
+            logger.info(f"Cleared {deleted_count} existing wallet records for {date}")
+        
+        # Also clear pool allocation records (where wallet_address is NULL)
+        delete_pool_query = """
+        DELETE FROM daily_balances
+        WHERE date = :date AND wallet_address IS NULL;
+        """
+        result = self.conn.execute(text(delete_pool_query), {
+            "date": date
+        })
+        pool_deleted_count = result.rowcount
+        if pool_deleted_count > 0:
+            logger.info(f"Cleared {pool_deleted_count} existing pool allocation records for {date}")
+        
         self.conn.commit()
 
     def log_ledger_summary(self, date, cold_wallet_address, unallocated_balances, allocated_balances):
@@ -245,7 +271,7 @@ class LedgerManager:
             self.record_daily_balance(
                 date=today,
                 token_symbol=token_symbol,
-                wallet_address=cold_wallet_address,
+                wallet_address=None,  # Pool allocations are not held in cold wallet
                 unallocated_balance=Decimal('0'),
                 allocated_balance=Decimal(str(amount)),
                 pool_id=pool_id
@@ -253,6 +279,11 @@ class LedgerManager:
 
         # Log summary
         self.log_ledger_summary(today, cold_wallet_address, unallocated_balances, allocated_balances)
+def manage_ledger():
+    """Module-level function for pipeline execution."""
+    with LedgerManager() as manager:
+        manager.manage_ledger()
+
 
 if __name__ == "__main__":
     with LedgerManager() as manager:

@@ -86,6 +86,40 @@ def create_allocation_snapshots():
                     None,  # other_dynamic_limits
                     0.02, 2, 0.01, 1, 2, 3  # Icebox params
                 )
+            else:
+                # Convert tuple to list to allow modification
+                base_params = list(base_params)
+                # Use defaults for None values in critical fields
+                if base_params[0] is None:  # tvl_limit_percentage
+                    logger.warning("tvl_limit_percentage is None, using default value of 5%")
+                    base_params[0] = 0.05
+                if base_params[1] is None:  # max_alloc_percentage
+                    logger.warning("max_alloc_percentage is None, using default value of 25%")
+                    base_params[1] = 0.25
+                if base_params[2] is None:  # conversion_rate
+                    logger.warning("conversion_rate is None, using default value of 0.0004")
+                    base_params[2] = 0.0004
+                if base_params[3] is None:  # min_pools
+                    logger.warning("min_pools is None, using default value of 4")
+                    base_params[3] = 4
+                if base_params[4] is None:  # profit_optimization
+                    logger.warning("profit_optimization is None, using default value of False")
+                    base_params[4] = False
+                if base_params[5] is None:  # token_marketcap_limit
+                    logger.warning("token_marketcap_limit is None, using default value of $35M")
+                    base_params[5] = 35000000.0
+                if base_params[6] is None:  # pool_tvl_limit
+                    logger.warning("pool_tvl_limit is None, using default value of $500,000")
+                    base_params[6] = 500000.0
+                if base_params[7] is None:  # pool_apy_limit
+                    logger.warning("pool_apy_limit is None, using default value of 6%")
+                    base_params[7] = 0.06
+                if base_params[8] is None:  # pool_pair_tvl_ratio_min
+                    logger.warning("pool_pair_tvl_ratio_min is None, using default value of 30%")
+                    base_params[8] = 0.3
+                if base_params[9] is None:  # pool_pair_tvl_ratio_max
+                    logger.warning("pool_pair_tvl_ratio_max is None, using default value of 50%")
+                    base_params[9] = 0.5
 
         # Fetch dynamic lists from individual tables
         dynamic_lists = fetch_dynamic_lists(engine)

@@ -12,3 +12,5 @@ cvxpy
 ortools
 ecos
 python-dateutil
+highspy
+cylp
