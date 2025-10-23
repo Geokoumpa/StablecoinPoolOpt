@@ -27,7 +27,8 @@ from asset_allocation.optimize_allocations import (
     fetch_gas_fee_data,
     fetch_allocation_parameters,
     calculate_aum,
-    parse_pool_tokens_with_mapping
+    parse_pool_tokens_with_mapping,
+    calculate_transaction_gas_fees
 )
 def fetch_approved_tokens(engine) -> List[str]:
     """
@@ -284,23 +285,27 @@ def test_real_pools_with_mixed_assets():
         
         logger.info("Fetching gas fee data...")
         try:
-            gas_gwei, eth_price = fetch_gas_fee_data(engine)
-            if gas_gwei is None or eth_price is None:
+            eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data(engine)
+            if eth_price is None:
                 logger.warning("Gas fee data incomplete, using defaults")
-                gas_gwei = 50.0
                 eth_price = 3000.0
-            # Calculate realistic per-transaction gas fee
-            # Typical Ethereum transaction uses ~21,000 gas units
-            gas_units_per_transaction = 21000
-            gas_fee_usd = gas_gwei * 1e-9 * gas_units_per_transaction * eth_price
-            logger.info(f"✓ Loaded gas fee: ${gas_fee_usd:.2f} per transaction")
+                base_fee_transfer_gwei = 10.0
+                base_fee_swap_gwei = 30.0
+                priority_fee_gwei = 10.0
+                min_gas_units = 21000
+            
+            # Calculate transaction-specific gas fees
+            gas_fees = calculate_transaction_gas_fees(eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
+            logger.info(f"✓ Loaded gas fees - Pool transactions: ${gas_fees['allocation']:.6f}, Token swaps: ${gas_fees['conversion']:.6f}")
         except Exception as e:
             logger.warning(f"Error fetching gas fee data: {e}, using defaults")
-            gas_gwei = 50.0
             eth_price = 3000.0
-            gas_units_per_transaction = 21000
-            gas_fee_usd = gas_gwei * 1e-9 * gas_units_per_transaction * eth_price
-            logger.info(f"✓ Using default gas fee: ${gas_fee_usd:.2f} per transaction")
+            base_fee_transfer_gwei = 10.0
+            base_fee_swap_gwei = 30.0
+            priority_fee_gwei = 10.0
+            min_gas_units = 21000
+            gas_fees = calculate_transaction_gas_fees(eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
+            logger.info(f"✓ Using default gas fees - Pool transactions: ${gas_fees['allocation']:.6f}, Token swaps: ${gas_fees['conversion']:.6f}")
         
         logger.info("Fetching allocation parameters...")
         alloc_params = fetch_allocation_parameters(engine)
@@ -334,7 +339,8 @@ def test_real_pools_with_mixed_assets():
         logger.info(f"  - Total AUM: ${total_aum:,.2f}")
         logger.info(f"  - Currently allocated: ${sum(current_allocations.values()):,.2f}")
         logger.info(f"  - Warm wallet available: ${sum(warm_wallet.values()):,.2f}")
-        logger.info(f"  - Real gas fee: ${gas_fee_usd}")
+        logger.info(f"  - Pool transaction gas fee: ${gas_fees['allocation']:.6f}")
+        logger.info(f"  - Token swap gas fee: ${gas_fees['conversion']:.6f}")
         logger.info(f"  - Mixed portfolio: Some assets allocated, some in warm wallet")
         
         # Show current allocations by pool
@@ -399,7 +405,7 @@ def test_real_pools_with_mixed_assets():
             token_prices=token_prices,
             warm_wallet=warm_wallet,
             current_allocations=current_allocations,
-            gas_fee_usd=gas_fee_usd,
+            gas_fees=gas_fees,
             alloc_params=alloc_params
         )
         
@@ -501,11 +507,23 @@ def test_real_pools_with_mixed_assets():
                            f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
             elif txn["type"] == "ALLOCATION":
                 conv_flag = " (conv)" if txn.get('needs_conversion', False) else ""
-                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn.get('token', '')}{conv_flag} | "
+                # Get pool name for allocation
+                pool_id = txn.get('to_location', '')
+                pool_name = ''
+                if pool_id and pool_id in pools_df['pool_id'].values:
+                    pool_name = pools_df[pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
+                    pool_name = f" ({pool_name})"
+                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn.get('token', '')}{conv_flag} → Pool {pool_id}{pool_name} | "
                            f"${txn['amount_usd']:10,.2f} | Gas: ${txn['gas_cost_usd']:6.4f} | "
                            f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
             else:  # WITHDRAWAL
-                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn.get('token', '')} | "
+                # Get pool name for withdrawal
+                pool_id = txn.get('from_location', '')
+                pool_name = ''
+                if pool_id and pool_id in pools_df['pool_id'].values:
+                    pool_name = pools_df[pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
+                    pool_name = f" ({pool_name})"
+                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | Pool {pool_id}{pool_name} → {txn.get('token', '')} | "
                            f"${txn['amount_usd']:10,.2f} | Gas: ${txn['gas_cost_usd']:6.4f} | "
                            f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
         

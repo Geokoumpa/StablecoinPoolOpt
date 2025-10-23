@@ -43,30 +43,72 @@ if not logger.handlers:
 def fetch_pool_data(engine) -> pd.DataFrame:
     """
     Fetches approved pools with forecasted APY and metadata.
+    Includes pools with current allocations even if they're below the APY limit.
     
     Returns:
         DataFrame with columns: pool_id, symbol, chain, protocol, forecasted_apy, forecasted_tvl, normalized_tokens
     """
-    query = """
-    SELECT
-        pdm.pool_id,
-        p.symbol,
-        p.chain,
-        p.protocol,
-        pdm.forecasted_apy,
-        pdm.forecasted_tvl,
-        pdm.normalized_tokens
-    FROM pool_daily_metrics pdm
-    JOIN pools p ON pdm.pool_id = p.pool_id
-    WHERE pdm.date = CURRENT_DATE 
-      AND pdm.is_filtered_out = FALSE
-      AND pdm.forecasted_apy IS NOT NULL
-      AND pdm.forecasted_apy > 0
-      AND pdm.forecasted_tvl IS NOT NULL
-      AND pdm.forecasted_tvl > 0;
+    from config import MAIN_ASSET_HOLDING_ADDRESS
+    
+    # First, get pools with current allocations (include them regardless of APY)
+    allocated_pools_query = """
+    SELECT DISTINCT pdm.pool_id
+    FROM daily_balances db
+    JOIN pool_daily_metrics pdm ON db.pool_id = pdm.pool_id
+    WHERE db.date = CURRENT_DATE 
+      AND (db.wallet_address = %s OR db.wallet_address IS NULL)
+      AND db.allocated_balance > 0
+      AND pdm.date = CURRENT_DATE
     """
+    allocated_pools_df = pd.read_sql(allocated_pools_query, engine, params=(MAIN_ASSET_HOLDING_ADDRESS,))
+    allocated_pool_ids = allocated_pools_df['pool_id'].tolist()
+    
+    # Build query to include both approved pools AND pools with current allocations
+    if allocated_pool_ids:
+        pool_ids_str = "', '".join(allocated_pool_ids)
+        query = f"""
+        SELECT
+            pdm.pool_id,
+            p.symbol,
+            p.chain,
+            p.protocol,
+            pdm.forecasted_apy,
+            pdm.forecasted_tvl,
+            pdm.normalized_tokens
+        FROM pool_daily_metrics pdm
+        JOIN pools p ON pdm.pool_id = p.pool_id
+        WHERE pdm.date = CURRENT_DATE 
+          AND pdm.is_filtered_out = FALSE
+          AND pdm.forecasted_apy IS NOT NULL
+          AND pdm.forecasted_apy > 0
+          AND pdm.forecasted_tvl IS NOT NULL
+          AND pdm.forecasted_tvl > 0
+          OR (pdm.pool_id IN ('{pool_ids_str}') 
+              AND pdm.date = CURRENT_DATE
+              AND pdm.forecasted_apy IS NOT NULL)
+        """
+    else:
+        query = """
+        SELECT
+            pdm.pool_id,
+            p.symbol,
+            p.chain,
+            p.protocol,
+            pdm.forecasted_apy,
+            pdm.forecasted_tvl,
+            pdm.normalized_tokens
+        FROM pool_daily_metrics pdm
+        JOIN pools p ON pdm.pool_id = p.pool_id
+        WHERE pdm.date = CURRENT_DATE 
+          AND pdm.is_filtered_out = FALSE
+          AND pdm.forecasted_apy IS NOT NULL
+          AND pdm.forecasted_apy > 0
+          AND pdm.forecasted_tvl IS NOT NULL
+          AND pdm.forecasted_tvl > 0;
+        """
+    
     df = pd.read_sql(query, engine)
-    logger.info(f"Loaded {len(df)} approved pools")
+    logger.info(f"Loaded {len(df)} pools ({len(allocated_pool_ids)} with current allocations)")
     return df
 
 
@@ -123,23 +165,13 @@ def fetch_token_prices(engine, tokens: List[str]) -> Dict[str, float]:
     return prices
 
 
-def fetch_gas_fee_data(engine) -> Tuple[float, float]:
+def fetch_gas_fee_data(engine) -> Tuple[float, float, float, float, float]:
     """
-    Fetches forecasted gas fee and ETH price.
+    Fetches forecasted gas fee components and ETH price.
     
     Returns:
-        Tuple of (forecasted_max_gas_gwei, eth_price_usd)
+        Tuple of (eth_price_usd, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
     """
-    gas_query = """
-    SELECT forecasted_max_gas_gwei
-    FROM gas_fees_daily
-    WHERE date = CURRENT_DATE
-    ORDER BY date DESC
-    LIMIT 1;
-    """
-    gas_df = pd.read_sql(gas_query, engine)
-    gas_gwei = gas_df['forecasted_max_gas_gwei'].iloc[0] if not gas_df.empty and pd.notna(gas_df['forecasted_max_gas_gwei'].iloc[0]) else 50.0
-    
     # Fetch ETH price
     eth_price_query = """
     WITH ranked_eth AS (
@@ -156,10 +188,73 @@ def fetch_gas_fee_data(engine) -> Tuple[float, float]:
     eth_df = pd.read_sql(eth_price_query, engine)
     eth_price = eth_df['close_price'].iloc[0] if not eth_df.empty and pd.notna(eth_df['close_price'].iloc[0]) else 3000.0
     
-    gas_fee_usd = gas_gwei * 1e-9 * eth_price
-    logger.info(f"Gas fee: {gas_gwei:.2f} Gwei, ETH price: ${eth_price:.2f}, Gas fee USD: ${gas_fee_usd:.6f}")
+    # Gas fee components based on requirements
+    base_fee_transfer_gwei = 10.0  # Base fee for transfer/deposit
+    base_fee_swap_gwei = 30.0       # Base fee for swap
+    priority_fee_gwei = 10.0        # Priority fee
+    min_gas_units = 21000          # Minimum gas units
     
-    return gas_gwei, eth_price
+    logger.info(f"ETH price: ${eth_price:.2f}")
+    logger.info(f"Gas fee components - Base transfer: {base_fee_transfer_gwei} Gwei, Base swap: {base_fee_swap_gwei} Gwei, Priority: {priority_fee_gwei} Gwei, Min gas units: {min_gas_units}")
+    
+    return eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
+
+
+def calculate_gas_fee_usd(gas_units: float, base_fee_gwei: float, priority_fee_gwei: float, eth_price_usd: float) -> float:
+    """
+    Calculate gas fee in USD based on the formula: Gas fee = Gas units * (base fee + priority fee)
+    
+    Args:
+        gas_units: Gas units (limit) for the transaction
+        base_fee_gwei: Base fee in Gwei
+        priority_fee_gwei: Priority fee in Gwei
+        eth_price_usd: ETH price in USD
+        
+    Returns:
+        Gas fee in USD
+    """
+    total_fee_gwei = gas_units * (base_fee_gwei + priority_fee_gwei)
+    gas_fee_usd = total_fee_gwei * 1e-9 * eth_price_usd
+    return gas_fee_usd
+
+
+def calculate_transaction_gas_fees(eth_price_usd: float, base_fee_transfer_gwei: float, 
+                                   base_fee_swap_gwei: float, priority_fee_gwei: float, 
+                                   min_gas_units: float) -> Dict[str, float]:
+    """
+    Calculate gas fees for different transaction types.
+    
+    Args:
+        eth_price_usd: ETH price in USD
+        base_fee_transfer_gwei: Base fee for transfer/deposit in Gwei
+        base_fee_swap_gwei: Base fee for swap in Gwei
+        priority_fee_gwei: Priority fee in Gwei
+        min_gas_units: Minimum gas units
+        
+    Returns:
+        Dictionary with gas fees for different transaction types in USD
+    """
+    # Pool allocation/withdrawal gas fee (using transfer base fee)
+    pool_transaction_gas_fee_usd = calculate_gas_fee_usd(
+        min_gas_units, base_fee_transfer_gwei, priority_fee_gwei, eth_price_usd
+    )
+    
+    # Token swap gas fee (using swap base fee)
+    token_swap_gas_fee_usd = calculate_gas_fee_usd(
+        min_gas_units, base_fee_swap_gwei, priority_fee_gwei, eth_price_usd
+    )
+    
+    gas_fees = {
+        'allocation': pool_transaction_gas_fee_usd,      # Allocating to pools
+        'withdrawal': pool_transaction_gas_fee_usd,      # Withdrawing from pools
+        'conversion': token_swap_gas_fee_usd,            # Token swaps/conversions
+        'transfer': pool_transaction_gas_fee_usd,        # General transfers
+        'deposit': pool_transaction_gas_fee_usd          # Deposits to pools
+    }
+    
+    logger.info(f"Transaction gas fees - Pool Allocation/Withdrawal: ${pool_transaction_gas_fee_usd:.6f}, Token Swap/Conversion: ${token_swap_gas_fee_usd:.6f}")
+    
+    return gas_fees
 
 
 def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, str], float]]:
@@ -367,7 +462,7 @@ class AllocationOptimizer:
     
     def __init__(self, pools_df: pd.DataFrame, token_prices: Dict[str, float],
                  warm_wallet: Dict[str, float], current_allocations: Dict[Tuple[str, str], float],
-                 gas_fee_usd: float, alloc_params: Dict):
+                 gas_fees: Dict[str, float], alloc_params: Dict):
         """
         Initialize the optimizer.
         
@@ -376,15 +471,20 @@ class AllocationOptimizer:
             token_prices: Token price dictionary
             warm_wallet: Current warm wallet balances
             current_allocations: Current pool allocations
-            gas_fee_usd: Gas fee per transaction in USD
+            gas_fees: Dictionary of gas fees for different transaction types in USD
             alloc_params: Allocation parameters
         """
         self.pools_df = pools_df
         self.token_prices = token_prices
         self.warm_wallet = warm_wallet
         self.current_allocations = current_allocations
-        self.gas_fee_usd = gas_fee_usd
+        self.gas_fees = gas_fees
         self.alloc_params = alloc_params
+        
+        # Extract specific gas fees for convenience
+        self.allocation_gas_fee = gas_fees['allocation']
+        self.withdrawal_gas_fee = gas_fees['withdrawal']
+        self.conversion_gas_fee = gas_fees['conversion']
         
         # Build indices
         self.tokens = build_token_universe(pools_df, warm_wallet, current_allocations)
@@ -520,13 +620,13 @@ class AllocationOptimizer:
             self.conversion_rate
         ))
         
-        # Gas costs for allocations (2x gas if conversion needed, 1x otherwise)
+        # Gas costs for allocations (allocation gas fee + conversion gas fee if needed)
         allocation_gas_costs = cp.sum(cp.multiply(
-            self.needs_conversion,  # Allocations that need conversion pay 2x gas
-            2 * self.gas_fee_usd
+            self.needs_conversion,  # Allocations that need conversion pay allocation + conversion gas
+            self.allocation_gas_fee + self.conversion_gas_fee
         )) + cp.sum(cp.multiply(
-            1 - self.needs_conversion,  # Allocations without conversion pay 1x gas
-            self.gas_fee_usd
+            1 - self.needs_conversion,  # Allocations without conversion pay only allocation gas
+            self.allocation_gas_fee
         ))
         
         # 3. Conversion costs: amount * conversion_rate + gas_fee for each conversion
@@ -539,17 +639,17 @@ class AllocationOptimizer:
         self.is_conversion = cp.Variable((self.n_tokens, self.n_tokens), boolean=True)
         conversion_gas_costs = cp.sum(cp.multiply(
             self.is_conversion,
-            self.gas_fee_usd
+            self.conversion_gas_fee
         ))
         
         # Add withdrawal gas costs using binary variables
         withdrawal_gas_costs = cp.sum(cp.multiply(
             self.is_withdrawal,
-            self.gas_fee_usd
+            self.withdrawal_gas_fee
         ))
         
         # Total transaction costs (simplified without sign functions for DCP compliance)
-        total_transaction_costs = (
+        self.total_transaction_costs = (
             withdrawal_conversion_costs + 
             withdrawal_gas_costs +
             allocation_conversion_costs + 
@@ -558,10 +658,21 @@ class AllocationOptimizer:
             conversion_gas_costs
         )
         
-        # The total_transaction_costs variable is already defined above with the correct variable names
+        # IMPROVED OBJECTIVE FUNCTION:
+        # Maximize NET yield improvement: yield from new allocations - yield lost from withdrawals
+        # This incentivizes reallocation from lower-APY to higher-APY pools
         
-        # Net objective: maximize daily yield minus total transaction costs
-        objective = cp.Maximize(yield_usd - total_transaction_costs)
+        # Calculate yield lost from withdrawals
+        withdrawal_yield_loss = cp.sum(cp.multiply(
+            cp.multiply(self.withdraw, daily_apy_matrix),
+            price_vector
+        ))
+        
+        # Net yield improvement = new yield - yield lost from withdrawals
+        net_yield_improvement = yield_usd - withdrawal_yield_loss
+        
+        # Maximize net yield improvement
+        objective = cp.Maximize(net_yield_improvement)
         
         # ====================================================================
         # CONSTRAINTS
@@ -623,9 +734,20 @@ class AllocationOptimizer:
             if pool_forecasted_tvl > 0:
                 constraints.append(pool_total_usd <= self.tvl_limit_percentage * pool_forecasted_tvl)
         
-        # 6. Total allocated amount <= total AUM
+        # 6. AUM CONSERVATION CONSTRAINT (IMPROVED):
+        # Total allocated amount + transaction costs + final warm wallet <= total AUM
+        # This ensures proper accounting where costs are actually deducted from available capital
         total_allocated_usd = cp.sum(cp.multiply(self.alloc, price_vector))
-        constraints.append(total_allocated_usd <= self.total_aum)
+        total_final_warm_wallet_usd = cp.sum(cp.multiply(self.final_warm_wallet, price_vector))
+        
+        # The sum of allocations, costs, and remaining warm wallet must equal initial AUM
+        constraints.append(
+            total_allocated_usd + self.total_transaction_costs + total_final_warm_wallet_usd <= self.total_aum
+        )
+        
+        # Alternative constraint to minimize unallocated funds (optional - can be enabled/disabled)
+        # This pushes the optimizer to allocate as much as possible after accounting for costs
+        # constraints.append(total_final_warm_wallet_usd <= 0.01 * self.total_aum)  # Allow max 1% unallocated
         
         # 7. Link conversion needs to available balances
         # For each allocation, determine if conversion is needed based on available warm wallet balance
@@ -740,8 +862,8 @@ class AllocationOptimizer:
                 amount = self.withdraw.value[i, j] if self.withdraw.value is not None else 0
                 
                 if amount > 0.01:  # Threshold for meaningful transactions
-                    # Calculate withdrawal cost: amount * conversion_rate + gas_fee
-                    withdrawal_cost = amount * price_vector[j] * self.conversion_rate + self.gas_fee_usd
+                    # Calculate withdrawal cost: amount * conversion_rate + withdrawal_gas_fee
+                    withdrawal_cost = amount * price_vector[j] * self.conversion_rate + self.withdrawal_gas_fee
                     transactions.append({
                         'seq': transaction_seq,
                         'type': 'WITHDRAWAL',
@@ -750,7 +872,7 @@ class AllocationOptimizer:
                         'token': token,
                         'amount': amount,
                         'amount_usd': amount * price_vector[j],
-                        'gas_cost_usd': self.gas_fee_usd,
+                        'gas_cost_usd': self.withdrawal_gas_fee,
                         'conversion_cost_usd': amount * price_vector[j] * self.conversion_rate,
                         'total_cost_usd': withdrawal_cost
                     })
@@ -768,8 +890,8 @@ class AllocationOptimizer:
                     amount = self.convert.value[i, j] if self.convert.value is not None else 0
                     
                     if amount > 0.01:
-                        # Calculate conversion cost: amount * conversion_rate + gas_fee
-                        conversion_cost = amount * price_vector[i] * self.conversion_rate + self.gas_fee_usd
+                        # Calculate conversion cost: amount * conversion_rate + conversion_gas_fee
+                        conversion_cost = amount * price_vector[i] * self.conversion_rate + self.conversion_gas_fee
                         transactions.append({
                             'seq': transaction_seq,
                             'type': 'CONVERSION',
@@ -780,7 +902,7 @@ class AllocationOptimizer:
                             'amount': amount,
                             'amount_usd': amount * price_vector[i],
                             'conversion_cost_usd': amount * price_vector[i] * self.conversion_rate,
-                            'gas_cost_usd': self.gas_fee_usd,
+                            'gas_cost_usd': self.conversion_gas_fee,
                             'total_cost_usd': conversion_cost
                         })
                         transaction_seq += 1
@@ -805,7 +927,7 @@ class AllocationOptimizer:
                     
                     # Calculate allocation cost based on conversion requirement
                     conversion_cost = amount_usd * self.conversion_rate
-                    gas_cost = 2 * self.gas_fee_usd if needs_conversion > 0.5 else self.gas_fee_usd
+                    gas_cost = self.allocation_gas_fee + (self.conversion_gas_fee if needs_conversion > 0.5 else 0)
                     total_cost = conversion_cost + gas_cost
                     
                     allocations.append({
@@ -1079,8 +1201,8 @@ def optimize_allocations():
         
         # Fetch prices and gas fees
         token_prices = fetch_token_prices(engine, tokens + ['ETH'])
-        gas_gwei, eth_price = fetch_gas_fee_data(engine)
-        gas_fee_usd = gas_gwei * 1e-9 * eth_price
+        eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data(engine)
+        gas_fees = calculate_transaction_gas_fees(eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
         
         # Fetch parameters
         alloc_params = fetch_allocation_parameters(engine)
@@ -1092,7 +1214,7 @@ def optimize_allocations():
             token_prices=token_prices,
             warm_wallet=warm_wallet,
             current_allocations=current_allocations,
-            gas_fee_usd=gas_fee_usd,
+            gas_fees=gas_fees,
             alloc_params=alloc_params
         )
         
@@ -1126,6 +1248,40 @@ def optimize_allocations():
         logger.info("\n[5/6] Extracting and formatting results...")
         formatted_results = optimizer.format_results()
         
+        # Calculate yield improvement
+        logger.info("\nYIELD IMPROVEMENT ANALYSIS:")
+        logger.info("-" * 50)
+        
+        # Calculate current daily yield from existing allocations
+        current_daily_yield = 0.0
+        for (pool_id, token), amount in current_allocations.items():
+            # Get APY for this pool
+            pool_data = pools_df[pools_df['pool_id'] == pool_id]
+            if not pool_data.empty:
+                apy = pool_data['forecasted_apy'].iloc[0]
+                token_price = token_prices.get(token, 1.0)
+                usd_value = amount * token_price
+                current_daily_yield += usd_value * apy / 100 / 365
+        
+        # Calculate optimized daily yield from new allocations
+        optimized_daily_yield = 0.0
+        for pool_id, pool_data in formatted_results["final_allocations"].items():
+            pool_info = pools_df[pools_df['pool_id'] == pool_id]
+            if not pool_info.empty:
+                apy = pool_info['forecasted_apy'].iloc[0]
+                for token_data in pool_data["tokens"].values():
+                    optimized_daily_yield += token_data['amount_usd'] * apy / 100 / 365
+        
+        # Calculate improvements
+        daily_improvement = optimized_daily_yield - current_daily_yield
+        annual_improvement = daily_improvement * 365
+        improvement_percentage = (daily_improvement / current_daily_yield * 100) if current_daily_yield > 0 else 0
+        
+        logger.info(f"Current daily yield: ${current_daily_yield:.2f}")
+        logger.info(f"Optimized daily yield: ${optimized_daily_yield:.2f}")
+        logger.info(f"Daily improvement: ${daily_improvement:.2f} ({improvement_percentage:+.1f}%)")
+        logger.info(f"Annualized improvement: ${annual_improvement:,.2f}")
+        
         # Print results in the required format
         logger.info("\n" + "=" * 80)
         logger.info("OPTIMIZATION RESULTS")
@@ -1152,11 +1308,23 @@ def optimize_allocations():
                            f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
             elif txn["type"] == "ALLOCATION":
                 conv_flag = " (conv)" if txn.get('needs_conversion', False) else ""
-                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn.get('token', '')}{conv_flag} | "
+                # Get pool name for allocation
+                pool_id = txn.get('to_location', '')
+                pool_name = ''
+                if pool_id and pool_id in optimizer.pools_df['pool_id'].values:
+                    pool_name = optimizer.pools_df[optimizer.pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
+                    pool_name = f" ({pool_name})"
+                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn.get('token', '')}{conv_flag} → Pool {pool_id}{pool_name} | "
                            f"${txn['amount_usd']:10,.2f} | Gas: ${txn['gas_cost_usd']:6.4f} | "
                            f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
             else:  # WITHDRAWAL
-                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn.get('token', '')} | "
+                # Get pool name for withdrawal
+                pool_id = txn.get('from_location', '')
+                pool_name = ''
+                if pool_id and pool_id in optimizer.pools_df['pool_id'].values:
+                    pool_name = optimizer.pools_df[optimizer.pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
+                    pool_name = f" ({pool_name})"
+                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | Pool {pool_id}{pool_name} → {txn.get('token', '')} | "
                            f"${txn['amount_usd']:10,.2f} | Gas: ${txn['gas_cost_usd']:6.4f} | "
                            f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
         
