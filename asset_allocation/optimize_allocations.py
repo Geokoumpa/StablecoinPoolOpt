@@ -603,56 +603,39 @@ class AllocationOptimizer:
         ))
         
         # Transaction costs with correct formulas
-        # 1. Withdrawal costs: amount * conversion_rate + gas_fee for each withdrawal
-        withdrawal_conversion_costs = cp.sum(cp.multiply(
-            cp.multiply(self.withdraw, price_vector),
-            self.conversion_rate
-        ))
-        
         # Create binary variables for withdrawals (is_withdrawal[i,j] = 1 if withdraw[i,j] > 0)
         self.is_withdrawal = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
         
-        # 2. Allocation costs with conversion tracking
-        # For allocations with conversion: (amount * conversion_rate) + 2 * gas_fee
-        # For allocations without conversion: (amount * conversion_rate) + gas_fee
-        allocation_conversion_costs = cp.sum(cp.multiply(
-            cp.multiply(self.alloc, price_vector),
-            self.conversion_rate
-        ))
-        
-        # Gas costs for allocations (allocation gas fee + conversion gas fee if needed)
-        allocation_gas_costs = cp.sum(cp.multiply(
-            self.needs_conversion,  # Allocations that need conversion pay allocation + conversion gas
-            self.allocation_gas_fee + self.conversion_gas_fee
-        )) + cp.sum(cp.multiply(
-            1 - self.needs_conversion,  # Allocations without conversion pay only allocation gas
-            self.allocation_gas_fee
-        ))
-        
-        # 3. Conversion costs: amount * conversion_rate + gas_fee for each conversion
-        conversion_conversion_costs = cp.sum(cp.multiply(
-            cp.multiply(self.convert, price_vector),
-            self.conversion_rate
-        ))
-        
         # Create binary variables for conversions (is_conversion[i,j] = 1 if convert[i,j] > 0)
         self.is_conversion = cp.Variable((self.n_tokens, self.n_tokens), boolean=True)
-        conversion_gas_costs = cp.sum(cp.multiply(
-            self.is_conversion,
-            self.conversion_gas_fee
-        ))
         
-        # Add withdrawal gas costs using binary variables
+        # 1. Withdrawal costs: ONLY gas_fee (no conversion costs for withdrawals)
         withdrawal_gas_costs = cp.sum(cp.multiply(
             self.is_withdrawal,
             self.withdrawal_gas_fee
         ))
         
-        # Total transaction costs (simplified without sign functions for DCP compliance)
+        # 2. Allocation costs: ONLY gas_fee (no conversion costs for allocations)
+        # Gas costs for allocations (only allocation gas fee, no conversion involved)
+        allocation_gas_costs = cp.sum(cp.multiply(
+            self.needs_conversion,  # Binary tracking if allocation exists
+            self.allocation_gas_fee
+        ))
+        
+        # 3. Conversion costs: amount * conversion_rate + gas_fee for each actual conversion
+        conversion_conversion_costs = cp.sum(cp.multiply(
+            cp.multiply(self.convert, price_vector),
+            self.conversion_rate
+        ))
+        
+        conversion_gas_costs = cp.sum(cp.multiply(
+            self.is_conversion,
+            self.conversion_gas_fee
+        ))
+        
+        # Total transaction costs
         self.total_transaction_costs = (
-            withdrawal_conversion_costs + 
             withdrawal_gas_costs +
-            allocation_conversion_costs + 
             allocation_gas_costs +
             conversion_conversion_costs + 
             conversion_gas_costs
@@ -862,8 +845,8 @@ class AllocationOptimizer:
                 amount = self.withdraw.value[i, j] if self.withdraw.value is not None else 0
                 
                 if amount > 0.01:  # Threshold for meaningful transactions
-                    # Calculate withdrawal cost: amount * conversion_rate + withdrawal_gas_fee
-                    withdrawal_cost = amount * price_vector[j] * self.conversion_rate + self.withdrawal_gas_fee
+                    # Calculate withdrawal cost: ONLY gas_fee (no conversion costs)
+                    withdrawal_cost = self.withdrawal_gas_fee
                     transactions.append({
                         'seq': transaction_seq,
                         'type': 'WITHDRAWAL',
@@ -873,7 +856,7 @@ class AllocationOptimizer:
                         'amount': amount,
                         'amount_usd': amount * price_vector[j],
                         'gas_cost_usd': self.withdrawal_gas_fee,
-                        'conversion_cost_usd': amount * price_vector[j] * self.conversion_rate,
+                        'conversion_cost_usd': 0.0,  # No conversion cost for withdrawals
                         'total_cost_usd': withdrawal_cost
                     })
                     transaction_seq += 1
@@ -925,10 +908,10 @@ class AllocationOptimizer:
                     # Check if conversion is needed for this allocation
                     needs_conversion = self.needs_conversion.value[i, j] if self.needs_conversion.value is not None else 0
                     
-                    # Calculate allocation cost based on conversion requirement
-                    conversion_cost = amount_usd * self.conversion_rate
-                    gas_cost = self.allocation_gas_fee + (self.conversion_gas_fee if needs_conversion > 0.5 else 0)
-                    total_cost = conversion_cost + gas_cost
+                    # Calculate allocation cost: ONLY gas_fee (no conversion costs)
+                    # Allocations don't incur conversion costs - only the separate CONVERSION transactions do
+                    gas_cost = self.allocation_gas_fee
+                    total_cost = gas_cost
                     
                     allocations.append({
                         'pool_id': pool_id,
@@ -947,7 +930,7 @@ class AllocationOptimizer:
                         'token': token,
                         'amount': amount,
                         'amount_usd': amount_usd,
-                        'conversion_cost_usd': conversion_cost,
+                        'conversion_cost_usd': 0.0,  # No conversion cost for allocations
                         'gas_cost_usd': gas_cost,
                         'total_cost_usd': total_cost,
                         'needs_conversion': bool(needs_conversion > 0.5)
@@ -1076,6 +1059,35 @@ class AllocationOptimizer:
 # RESULT PERSISTENCE
 # ============================================================================
 
+def delete_todays_allocations(engine):
+    """
+    Deletes all asset allocations for the current date to ensure only one set exists per day.
+    
+    Args:
+        engine: Database engine
+    """
+    conn = engine.raw_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Delete all allocations for today's date
+        cursor.execute("""
+            DELETE FROM asset_allocations 
+            WHERE DATE(timestamp) = CURRENT_DATE;
+        """)
+        
+        deleted_rows = cursor.rowcount
+        conn.commit()
+        logger.info(f"Deleted {deleted_rows} existing allocation records for today")
+        
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error deleting today's allocations: {e}")
+        raise
+    finally:
+        cursor.close()
+
+
 def store_results(engine, run_id: str, allocations_df: pd.DataFrame, 
                   transactions: List[Dict], alloc_params: Dict):
     """
@@ -1093,6 +1105,13 @@ def store_results(engine, run_id: str, allocations_df: pd.DataFrame,
     
     try:
         # Store allocation parameters snapshot
+        # Convert NumPy types to native Python types to avoid PostgreSQL errors
+        max_alloc = alloc_params.get('max_alloc_percentage')
+        conversion_rate = alloc_params.get('conversion_rate')
+        
+        max_alloc = float(max_alloc) if hasattr(max_alloc, 'dtype') else max_alloc
+        conversion_rate = float(conversion_rate) if hasattr(conversion_rate, 'dtype') else conversion_rate
+        
         cursor.execute("""
             INSERT INTO allocation_parameters (
                 run_id, timestamp, max_alloc_percentage, conversion_rate
@@ -1100,12 +1119,15 @@ def store_results(engine, run_id: str, allocations_df: pd.DataFrame,
         """, (
             run_id,
             datetime.now(timezone.utc),
-            alloc_params.get('max_alloc_percentage'),
-            alloc_params.get('conversion_rate')
+            max_alloc,
+            conversion_rate
         ))
         
         # Store transaction sequence
         for txn in transactions:
+            # Convert NumPy types to native Python types to avoid PostgreSQL errors
+            amount = float(txn['amount']) if hasattr(txn['amount'], 'dtype') else txn['amount']
+            
             cursor.execute("""
                 INSERT INTO asset_allocations (
                     run_id, step_number, operation, from_asset, to_asset, 
@@ -1113,11 +1135,11 @@ def store_results(engine, run_id: str, allocations_df: pd.DataFrame,
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s);
             """, (
                 run_id,
-                txn['seq'],
+                int(txn['seq']) if hasattr(txn['seq'], 'dtype') else txn['seq'],
                 txn['type'],
                 txn.get('from_token', txn.get('token')),
                 txn.get('to_token', txn.get('token')),
-                txn['amount'],
+                amount,
                 txn.get('to_location') if txn['type'] == 'ALLOCATION' else None
             ))
         
@@ -1330,6 +1352,11 @@ def optimize_allocations():
         
         # Store results
         logger.info("\n[6/6] Storing results...")
+        
+        # First delete any existing allocations for today to ensure only one set exists
+        logger.info("Deleting any existing allocations for today...")
+        delete_todays_allocations(engine)
+        
         run_id = str(uuid4())
         
         # Convert back to original format for storage

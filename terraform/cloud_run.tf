@@ -297,6 +297,19 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
             }
           }
         }
+
+        dynamic "env" {
+          for_each = contains(["optimize_allocations"], each.key) ? [1] : []
+          content {
+            name  = "MAIN_ASSET_HOLDING_ADDRESS"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.main_asset_holding_address.id
+                version = "latest"
+              }
+            }
+          }
+        }
       }
       timeout = "1800s" # Set timeout to 30 minutes
     }
