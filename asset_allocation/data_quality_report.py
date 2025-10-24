@@ -100,18 +100,14 @@ def fetch_token_prices(engine, tokens: List[str]) -> Dict[str, float]:
     return prices
 
 
-def fetch_gas_fee_data(engine) -> Tuple[float, float]:
-    """Fetches forecasted gas fee and ETH price."""
-    gas_query = """
-    SELECT forecasted_max_gas_gwei
-    FROM gas_fees_daily
-    WHERE date = CURRENT_DATE
-    ORDER BY date DESC
-    LIMIT 1;
+def fetch_gas_fee_data(engine) -> Tuple[float, float, float, float, float]:
     """
-    gas_df = pd.read_sql(gas_query, engine)
-    gas_gwei = gas_df['forecasted_max_gas_gwei'].iloc[0] if not gas_df.empty and pd.notna(gas_df['forecasted_max_gas_gwei'].iloc[0]) else 50.0
+    Fetches forecasted gas fee components and ETH price.
     
+    Returns:
+        Tuple of (eth_price_usd, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
+    """
+    # Fetch ETH price
     eth_price_query = """
     WITH ranked_eth AS (
         SELECT
@@ -127,10 +123,74 @@ def fetch_gas_fee_data(engine) -> Tuple[float, float]:
     eth_df = pd.read_sql(eth_price_query, engine)
     eth_price = eth_df['close_price'].iloc[0] if not eth_df.empty and pd.notna(eth_df['close_price'].iloc[0]) else 3000.0
     
-    gas_fee_usd = gas_gwei * 1e-9 * eth_price
-    logger.info(f"Gas fee: {gas_gwei:.2f} Gwei, ETH price: ${eth_price:.2f}, Gas fee USD: ${gas_fee_usd:.6f}")
+    # Gas fee components based on requirements
+    base_fee_transfer_gwei = 10.0  # Base fee for transfer/deposit
+    base_fee_swap_gwei = 30.0       # Base fee for swap
+    priority_fee_gwei = 10.0        # Priority fee
+    min_gas_units = 21000          # Minimum gas units
     
-    return gas_gwei, eth_price
+    logger.info(f"ETH price: ${eth_price:.2f}")
+    logger.info(f"Gas fee components - Base transfer: {base_fee_transfer_gwei} Gwei, Base swap: {base_fee_swap_gwei} Gwei, Priority: {priority_fee_gwei} Gwei, Min gas units: {min_gas_units}")
+    
+    return eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
+
+def calculate_gas_fee_usd(gas_units: float, base_fee_gwei: float, priority_fee_gwei: float, eth_price_usd: float) -> float:
+    """
+    Calculate gas fee in USD based on the formula: Gas fee = Gas units * (base fee + priority fee)
+    
+    Args:
+        gas_units: Gas units (limit) for the transaction
+        base_fee_gwei: Base fee in Gwei
+        priority_fee_gwei: Priority fee in Gwei
+        eth_price_usd: ETH price in USD
+        
+    Returns:
+        Gas fee in USD
+    """
+    total_fee_gwei = gas_units * (base_fee_gwei + priority_fee_gwei)
+    gas_fee_usd = total_fee_gwei * 1e-9 * eth_price_usd
+    return gas_fee_usd
+
+
+def calculate_transaction_gas_fees(eth_price_usd: float, base_fee_transfer_gwei: float, 
+                                   base_fee_swap_gwei: float, priority_fee_gwei: float, 
+                                   min_gas_units: float) -> Dict[str, float]:
+    """
+    Calculate gas fees for different transaction types.
+    
+    Args:
+        eth_price_usd: ETH price in USD
+        base_fee_transfer_gwei: Base fee for transfer/deposit in Gwei
+        base_fee_swap_gwei: Base fee for swap in Gwei
+        priority_fee_gwei: Priority fee in Gwei
+        min_gas_units: Minimum gas units
+        
+    Returns:
+        Dictionary with gas fees for different transaction types in USD
+    """
+    # Pool allocation/withdrawal gas fee (using transfer base fee)
+    pool_transaction_gas_fee_usd = calculate_gas_fee_usd(
+        min_gas_units, base_fee_transfer_gwei, priority_fee_gwei, eth_price_usd
+    )
+    
+    # Token swap gas fee (using swap base fee)
+    token_swap_gas_fee_usd = calculate_gas_fee_usd(
+        min_gas_units, base_fee_swap_gwei, priority_fee_gwei, eth_price_usd
+    )
+    
+    gas_fees = {
+        'allocation': pool_transaction_gas_fee_usd,      # Allocating to pools
+        'withdrawal': pool_transaction_gas_fee_usd,      # Withdrawing from pools
+        'conversion': token_swap_gas_fee_usd,            # Token swaps/conversions
+        'transfer': pool_transaction_gas_fee_usd,        # General transfers
+        'deposit': pool_transaction_gas_fee_usd          # Deposits to pools
+    }
+    
+    logger.info(f"Transaction gas fees - Pool Allocation/Withdrawal: ${pool_transaction_gas_fee_usd:.6f}, Token Swap/Conversion: ${token_swap_gas_fee_usd:.6f}")
+    
+    return gas_fees
+    
+    return eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
 
 
 def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, str], float]]:
@@ -603,22 +663,19 @@ class DataQualityReporter:
             )
             return {}
     
-    def analyze_gas_fee_data(self) -> Tuple[float, float]:
+    def analyze_gas_fee_data(self) -> Tuple[float, float, float, float, float]:
         """Analyze gas fee data quality."""
         logger.info("Analyzing gas fee data quality...")
         
         try:
-            gas_gwei, eth_price = fetch_gas_fee_data(self.engine)
+            eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data(self.engine)
+            
+            # Calculate transaction gas fees
+            gas_fees = calculate_transaction_gas_fees(
+                eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
+            )
             
             # Check for fallback values
-            if gas_gwei == self.fallback_values['gas_gwei']:
-                self._add_fallback(
-                    'gas_fees',
-                    'gas_gwei',
-                    gas_gwei,
-                    'gas_fees_daily table'
-                )
-            
             if eth_price == self.fallback_values['eth_price']:
                 self._add_fallback(
                     'gas_fees',
@@ -628,23 +685,6 @@ class DataQualityReporter:
                 )
             
             # Check for abnormal values
-            if gas_gwei < self.expected_ranges['gas_gwei']['min']:
-                self._add_abnormal_value(
-                    'gas_fees',
-                    'gas_gwei',
-                    gas_gwei,
-                    f"Gas price below {self.expected_ranges['gas_gwei']['min']} Gwei",
-                    'warning'
-                )
-            elif gas_gwei > self.expected_ranges['gas_gwei']['max']:
-                self._add_abnormal_value(
-                    'gas_fees',
-                    'gas_gwei',
-                    gas_gwei,
-                    f"Gas price above {self.expected_ranges['gas_gwei']['max']} Gwei",
-                    'warning'
-                )
-            
             if eth_price < self.expected_ranges['eth_price']['min']:
                 self._add_abnormal_value(
                     'gas_fees',
@@ -662,25 +702,32 @@ class DataQualityReporter:
                     'warning'
                 )
             
-            gas_fee_usd = gas_gwei * 1e-9 * eth_price
-            
-            self._add_summary('gas_gwei', gas_gwei)
+            # Add summary values
             self._add_summary('eth_price_usd', eth_price)
-            self._add_summary('gas_fee_usd', gas_fee_usd)
+            self._add_summary('base_fee_transfer_gwei', base_fee_transfer_gwei)
+            self._add_summary('base_fee_swap_gwei', base_fee_swap_gwei)
+            self._add_summary('priority_fee_gwei', priority_fee_gwei)
+            self._add_summary('min_gas_units', min_gas_units)
+            self._add_summary('pool_allocation_gas_fee_usd', gas_fees['allocation'])
+            self._add_summary('pool_withdrawal_gas_fee_usd', gas_fees['withdrawal'])
+            self._add_summary('token_swap_gas_fee_usd', gas_fees['conversion'])
             
             # Store detailed gas fee quality info
             self.report['gas_fee_quality'] = {
-                'gas_gwei': gas_gwei,
                 'eth_price_usd': eth_price,
-                'gas_fee_usd': gas_fee_usd,
-                'is_gas_fallback': gas_gwei == self.fallback_values['gas_gwei'],
+                'base_fee_transfer_gwei': base_fee_transfer_gwei,
+                'base_fee_swap_gwei': base_fee_swap_gwei,
+                'priority_fee_gwei': priority_fee_gwei,
+                'min_gas_units': min_gas_units,
+                'pool_allocation_gas_fee_usd': gas_fees['allocation'],
+                'pool_withdrawal_gas_fee_usd': gas_fees['withdrawal'],
+                'token_swap_gas_fee_usd': gas_fees['conversion'],
                 'is_eth_fallback': eth_price == self.fallback_values['eth_price'],
-                'gas_abnormal': gas_gwei < self.expected_ranges['gas_gwei']['min'] or gas_gwei > self.expected_ranges['gas_gwei']['max'],
                 'eth_abnormal': eth_price < self.expected_ranges['eth_price']['min'] or eth_price > self.expected_ranges['eth_price']['max']
             }
             
-            logger.info(f"Gas fee analysis complete: {gas_gwei:.2f} Gwei, ${eth_price:.2f} ETH, ${gas_fee_usd:.6f} per transaction")
-            return gas_gwei, eth_price
+            logger.info(f"Gas fee analysis complete: {base_fee_transfer_gwei:.2f} Gwei base transfer, {base_fee_swap_gwei:.2f} Gwei base swap, {priority_fee_gwei:.2f} Gwei priority, ${eth_price:.2f} ETH")
+            return eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
             
         except Exception as e:
             logger.error(f"Error analyzing gas fee data: {e}")
@@ -691,7 +738,7 @@ class DataQualityReporter:
                 "Failed to analyze gas fee data",
                 'critical'
             )
-            return self.fallback_values['gas_gwei'], self.fallback_values['eth_price']
+            return self.fallback_values['eth_price'], 10.0, 30.0, 10.0, 21000
     
     def analyze_balance_data(self) -> Tuple[Dict[str, float], Dict[Tuple[str, str], float]]:
         """Analyze balance data quality."""
@@ -863,12 +910,16 @@ class DataQualityReporter:
                 )
             
             # Analyze gas fee impact
-            gas_gwei, eth_price = fetch_gas_fee_data(self.engine)
-            gas_fee_usd = gas_gwei * 1e-9 * eth_price
+            eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data(self.engine)
+            gas_fees = calculate_transaction_gas_fees(
+                eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
+            )
             
             # Estimate transaction costs for all pools
             estimated_transactions = len(pools_df) * 3  # Assume 3 transactions per pool on average
-            total_gas_cost = estimated_transactions * gas_fee_usd
+            # Use average gas fee (mix of allocation/withdrawal and conversion fees)
+            avg_gas_fee = (gas_fees['allocation'] + gas_fees['conversion']) / 2
+            total_gas_cost = estimated_transactions * avg_gas_fee
             
             self._add_summary('estimated_transactions', estimated_transactions)
             self._add_summary('total_gas_cost_estimate', total_gas_cost)
@@ -1129,7 +1180,7 @@ class DataQualityReporter:
         else:
             token_prices = self.analyze_token_prices(['USDC', 'USDT', 'ETH', 'WBTC'])
         
-        gas_gwei, eth_price = self.analyze_gas_fee_data()
+        eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = self.analyze_gas_fee_data()
         warm_wallet, current_allocations = self.analyze_balance_data()
         alloc_params = self.analyze_allocation_parameters()
         
@@ -1205,7 +1256,7 @@ class DataQualityReporter:
                 if isinstance(value, float):
                     if 'pct' in key or 'rate' in key:
                         print(f"  {key}: {value:.2f}%")
-                    elif 'gas_fee_usd' in key.lower():
+                    elif 'gas_fee_usd' in key.lower() or 'gas_fee' in key.lower():
                         # Special formatting for very small gas fees
                         if value < 0.01:
                             print(f"  {key}: ${value:.6f}")

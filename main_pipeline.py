@@ -106,20 +106,11 @@ def run_pipeline(phases=None):
 
 
 
-    # Phase 4: Fresh Data & Snapshots
-    if "all" in phases or "phase4" in phases:
-        logger.info("--- Phase 4: Fresh Data & Snapshots ---")
-        try:
-            
-            run_script("data_processing.create_allocation_snapshots", "create_allocation_snapshots.py")
-            logger.info("Phase 4 completed successfully.")
-        except Exception as e:
-            logger.error(f"Error during Phase 4 (Fresh Data & Snapshots): {e}")
-            sys.exit(1)
+    
 
-    # Phase 5: Forecasting
-    if "all" in phases or "phase5" in phases:
-        logger.info("--- Phase 5: Forecasting ---")
+    # Phase 4: Forecasting
+    if "all" in phases or "phase4" in phases:
+        logger.info("--- Phase 4: Forecasting ---")
         try:
             run_script("forecasting.forecast_pools", "forecast_pools.py")
             run_script("forecasting.forecast_gas_fees", "forecast_gas_fees.py")
@@ -128,9 +119,9 @@ def run_pipeline(phases=None):
             logger.error(f"Error during Phase 5 (Forecasting): {e}")
             sys.exit(1)
 
-    # Phase 6: Asset Allocation
-    if "all" in phases or "phase6" in phases:
-        logger.info("--- Phase 6: Asset Allocation ---")
+    # Phase 5: Asset Allocation
+    if "all" in phases or "phase5" in phases:
+        logger.info("--- Phase 5: Asset Allocation ---")
         try:
             run_script("reporting_notification.manage_ledger", "manage_ledger.py")
             run_script("asset_allocation.optimize_allocations", "optimize_allocations.py")
@@ -139,9 +130,9 @@ def run_pipeline(phases=None):
             logger.error(f"Error during Phase 6 (Asset Allocation): {e}")
             sys.exit(1)
 
-    # Phase 7: Reporting & Notification
-    if "all" in phases or "phase7" in phases:
-        logger.info("--- Phase 7: Reporting & Notification ---")
+    # Phase 6: Reporting & Notification
+    if "all" in phases or "phase6" in phases:
+        logger.info("--- Phase 6: Reporting & Notification ---")
         try:
             run_script("reporting_notification.post_slack_notification", "post_slack_notification.py")
             logger.info("Phase 7 completed successfully.")
@@ -182,20 +173,17 @@ def run_pipeline(phases=None):
         logger.info("     • Final filtering completed (with icebox)")
         logger.info("     • Historical metrics calculated for filtered pools (6 months)")
         logger.info("     • Missing historical metrics filled for filtered pools")
+    
     if "all" in phases or "phase4" in phases:
-        logger.info("  ✅ Phase 4: Fresh Data & Snapshots")
-
-        logger.info("     • Final allocation snapshots created")
-    if "all" in phases or "phase5" in phases:
-        logger.info("  ✅ Phase 5: Forecasting")
+        logger.info("  ✅ Phase 4: Forecasting")
         logger.info("     • Pool forecasts generated")
         logger.info("     • Gas fee forecasts generated")
-    if "all" in phases or "phase6" in phases:
-        logger.info("  ✅ Phase 6: Asset Allocation")
+    if "all" in phases or "phase5" in phases:
+        logger.info("  ✅ Phase 5: Asset Allocation")
         logger.info("     • Daily balances updated")
         logger.info("     • Portfolio optimization completed")
-    if "all" in phases or "phase7" in phases:
-        logger.info("  ✅ Phase 7: Reporting & Notification")
+    if "all" in phases or "phase6" in phases:
+        logger.info("  ✅ Phase 6: Reporting & Notification")
         logger.info("     • Slack notifications sent")
     logger.info("")
     logger.info("💾 Data stored in PostgreSQL database")

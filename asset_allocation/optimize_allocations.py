@@ -336,7 +336,7 @@ def fetch_allocation_parameters(engine) -> Dict:
         }
     
     params = df.iloc[0].to_dict()
-    logger.info(f"Loaded allocation parameters: max_alloc={params.get('max_alloc_percentage')}, tvl_limit={params.get('tvl_limit_percentage')}")
+    logger.info(f"Loaded allocation parameters with run_id={params.get('run_id')}: max_alloc={params.get('max_alloc_percentage')}, tvl_limit={params.get('tvl_limit_percentage')}")
     return params
 
 
@@ -1104,24 +1104,7 @@ def store_results(engine, run_id: str, allocations_df: pd.DataFrame,
     cursor = conn.cursor()
     
     try:
-        # Store allocation parameters snapshot
-        # Convert NumPy types to native Python types to avoid PostgreSQL errors
-        max_alloc = alloc_params.get('max_alloc_percentage')
-        conversion_rate = alloc_params.get('conversion_rate')
-        
-        max_alloc = float(max_alloc) if hasattr(max_alloc, 'dtype') else max_alloc
-        conversion_rate = float(conversion_rate) if hasattr(conversion_rate, 'dtype') else conversion_rate
-        
-        cursor.execute("""
-            INSERT INTO allocation_parameters (
-                run_id, timestamp, max_alloc_percentage, conversion_rate
-            ) VALUES (%s, %s, %s, %s);
-        """, (
-            run_id,
-            datetime.now(timezone.utc),
-            max_alloc,
-            conversion_rate
-        ))
+        # Allocation parameters will be stored at the end with the actual run_id
         
         # Store transaction sequence
         for txn in transactions:
@@ -1228,6 +1211,7 @@ def optimize_allocations():
         
         # Fetch parameters
         alloc_params = fetch_allocation_parameters(engine)
+        allocation_run_id = alloc_params.get('run_id')
         
         # Initialize optimizer
         logger.info("\n[3/6] Initializing optimizer...")
@@ -1357,7 +1341,7 @@ def optimize_allocations():
         logger.info("Deleting any existing allocations for today...")
         delete_todays_allocations(engine)
         
-        run_id = str(uuid4())
+        run_id = allocation_run_id
         
         # Convert back to original format for storage
         allocations_df = pd.DataFrame([
