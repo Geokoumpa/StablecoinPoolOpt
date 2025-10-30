@@ -43,7 +43,7 @@ def fetch_pool_data(engine) -> pd.DataFrame:
         p.protocol,
         pdm.forecasted_apy,
         pdm.forecasted_tvl,
-        pdm.normalized_tokens
+        p.underlying_tokens
     FROM pool_daily_metrics pdm
     JOIN pools p ON pdm.pool_id = p.pool_id
     WHERE pdm.date = CURRENT_DATE 
@@ -267,26 +267,7 @@ def fetch_allocation_parameters(engine) -> Dict:
     return params
 
 
-def parse_pool_tokens_with_mapping(symbol: str, normalized_tokens_json: str = None) -> List[str]:
-    """Extracts tokens from pool symbol and applies normalized mappings if available."""
-    tokens = [t.upper().strip() for t in symbol.split('-')]
-    
-    if normalized_tokens_json:
-        try:
-            token_mappings = json_module.loads(normalized_tokens_json)
-            normalized_tokens = []
-            for token in tokens:
-                mapped_token = None
-                for original, approved in token_mappings.items():
-                    if token.lower() == original.lower():
-                        mapped_token = approved.upper()
-                        break
-                normalized_tokens.append(mapped_token if mapped_token else token)
-            return normalized_tokens
-        except (json_module.JSONDecodeError, TypeError) as e:
-            logger.warning(f"Failed to parse normalized_tokens_json: {e}")
-    
-    return tokens
+
 
 
 def build_token_universe(pools_df: pd.DataFrame, 
@@ -295,11 +276,44 @@ def build_token_universe(pools_df: pd.DataFrame,
     """Builds the complete set of tokens needed for optimization."""
     tokens = set()
     
+    # Tokens from pools (using underlying_tokens if available, otherwise normalized mappings)
     for _, row in pools_df.iterrows():
-        symbol = row['symbol']
-        normalized_tokens_json = row.get('normalized_tokens')
-        pool_tokens = parse_pool_tokens_with_mapping(symbol, normalized_tokens_json)
-        tokens.update(pool_tokens)
+        # Prefer underlying_tokens from the pools table (populated by filter_pools_pre)
+        underlying_tokens = row.get('underlying_tokens')
+        
+        # Check if underlying_tokens is valid (not None, not NaN, not empty)
+        # Handle both string JSON and already-parsed list types
+        has_valid_tokens = False
+        if isinstance(underlying_tokens, list):
+            # Already a list from database
+            has_valid_tokens = len(underlying_tokens) > 0
+        elif isinstance(underlying_tokens, str):
+            # String JSON that needs parsing
+            has_valid_tokens = True
+        elif underlying_tokens is not None:
+            # Some other type - check if it's not NaN
+            has_valid_tokens = pd.notna(underlying_tokens)
+        
+        if has_valid_tokens:
+            try:
+                # Parse JSON array of token symbols
+                if isinstance(underlying_tokens, str):
+                    pool_tokens = json.loads(underlying_tokens)
+                elif isinstance(underlying_tokens, list):
+                    pool_tokens = underlying_tokens
+                else:
+                    pool_tokens = None
+                
+                if isinstance(pool_tokens, list) and pool_tokens:
+                    tokens.update(pool_tokens)
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Failed to parse underlying_tokens for pool {row.get('pool_id')}: {underlying_tokens}")
+        
+        # No fallback needed - underlying_tokens should always be available
+        # If underlying_tokens is not available, log warning but continue
+        if not has_valid_tokens:
+            logger.warning(f"Pool {row.get('pool_id')} has no valid underlying_tokens")
     
     tokens.update(warm_wallet.keys())
     
@@ -499,35 +513,8 @@ class DataQualityReporter:
                     'warning'
                 )
             
-            # Normalized tokens analysis
-            pools_with_mappings = pools_df[pools_df['normalized_tokens'].notna()]
-            self._add_summary('pools_with_token_mappings', len(pools_with_mappings))
-            
-            # Analyze token mapping quality
-            mapping_issues = 0
-            invalid_json_count = 0
-            
-            for _, pool in pools_with_mappings.iterrows():
-                try:
-                    mappings = json.loads(pool['normalized_tokens'])
-                    original_tokens = parse_pool_tokens_with_mapping(pool['symbol'], None)
-                    mapped_tokens = parse_pool_tokens_with_mapping(pool['symbol'], pool['normalized_tokens'])
-                    
-                    if original_tokens != mapped_tokens:
-                        mapping_issues += 1
-                        
-                except (json.JSONDecodeError, TypeError):
-                    invalid_json_count += 1
-                    self._add_abnormal_value(
-                        'token_mapping',
-                        f"{pool['pool_id']} ({pool['symbol']})",
-                        pool['normalized_tokens'],
-                        "Invalid JSON in normalized_tokens",
-                        'critical'
-                    )
-            
-            self._add_summary('pools_with_token_changes', mapping_issues)
-            self._add_summary('invalid_token_mappings', invalid_json_count)
+            # No normalized tokens analysis needed - using underlying_tokens directly
+            self._add_summary('pools_with_underlying_tokens', len(pools_df))
             
             # Data completeness checks
             null_counts = pools_df.isnull().sum()
@@ -548,9 +535,7 @@ class DataQualityReporter:
                 'data_types': pools_df.dtypes.to_dict(),
                 'null_counts': null_counts.to_dict(),
                 'extreme_apy_pools': len(high_apy_pools),
-                'low_tvl_pools': len(low_tvl_pools),
-                'mapping_issues': mapping_issues,
-                'invalid_mappings': invalid_json_count
+                'low_tvl_pools': len(low_tvl_pools)
             }
             
             # Check if we have enough pools for meaningful optimization

@@ -49,8 +49,11 @@ def update_pools_metadata_bulk(conn, pools_data):
             logger.warning(f"Skipping pool with missing essential data: {pool_data}")
             continue
         
+        # Extract underlying tokens from the pool data
+        underlying_tokens = pool_data.get('underlyingTokens', [])
+        
         values_to_insert.append((
-            pool_id, symbol, chain, project, symbol, tvl_usd, apy, datetime.now(timezone.utc)
+            pool_id, symbol, chain, project, symbol, tvl_usd, apy, underlying_tokens, datetime.now(timezone.utc)
         ))
 
     if not values_to_insert:
@@ -61,7 +64,7 @@ def update_pools_metadata_bulk(conn, pools_data):
         with conn.begin() as connection:
             update_query = """
                 INSERT INTO pools (
-                    pool_id, name, chain, protocol, symbol, tvl, apy, last_updated
+                    pool_id, name, chain, protocol, symbol, tvl, apy, underlying_token_addresses, last_updated
                 ) VALUES %s
                 ON CONFLICT (pool_id) DO UPDATE SET
                     name = EXCLUDED.name,
@@ -70,6 +73,7 @@ def update_pools_metadata_bulk(conn, pools_data):
                     symbol = EXCLUDED.symbol,
                     tvl = EXCLUDED.tvl,
                     apy = EXCLUDED.apy,
+                    underlying_token_addresses = EXCLUDED.underlying_token_addresses,
                     last_updated = EXCLUDED.last_updated;
             """
             execute_values(

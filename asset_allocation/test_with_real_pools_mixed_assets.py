@@ -27,7 +27,6 @@ from asset_allocation.optimize_allocations import (
     fetch_gas_fee_data,
     fetch_allocation_parameters,
     calculate_aum,
-    parse_pool_tokens_with_mapping,
     calculate_transaction_gas_fees
 )
 def fetch_approved_tokens(engine) -> List[str]:
@@ -119,12 +118,21 @@ def create_mixed_mock_assets(token_prices: Dict[str, float], pool_tokens: Dict, 
             # Find pools that accept this token, prioritizing lower-APY pools
             pools_for_token = []
             for _, pool in low_apy_pools.iterrows():
-                normalized_tokens_json = pool.get('normalized_tokens')
-                pool_normalized_tokens = parse_pool_tokens_with_mapping(
-                    pool['symbol'], 
-                    normalized_tokens_json
-                )
-                if token in pool_normalized_tokens:
+                underlying_tokens = pool.get('underlying_tokens')
+                pool_underlying_tokens = []
+                if isinstance(underlying_tokens, str):
+                    try:
+                        pool_underlying_tokens = json.loads(underlying_tokens)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Failed to parse underlying_tokens for pool {pool.get('pool_id')}: {underlying_tokens}")
+                        pool_underlying_tokens = []
+                elif isinstance(underlying_tokens, list):
+                    pool_underlying_tokens = underlying_tokens
+                else:
+                    logger.warning(f"Pool {pool.get('pool_id')} has invalid underlying_tokens: {underlying_tokens}")
+                    pool_underlying_tokens = []
+                
+                if token in pool_underlying_tokens:
                     pools_for_token.append(pool['pool_id'])
             
             if pools_for_token:
@@ -140,12 +148,21 @@ def create_mixed_mock_assets(token_prices: Dict[str, float], pool_tokens: Dict, 
             # Find pools that accept this token, prioritizing lower-APY pools
             pools_for_token = []
             for _, pool in low_apy_pools.iterrows():
-                normalized_tokens_json = pool.get('normalized_tokens')
-                pool_normalized_tokens = parse_pool_tokens_with_mapping(
-                    pool['symbol'], 
-                    normalized_tokens_json
-                )
-                if token in pool_normalized_tokens:
+                underlying_tokens = pool.get('underlying_tokens')
+                pool_underlying_tokens = []
+                if isinstance(underlying_tokens, str):
+                    try:
+                        pool_underlying_tokens = json.loads(underlying_tokens)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Failed to parse underlying_tokens for pool {pool.get('pool_id')}: {underlying_tokens}")
+                        pool_underlying_tokens = []
+                elif isinstance(underlying_tokens, list):
+                    pool_underlying_tokens = underlying_tokens
+                else:
+                    logger.warning(f"Pool {pool.get('pool_id')} has invalid underlying_tokens: {underlying_tokens}")
+                    pool_underlying_tokens = []
+                
+                if token in pool_underlying_tokens:
                     pools_for_token.append(pool['pool_id'])
             
             if pools_for_token:
@@ -315,11 +332,21 @@ def test_real_pools_with_mixed_assets():
         logger.info("\nCreating mixed mock assets (warm wallet + allocated)...")
         pool_tokens = {}
         for _, pool in pools_df.iterrows():
-            normalized_tokens_json = pool.get('normalized_tokens')
-            pool_tokens[pool['pool_id']] = parse_pool_tokens_with_mapping(
-                pool['symbol'], 
-                normalized_tokens_json
-            )
+            underlying_tokens = pool.get('underlying_tokens')
+            pool_token_list = []
+            if isinstance(underlying_tokens, str):
+                try:
+                    pool_token_list = json.loads(underlying_tokens)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(f"Failed to parse underlying_tokens for pool {pool.get('pool_id')}: {underlying_tokens}")
+                    pool_token_list = []
+            elif isinstance(underlying_tokens, list):
+                pool_token_list = underlying_tokens
+            else:
+                logger.warning(f"Pool {pool.get('pool_id')} has invalid underlying_tokens: {underlying_tokens}")
+                pool_token_list = []
+            
+            pool_tokens[pool['pool_id']] = pool_token_list
         
         # Get all unique tokens from pools
         available_tokens = list(set(token for tokens in pool_tokens.values() for token in tokens))

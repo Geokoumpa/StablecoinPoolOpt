@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 def filter_pools_pre():
     """
-    Pre-filtering phase: Filter pools based on approved protocols, approved tokens, and blacklisted tokens.
+    Pre-filtering phase: Filter pools based on approved protocols, and approved tokens.
     Does NOT filter based on TVL, APY, or icebox tokens (those come from final filtering).
     """
     logger.info("Starting pre-pool filtering...")
@@ -49,8 +49,8 @@ def filter_pools_pre():
             result = conn.execute(text("SELECT token_symbol FROM approved_tokens;"))
             approved_tokens = {row[0] for row in result.fetchall()}
 
-            # Get blacklisted tokens
-            result = conn.execute(text("SELECT token_symbol FROM blacklisted_tokens;"))
+            # Get blacklisted tokens for pendle protocol filtering
+            result = conn.execute(text("SELECT token_symbol FROM blacklisted_tokens WHERE removed_timestamp IS NULL;"))
             blacklisted_tokens = {row[0] for row in result.fetchall()}
 
             logger.info("=== Pre-Pool Filtering Criteria and Thresholds ===")
@@ -60,16 +60,17 @@ def filter_pools_pre():
             logger.info(f"Approved Protocols: {approved_protocols}")
             logger.info(f"Approved Tokens: {approved_tokens}")
             logger.info(f"Blacklisted Tokens: {blacklisted_tokens}")
+            
             logger.info("================================================")
 
             # Fetch all pools for pre-filtering
             result = conn.execute(text("""
-                SELECT pool_id, protocol, symbol, tvl, apy, name, chain
+                SELECT pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses
                 FROM pools p;
             """))
             pools_data = result.fetchall()
 
-            for pool_id, protocol, symbol, tvl, apy, name, chain in pools_data:
+            for pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses in pools_data:
                 filter_reason = []
                 is_filtered_out = False
 
@@ -83,55 +84,50 @@ def filter_pools_pre():
                     filter_reason.append(f"Pool is on chain '{chain}', not Ethereum.")
                     is_filtered_out = True
 
-                # Check token composition: all tokens must be approved and not blacklisted
-                if symbol:
-                    tokens_in_symbol = symbol.split('-')
-                    invalid_tokens = []
-                    blacklisted_in_pool = []
-                    token_mappings = {}  # Store mappings from original to approved tokens
+                # Secondary filtering for pendle protocol pools (takes precedence over other filtering)
+                if protocol.lower() == "pendle":
+                    pendle_matched_token = None
                     
-                    for token in tokens_in_symbol:
-                        # Use SQL to find the longest matching approved token
-                        token_match_query = text("""
-                            SELECT token_symbol
-                            FROM approved_tokens
-                            WHERE LOWER(token_symbol) = LOWER(:token)
-                               OR LOWER(:token) LIKE '%' || LOWER(token_symbol) || '%'
-                            ORDER BY LENGTH(token_symbol) DESC
-                            LIMIT 1;
-                        """)
-                        token_result = conn.execute(token_match_query, {"token": token})
-                        matched_approved_token = token_result.scalar()
+                    # Check for blacklisted tokens first
+                    for blacklisted_token in blacklisted_tokens:
+                        if blacklisted_token.lower() in name.lower():
+                            filter_reason.append(f"Pool name contains blacklisted token: {blacklisted_token}")
+                            is_filtered_out = True
+                            break
+                    
+                    # If not blacklisted, check for approved tokens
+                    if not is_filtered_out:
+                        for approved_token in approved_tokens:
+                            if approved_token.lower() in name.lower():
+                                pendle_matched_token = approved_token
+                                break
                         
-                        if matched_approved_token:
-                            # Store mapping if it's not an exact match
-                            if token.lower() != matched_approved_token.lower():
-                                token_mappings[token] = matched_approved_token
+                        if pendle_matched_token:
+                            # Set the underlying_tokens to the matched approved token
+                            approved_token_symbols = [pendle_matched_token]
+                            logger.info(f"Pendle pool {pool_id} matched with approved token: {pendle_matched_token}")
                         else:
-                            invalid_tokens.append(token)
-                        
-                        # Check for partial match with blacklisted tokens
-                        blacklist_match_query = text("""
-                            SELECT token_symbol
-                            FROM blacklisted_tokens
-                            WHERE LOWER(token_symbol) = LOWER(:token)
-                               OR LOWER(:token) LIKE '%' || LOWER(token_symbol) || '%'
-                               OR LOWER(token_symbol) LIKE '%' || LOWER(:token) || '%'
-                            LIMIT 1;
-                        """)
-                        blacklist_result = conn.execute(blacklist_match_query, {"token": token})
-                        if blacklist_result.scalar():
-                            blacklisted_in_pool.append(token)
-                    
-                    if invalid_tokens:
-                        filter_reason.append(f"Pool contains non-approved token(s): {', '.join(invalid_tokens)}.")
-                        is_filtered_out = True
-                    if blacklisted_in_pool:
-                        filter_reason.append(f"Pool contains blacklisted token(s): {', '.join(blacklisted_in_pool)}.")
-                        is_filtered_out = True
+                            filter_reason.append("Pendle pool name does not contain any approved tokens")
+                            is_filtered_out = True
                 else:
-                    filter_reason.append("Pool has no symbol.")
-                    is_filtered_out = True
+                    # Check token composition using address-based filtering for non-pendle protocols
+                    approved_token_symbols = []
+                    if underlying_token_addresses:
+                        # Get all approved token addresses for efficient lookup
+                        result = conn.execute(text("SELECT token_address, token_symbol FROM approved_tokens WHERE token_address IS NOT NULL;"))
+                        approved_address_to_symbol = {row[0].lower(): row[1] for row in result.fetchall()}
+                        
+                        # Check each underlying token address against approved addresses
+                        for address in underlying_token_addresses:
+                            if address.lower() in approved_address_to_symbol:
+                                approved_token_symbols.append(approved_address_to_symbol[address.lower()])
+                            else:
+                                filter_reason.append(f"Pool contains unapproved token address: {address}")
+                                is_filtered_out = True
+                        
+                    else:
+                        filter_reason.append("Pool has no symbol.")
+                        is_filtered_out = True
 
                 # Check if pool already exists in pool_daily_metrics for today
                 result = conn.execute(
@@ -143,21 +139,27 @@ def filter_pools_pre():
                 )
                 existing_entry = result.fetchone()
 
-                # Convert token mappings to JSON for storage
-                normalized_tokens_json = json.dumps(token_mappings) if token_mappings else None
+                # Update pools table with approved token symbols for approved pools (including pendle pools that matched)
+                if approved_token_symbols:
+                    conn.execute(text("""
+                        UPDATE pools 
+                        SET underlying_tokens = :approved_tokens
+                        WHERE pool_id = :pool_id;
+                    """), {
+                        "approved_tokens": approved_token_symbols,
+                        "pool_id": pool_id
+                    })
                 
                 if existing_entry:
                     conn.execute(
                         text("""
                             UPDATE pool_daily_metrics
-                            SET is_filtered_out = :is_filtered_out, filter_reason = :filter_reason, 
-                                normalized_tokens = :normalized_tokens
+                            SET is_filtered_out = :is_filtered_out, filter_reason = :filter_reason
                             WHERE pool_id = :pool_id AND date = CURRENT_DATE;
                         """),
                         {
                             "is_filtered_out": is_filtered_out,
                             "filter_reason": '; '.join(filter_reason) if filter_reason else None,
-                            "normalized_tokens": normalized_tokens_json,
                             "pool_id": pool_id
                         }
                     )
@@ -165,14 +167,13 @@ def filter_pools_pre():
                     conn.execute(
                         text("""
                             INSERT INTO pool_daily_metrics (
-                                pool_id, date, is_filtered_out, filter_reason, normalized_tokens
-                            ) VALUES (:pool_id, CURRENT_DATE, :is_filtered_out, :filter_reason, :normalized_tokens);
+                                pool_id, date, is_filtered_out, filter_reason
+                            ) VALUES (:pool_id, CURRENT_DATE, :is_filtered_out, :filter_reason);
                         """),
                         {
                             "pool_id": pool_id,
                             "is_filtered_out": is_filtered_out,
-                            "filter_reason": '; '.join(filter_reason) if filter_reason else None,
-                            "normalized_tokens": normalized_tokens_json
+                            "filter_reason": '; '.join(filter_reason) if filter_reason else None
                         }
                     )
 
@@ -207,7 +208,7 @@ def filter_pools_pre():
             logger.info(f"📊 Total pools processed: {total_pools}")
             logger.info(f"📋 Approved protocols: {len(approved_protocols)}")
             logger.info(f"🪙 Approved tokens: {len(approved_tokens)}")
-            logger.info(f"🛑 Blacklisted tokens: {len(blacklisted_tokens)}")
+            
             logger.info(f"✅ Pools approved (passed pre-filtering): {approved_count}")
             logger.info(f"❌ Pools filtered out: {filtered_count}")
             logger.info(f"📊 Approval rate: {(approved_count/total_pools*100):.1f}%" if total_pools > 0 else "N/A")

@@ -46,7 +46,7 @@ def fetch_pool_data(engine) -> pd.DataFrame:
     Includes pools with current allocations even if they're below the APY limit.
     
     Returns:
-        DataFrame with columns: pool_id, symbol, chain, protocol, forecasted_apy, forecasted_tvl, normalized_tokens
+        DataFrame with columns: pool_id, symbol, chain, protocol, forecasted_apy, forecasted_tvl, underlying_tokens
     """
     from config import MAIN_ASSET_HOLDING_ADDRESS
     
@@ -74,7 +74,7 @@ def fetch_pool_data(engine) -> pd.DataFrame:
             p.protocol,
             pdm.forecasted_apy,
             pdm.forecasted_tvl,
-            pdm.normalized_tokens
+            p.underlying_tokens
         FROM pool_daily_metrics pdm
         JOIN pools p ON pdm.pool_id = p.pool_id
         WHERE pdm.date = CURRENT_DATE 
@@ -96,7 +96,7 @@ def fetch_pool_data(engine) -> pd.DataFrame:
             p.protocol,
             pdm.forecasted_apy,
             pdm.forecasted_tvl,
-            pdm.normalized_tokens
+            p.underlying_tokens
         FROM pool_daily_metrics pdm
         JOIN pools p ON pdm.pool_id = p.pool_id
         WHERE pdm.date = CURRENT_DATE 
@@ -344,51 +344,10 @@ def fetch_allocation_parameters(engine) -> Dict:
 # HELPER FUNCTIONS
 # ============================================================================
 
-def parse_pool_tokens(symbol: str) -> List[str]:
-    """
-    Extracts tokens from pool symbol.
-    
-    Args:
-        symbol: Pool symbol (e.g., "DAI-USDC-USDT" or "GTUSDC")
-        
-    Returns:
-        List of token symbols in uppercase
-    """
-    return [t.upper().strip() for t in symbol.split('-')]
 
 
-def parse_pool_tokens_with_mapping(symbol: str, normalized_tokens_json: str = None) -> List[str]:
-    """
-    Extracts tokens from pool symbol and applies normalized mappings if available.
-    
-    Args:
-        symbol: Pool symbol (e.g., "DAI-USDC-USDT" or "GTUSDC")
-        normalized_tokens_json: JSON string containing token mappings from filter_pools_pre
-        
-    Returns:
-        List of token symbols in uppercase, with partial matches replaced by approved tokens
-    """
-    tokens = [t.upper().strip() for t in symbol.split('-')]
-    
-    # Apply normalized mappings if available
-    if normalized_tokens_json:
-        try:
-            token_mappings = json.loads(normalized_tokens_json)
-            # Replace tokens with their mapped approved tokens
-            normalized_tokens = []
-            for token in tokens:
-                # Check if this token has a mapping (case-insensitive)
-                mapped_token = None
-                for original, approved in token_mappings.items():
-                    if token.lower() == original.lower():
-                        mapped_token = approved.upper()
-                        break
-                normalized_tokens.append(mapped_token if mapped_token else token)
-            return normalized_tokens
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.warning(f"Failed to parse normalized_tokens_json: {e}")
-    
-    return tokens
+
+
 
 
 def calculate_aum(warm_wallet: Dict[str, float], 
@@ -432,12 +391,41 @@ def build_token_universe(pools_df: pd.DataFrame,
     """
     tokens = set()
     
-    # Tokens from pools (using normalized mappings if available)
+    # Tokens from pools using underlying_tokens (populated by filter_pools_pre)
     for _, row in pools_df.iterrows():
-        symbol = row['symbol']
-        normalized_tokens_json = row.get('normalized_tokens')
-        pool_tokens = parse_pool_tokens_with_mapping(symbol, normalized_tokens_json)
-        tokens.update(pool_tokens)
+        underlying_tokens = row.get('underlying_tokens')
+        
+        # Check if underlying_tokens is valid (not None, not NaN, not empty)
+        # Handle both string JSON and already-parsed list types
+        has_valid_tokens = False
+        if isinstance(underlying_tokens, list):
+            # Already a list from database
+            has_valid_tokens = len(underlying_tokens) > 0
+        elif isinstance(underlying_tokens, str):
+            # String JSON that needs parsing
+            has_valid_tokens = True
+        elif underlying_tokens is not None:
+            # Some other type - check if it's not NaN
+            has_valid_tokens = pd.notna(underlying_tokens)
+        
+        if has_valid_tokens:
+            try:
+                # Parse JSON array of token symbols
+                if isinstance(underlying_tokens, str):
+                    pool_tokens = json.loads(underlying_tokens)
+                elif isinstance(underlying_tokens, list):
+                    pool_tokens = underlying_tokens
+                else:
+                    pool_tokens = None
+                
+                if isinstance(pool_tokens, list) and pool_tokens:
+                    tokens.update(pool_tokens)
+                else:
+                    logger.warning(f"No valid underlying_tokens found for pool {row.get('pool_id')}")
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Failed to parse underlying_tokens for pool {row.get('pool_id')}: {underlying_tokens}")
+        else:
+            logger.warning(f"Pool {row.get('pool_id')} has no underlying_tokens")
     
     # Tokens in warm wallet
     tokens.update(warm_wallet.keys())
@@ -501,8 +489,21 @@ class AllocationOptimizer:
         self.pool_tvl = {}     # pool_id -> forecasted_tvl
         for idx, row in pools_df.iterrows():
             pool_id = row['pool_id']
-            normalized_tokens_json = row.get('normalized_tokens')
-            tokens = parse_pool_tokens_with_mapping(row['symbol'], normalized_tokens_json)
+            underlying_tokens = row.get('underlying_tokens')
+            
+            # Parse underlying_tokens from JSON if needed
+            if isinstance(underlying_tokens, str):
+                try:
+                    tokens = json.loads(underlying_tokens)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(f"Failed to parse underlying_tokens for pool {pool_id}: {underlying_tokens}")
+                    tokens = []
+            elif isinstance(underlying_tokens, list):
+                tokens = underlying_tokens
+            else:
+                logger.warning(f"Pool {pool_id} has invalid underlying_tokens: {underlying_tokens}")
+                tokens = []
+            
             self.pool_tokens[pool_id] = tokens
             self.pool_tvl[pool_id] = row['forecasted_tvl']
         
