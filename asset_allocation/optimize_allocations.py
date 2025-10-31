@@ -318,8 +318,36 @@ def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, st
     return warm_wallet, allocations
 
 
-def fetch_allocation_parameters(engine) -> Dict:
-    """Fetches the latest allocation parameters."""
+def fetch_default_parameters(engine) -> Dict:
+    """Fetches default parameters from default_allocation_parameters table."""
+    from sqlalchemy import text
+    
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT parameter_name, parameter_value FROM default_allocation_parameters"))
+        defaults = {}
+        for row in result:
+            defaults[row[0]] = row[1]  # Access by index instead of column name
+        logger.info(f"Loaded {len(defaults)} default parameters from default_allocation_parameters")
+        return defaults
+
+
+def fetch_allocation_parameters(engine, custom_overrides: Dict = None) -> Dict:
+    """
+    Fetches the latest allocation parameters with support for custom overrides.
+    
+    Args:
+        engine: Database engine
+        custom_overrides: Optional dictionary of custom parameter overrides
+        
+    Returns:
+        Dictionary of allocation parameters
+    """
+    from sqlalchemy import text
+    
+    # First, fetch default parameters
+    default_params = fetch_default_parameters(engine)
+    
+    # Then, fetch the latest allocation parameters
     query = """
     SELECT *
     FROM allocation_parameters
@@ -327,16 +355,80 @@ def fetch_allocation_parameters(engine) -> Dict:
     LIMIT 1;
     """
     df = pd.read_sql(query, engine)
-    if df.empty:
-        logger.warning("No allocation parameters found, using defaults")
-        return {
-            'max_alloc_percentage': 0.20,
-            'conversion_rate': 0.0004,
-            'min_transaction_value': 50.0
-        }
     
-    params = df.iloc[0].to_dict()
-    logger.info(f"Loaded allocation parameters with run_id={params.get('run_id')}: max_alloc={params.get('max_alloc_percentage')}, tvl_limit={params.get('tvl_limit_percentage')}")
+    if df.empty:
+        logger.warning("No allocation parameters found, using defaults from default_allocation_parameters")
+        params = {
+            'run_id': None,
+            'timestamp': None,
+            'max_alloc_percentage': float(default_params.get('max_alloc_percentage', 0.25)),
+            'conversion_rate': float(default_params.get('conversion_rate', 0.0004)),
+            'min_transaction_value': 50.0,
+            'tvl_limit_percentage': float(default_params.get('tvl_limit_percentage', 0.05)),
+            'min_pools': int(default_params.get('min_pools', 5)),
+            'profit_optimization': default_params.get('profit_optimization', 'true').lower() == 'true',
+            'token_marketcap_limit': float(default_params.get('token_marketcap_limit', 1000000000.0)),
+            'pool_tvl_limit': float(default_params.get('pool_tvl_limit', 100000.0)),
+            'pool_apy_limit': float(default_params.get('pool_apy_limit', 0.01)),
+            'pool_pair_tvl_ratio_min': float(default_params.get('pool_pair_tvl_ratio_min', 0.3)),
+            'pool_pair_tvl_ratio_max': float(default_params.get('pool_pair_tvl_ratio_max', 0.5)),
+            'group1_max_pct': float(default_params.get('group1_max_pct', 0.35)),
+            'group2_max_pct': float(default_params.get('group2_max_pct', 0.35)),
+            'group3_max_pct': float(default_params.get('group3_max_pct', 0.3)),
+            'position_max_pct_total_assets': float(default_params.get('position_max_pct_total_assets', 0.25)),
+            'position_max_pct_pool_tvl': float(default_params.get('position_max_pct_pool_tvl', 0.05)),
+            'group1_apy_delta_max': float(default_params.get('group1_apy_delta_max', 0.01)),
+            'group1_7d_stddev_max': float(default_params.get('group1_7d_stddev_max', 0.015)),
+            'group1_30d_stddev_max': float(default_params.get('group1_30d_stddev_max', 0.02)),
+            'group2_apy_delta_max': float(default_params.get('group2_apy_delta_max', 0.03)),
+            'group2_7d_stddev_max': float(default_params.get('group2_7d_stddev_max', 0.04)),
+            'group2_30d_stddev_max': float(default_params.get('group2_30d_stddev_max', 0.05)),
+            'group3_apy_delta_min': float(default_params.get('group3_apy_delta_min', 0.03)),
+            'group3_7d_stddev_min': float(default_params.get('group3_7d_stddev_min', 0.04)),
+            'group3_30d_stddev_min': float(default_params.get('group3_30d_stddev_min', 0.02)),
+            'icebox_ohlc_l_threshold_pct': float(default_params.get('icebox_ohlc_l_threshold_pct', 0.02)),
+            'icebox_ohlc_l_days_threshold': int(default_params.get('icebox_ohlc_l_days_threshold', 2)),
+            'icebox_ohlc_c_threshold_pct': float(default_params.get('icebox_ohlc_c_threshold_pct', 0.01)),
+            'icebox_ohlc_c_days_threshold': int(default_params.get('icebox_ohlc_c_days_threshold', 1)),
+            'icebox_recovery_l_days_threshold': int(default_params.get('icebox_recovery_l_days_threshold', 2)),
+            'icebox_recovery_c_days_threshold': int(default_params.get('icebox_recovery_c_days_threshold', 3))
+        }
+        logger.info("Parameter source: Default values from default_allocation_parameters table")
+    else:
+        params = df.iloc[0].to_dict()
+        
+        # Fill in any NULL values with defaults
+        if params.get('max_alloc_percentage') is None:
+            logger.warning("max_alloc_percentage is NULL, using default value")
+            params['max_alloc_percentage'] = float(default_params.get('max_alloc_percentage', 0.25))
+        if params.get('conversion_rate') is None:
+            logger.warning("conversion_rate is NULL, using default value")
+            params['conversion_rate'] = float(default_params.get('conversion_rate', 0.0004))
+        if params.get('tvl_limit_percentage') is None:
+            logger.warning("tvl_limit_percentage is NULL, using default value")
+            params['tvl_limit_percentage'] = float(default_params.get('tvl_limit_percentage', 0.05))
+        if params.get('min_pools') is None:
+            logger.warning("min_pools is NULL, using default value")
+            params['min_pools'] = int(default_params.get('min_pools', 5))
+        if params.get('profit_optimization') is None:
+            logger.warning("profit_optimization is NULL, using default value")
+            params['profit_optimization'] = default_params.get('profit_optimization', 'true').lower() == 'true'
+        
+        logger.info(f"Parameter source: Latest allocation_parameters with run_id={params.get('run_id')}")
+    
+    # Apply custom overrides if provided
+    if custom_overrides:
+        logger.info(f"Applying {len(custom_overrides)} custom parameter overrides")
+        for key, value in custom_overrides.items():
+            if key in params:
+                original_value = params[key]
+                params[key] = value
+                logger.info(f"Override applied: {key} changed from {original_value} to {value}")
+            else:
+                logger.warning(f"Override parameter '{key}' not found in parameters, skipping")
+        logger.info("Custom overrides applied successfully")
+    
+    logger.info(f"Final parameters: max_alloc={params.get('max_alloc_percentage')}, tvl_limit={params.get('tvl_limit_percentage')}")
     return params
 
 
@@ -1142,9 +1234,12 @@ def store_results(engine, run_id: str, allocations_df: pd.DataFrame,
 # MAIN ORCHESTRATION
 # ============================================================================
 
-def optimize_allocations():
+def optimize_allocations(custom_overrides: Dict = None):
     """
     Main orchestration function for asset allocation optimization.
+    
+    Args:
+        custom_overrides: Optional dictionary of custom parameter overrides for this run
     """
     logger.info("=" * 80)
     logger.info("STABLECOIN POOL ALLOCATION OPTIMIZATION")
@@ -1211,7 +1306,7 @@ def optimize_allocations():
         gas_fees = calculate_transaction_gas_fees(eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
         
         # Fetch parameters
-        alloc_params = fetch_allocation_parameters(engine)
+        alloc_params = fetch_allocation_parameters(engine, custom_overrides)
         allocation_run_id = alloc_params.get('run_id')
         
         # Initialize optimizer
