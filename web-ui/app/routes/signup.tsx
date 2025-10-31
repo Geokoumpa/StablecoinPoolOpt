@@ -1,8 +1,8 @@
-import { SignIn, SignUp, useUser } from "@clerk/clerk-react";
+import { SignUp, useUser } from "@clerk/clerk-react";
 import { Link, useNavigate } from "react-router";
 import { useEffect } from "react";
 
-export default function Login() {
+export default function SignUpPage() {
     const { isSignedIn, user } = useUser();
     const navigate = useNavigate();
 
@@ -23,19 +23,19 @@ export default function Login() {
                         </svg>
                     </div>
                     <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-                        Stablecoin Pool Optimization
+                        Create your account
                     </h2>
                     <p className="mt-2 text-center text-sm text-gray-600">
-                        Sign in to access the admin dashboard
+                        Sign up to access the Stablecoin Pool Optimization dashboard
                     </p>
                 </div>
 
                 <div className="mt-8">
                     <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
-                        <SignIn
-                            path="/login"
+                        <SignUp
+                            path="/signup"
                             routing="path"
-                            signUpUrl="/signup"
+                            signInUrl="/login"
                             redirectUrl="/"
                             appearance={{
                                 elements: {
@@ -49,9 +49,9 @@ export default function Login() {
 
                 <div className="text-center">
                     <p className="text-sm text-gray-600">
-                        Don't have an account?{" "}
-                        <Link to="/signup" className="font-medium text-blue-600 hover:text-blue-500">
-                            Sign up
+                        Already have an account?{" "}
+                        <Link to="/login" className="font-medium text-blue-600 hover:text-blue-500">
+                            Sign in
                         </Link>
                     </p>
                 </div>
