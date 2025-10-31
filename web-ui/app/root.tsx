@@ -6,9 +6,11 @@ import {
   Scripts,
   ScrollRestoration,
 } from "react-router";
-
+import { ClerkProvider } from "@clerk/clerk-react";
 import type { Route } from "./+types/root";
 import "./app.css";
+
+const clerkPubKey = process.env.CLERK_PUBLISHABLE_KEY || "";
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -33,9 +35,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        {children}
-        <ScrollRestoration />
-        <Scripts />
+        <ClerkProvider publishableKey={clerkPubKey}>
+          {children}
+          <ScrollRestoration />
+          <Scripts />
+        </ClerkProvider>
       </body>
     </html>
   );
