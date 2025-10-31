@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,129 +7,294 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Add your models here
-// Example models based on the existing database structure
-
 model Pool {
-  id               String   @id @default(cuid())
-  pool_id          String   @unique
-  name             String
-  protocol         String
-  chain            String
-  address          String?
-  currently_filtered_out Boolean @default(false)
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
+  pool_id                    String             @id @db.VarChar(255)
+  name                       String             @db.VarChar(255)
+  chain                      String             @db.VarChar(255)
+  protocol                   String             @db.VarChar(255)
+  symbol                     String             @db.VarChar(255)
+  tvl                        Decimal?           @db.Decimal(20, 2)
+  apy                        Decimal?           @db.Decimal(20, 4)
+  last_updated               DateTime?          @db.Timestamptz(6)
+  currently_filtered_out     Boolean?           @default(false)
+  pool_address               String?            @db.VarChar(255)
+  underlying_tokens          String[]
+  underlying_token_addresses String[]
+  asset_allocations          AssetAllocation[]
+  daily_metrics              PoolDailyMetrics[]
+  pool_groups                pool_groups[]
 
-  // Relations
-  daily_metrics    PoolDailyMetrics[]
-  underlying_tokens UnderlyingToken[]
-
+  @@index([pool_address], map: "idx_pools_pool_address")
+  @@index([underlying_token_addresses], map: "idx_pools_underlying_token_addresses", type: Gin)
+  @@index([underlying_tokens], map: "idx_pools_underlying_tokens", type: Gin)
   @@map("pools")
 }
 
 model PoolDailyMetrics {
-  id             String   @id @default(cuid())
-  pool_id        String
-  date           DateTime
-  actual_tvl     Decimal?
-  forecasted_tvl  Decimal?
-  actual_apy      Decimal?
-  forecasted_apy   Decimal?
-  is_filtered_out Boolean  @default(false)
-  filter_reason  String?
-  created_at     DateTime @default(now())
+  id                        Int      @id @default(autoincrement())
+  pool_id                   String   @db.VarChar(255)
+  date                      DateTime @db.Date
+  actual_apy                Decimal? @db.Decimal(20, 4)
+  forecasted_apy            Decimal? @db.Decimal(20, 4)
+  actual_tvl                Decimal? @db.Decimal(20, 2)
+  forecasted_tvl            Decimal? @db.Decimal(20, 2)
+  eth_open                  Decimal? @db.Decimal(20, 8)
+  btc_open                  Decimal? @db.Decimal(20, 8)
+  gas_price_gwei            Decimal? @db.Decimal(20, 4)
+  is_filtered_out           Boolean? @default(false)
+  filter_reason             String?
+  rolling_apy_7d            Decimal? @db.Decimal(20, 4)
+  rolling_apy_30d           Decimal? @db.Decimal(20, 4)
+  apy_delta_today_yesterday Decimal? @db.Decimal(20, 4)
+  stddev_apy_7d             Decimal? @db.Decimal(20, 4)
+  stddev_apy_30d            Decimal? @db.Decimal(20, 4)
+  stddev_apy_7d_delta       Decimal? @db.Decimal(20, 4)
+  stddev_apy_30d_delta      Decimal? @db.Decimal(20, 4)
+  pool_group                Int?
+  pool                      Pool     @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
 
-  // Relations
-  pool           Pool @relation(fields: [pool_id], references: [pool_id])
-
+  @@unique([pool_id, date])
+  @@index([date], map: "idx_pool_metrics_extended_date")
+  @@index([pool_id], map: "idx_pool_metrics_extended_pool_id")
   @@map("pool_daily_metrics")
 }
 
-model UnderlyingToken {
-  id       String @id @default(cuid())
-  pool_id  String
-  token_id String
-  symbol   String
-  address  String
-
-  // Relations
-  pool     Pool @relation(fields: [pool_id], references: [pool_id])
-
-  @@map("underlying_tokens")
-}
-
 model ApprovedProtocol {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  status      String   @default("active")
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id                Int       @id @default(autoincrement())
+  protocol_name     String    @unique @db.VarChar(255)
+  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
+  removed_timestamp DateTime? @db.Timestamptz(6)
 
   @@map("approved_protocols")
 }
 
 model ApprovedToken {
-  id          String   @id @default(cuid())
-  symbol      String
-  address     String   @unique
-  status      String   @default("active")
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id                Int       @id @default(autoincrement())
+  token_symbol      String    @unique @db.VarChar(255)
+  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
+  removed_timestamp DateTime? @db.Timestamptz(6)
+  token_address     String?   @unique(map: "uk_approved_tokens_token_address") @db.VarChar(42)
 
+  @@index([token_address], map: "idx_approved_tokens_token_address")
   @@map("approved_tokens")
 }
 
 model BlacklistedToken {
-  id          String   @id @default(cuid())
-  symbol      String
-  address     String?
-  reason      String?
-  status      String   @default("active")
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id                Int       @id @default(autoincrement())
+  token_symbol      String    @unique @db.VarChar(255)
+  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
+  removed_timestamp DateTime? @db.Timestamptz(6)
 
   @@map("blacklisted_tokens")
 }
 
 model AllocationParameter {
-  id                    String   @id @default(cuid())
-  run_id                String   @unique
-  tvl_limit_percentage   Decimal?
-  max_alloc_percentage   Decimal?
-  conversion_rate        Decimal?
-  min_pools             Int?
-  profit_optimization    Boolean?
-  token_marketcap_limit  Decimal?
-  pool_tvl_limit        Decimal?
-  pool_apy_limit        Decimal?
-  projected_apy         Decimal?
-  transaction_costs     Decimal?
-  transaction_sequence   Json?
-  created_at            DateTime @default(now())
+  run_id                           String    @id @db.Uuid
+  timestamp                        DateTime? @default(now()) @db.Timestamptz(6)
+  tvl_limit_percentage             Decimal?  @db.Decimal(5, 4)
+  max_alloc_percentage             Decimal?  @db.Decimal(5, 4)
+  conversion_rate                  Decimal?  @db.Decimal(20, 10)
+  min_pools                        Int?
+  profit_optimization              Boolean?
+  approved_tokens_snapshot         Json?
+  blacklisted_tokens_snapshot      Json?
+  approved_protocols_snapshot      Json?
+  icebox_tokens_snapshot           Json?
+  token_marketcap_limit            Decimal?  @db.Decimal(20, 2)
+  pool_tvl_limit                   Decimal?  @db.Decimal(20, 2)
+  pool_apy_limit                   Decimal?  @db.Decimal(20, 4)
+  pool_pair_tvl_ratio_min          Decimal?  @db.Decimal(5, 4)
+  pool_pair_tvl_ratio_max          Decimal?  @db.Decimal(5, 4)
+  group1_max_pct                   Decimal?  @db.Decimal(5, 4)
+  group2_max_pct                   Decimal?  @db.Decimal(5, 4)
+  group3_max_pct                   Decimal?  @db.Decimal(5, 4)
+  position_max_pct_total_assets    Decimal?  @db.Decimal(5, 4)
+  position_max_pct_pool_tvl        Decimal?  @db.Decimal(5, 4)
+  group1_apy_delta_max             Decimal?  @db.Decimal(20, 4)
+  group1_7d_stddev_max             Decimal?  @db.Decimal(20, 4)
+  group1_30d_stddev_max            Decimal?  @db.Decimal(20, 4)
+  group2_apy_delta_max             Decimal?  @db.Decimal(20, 4)
+  group2_7d_stddev_max             Decimal?  @db.Decimal(20, 4)
+  group2_30d_stddev_max            Decimal?  @db.Decimal(20, 4)
+  group3_apy_delta_min             Decimal?  @db.Decimal(20, 4)
+  group3_7d_stddev_min             Decimal?  @db.Decimal(20, 4)
+  group3_30d_stddev_min            Decimal?  @db.Decimal(20, 4)
+  other_dynamic_limits             Json?
+  icebox_ohlc_l_threshold_pct      Decimal?  @db.Decimal(5, 4)
+  icebox_ohlc_l_days_threshold     Int?
+  icebox_ohlc_c_threshold_pct      Decimal?  @db.Decimal(5, 4)
+  icebox_ohlc_c_days_threshold     Int?
+  icebox_recovery_l_days_threshold Int?
+  icebox_recovery_c_days_threshold Int?
+  projected_apy                    Decimal?  @db.Decimal(20, 4)
+  transaction_costs                Decimal?  @db.Decimal(20, 2)
+  transaction_sequence             Json?
 
   @@map("allocation_parameters")
 }
 
 model AssetAllocation {
-  id             String   @id @default(cuid())
-  run_id         String
-  pool_id        String
-  amount         Decimal
-  percentage     Decimal
-  expected_apy   Decimal?
-  created_at     DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  run_id      String   @db.Uuid
+  timestamp   DateTime @default(now()) @db.Timestamptz(6)
+  step_number Int
+  operation   String   @db.VarChar(50)
+  from_asset  String?  @db.VarChar(50)
+  to_asset    String?  @db.VarChar(50)
+  amount      Decimal? @db.Decimal(20, 8)
+  pool_id     String?  @db.VarChar(255)
+  pools       Pool?    @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([run_id, step_number])
   @@map("asset_allocations")
 }
 
 model DefaultAllocationParameter {
-  id              String   @id @default(cuid())
-  parameter_name  String   @unique
+  id              Int       @id @default(autoincrement())
+  parameter_name  String    @unique @db.VarChar(255)
   parameter_value Json
   description     String?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime? @default(now()) @updatedAt @db.Timestamptz(6)
 
+  @@index([parameter_name], map: "idx_default_allocation_parameters_name")
   @@map("default_allocation_parameters")
+}
+
+model account_transactions {
+  id                                 Int                                 @default(autoincrement())
+  transaction_hash                   String                              @db.VarChar(255)
+  timestamp                          DateTime                            @db.Timestamptz(6)
+  from_address                       String?                             @db.VarChar(255)
+  to_address                         String?                             @db.VarChar(255)
+  value                              Decimal?                            @db.Decimal
+  token_symbol                       String?                             @db.VarChar(50)
+  token_decimals                     Int?
+  raw_transaction_id                 Int?
+  insertion_timestamp                DateTime?                           @default(now()) @db.Timestamptz(6)
+  block_number                       Int?
+  confirmations                      Int?
+  success                            Boolean?
+  transaction_index                  Int?
+  nonce                              BigInt?
+  raw_value                          Decimal?                            @db.Decimal
+  input_data                         String?
+  gas_limit                          Decimal?                            @db.Decimal
+  gas_price                          Decimal?                            @db.Decimal
+  gas_used                           Decimal?                            @db.Decimal
+  method_id                          String?                             @db.VarChar(20)
+  function_name                      String?
+  creates                            String?                             @db.VarChar(255)
+  operation_index                    Int
+  operation_type                     String?                             @db.VarChar(255)
+  operation_priority                 Int?
+  token_address                      String?                             @db.VarChar(255)
+  token_name                         String?                             @db.VarChar(255)
+  token_price_rate                   Decimal?                            @db.Decimal
+  token_price_currency               String?                             @db.VarChar(10)
+  raw_ethplorer_account_transactions raw_ethplorer_account_transactions? @relation(fields: [raw_transaction_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([transaction_hash, operation_index])
+  @@index([block_number], map: "idx_at_block_number")
+  @@index([timestamp], map: "idx_at_timestamp")
+  @@index([transaction_hash], map: "idx_at_transaction_hash")
+}
+
+model applied_migrations {
+  id         Int       @id @default(autoincrement())
+  version    String    @unique @db.VarChar(255)
+  applied_at DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model daily_balances {
+  id                  Int      @id @default(autoincrement())
+  date                DateTime @db.Date
+  token_symbol        String   @db.VarChar(255)
+  wallet_address      String?  @db.VarChar(255)
+  unallocated_balance Decimal? @db.Decimal(20, 10)
+  allocated_balance   Decimal? @db.Decimal(20, 10)
+  pool_id             String?  @db.VarChar(255)
+}
+
+model gas_fees_daily {
+  id                      Int      @id @default(autoincrement())
+  date                    DateTime @unique @db.Date
+  actual_avg_gas_gwei     Decimal? @db.Decimal(10, 2)
+  forecasted_avg_gas_gwei Decimal? @db.Decimal(10, 2)
+  actual_max_gas_gwei     Decimal? @db.Decimal(10, 2)
+  forecasted_max_gas_gwei Decimal? @db.Decimal(10, 2)
+  eth_open                Decimal? @db.Decimal(20, 8)
+  btc_open                Decimal? @db.Decimal(20, 8)
+}
+
+model gas_fees_hourly {
+  id             Int      @id @default(autoincrement())
+  timestamp      DateTime @unique(map: "unique_timestamp") @db.Timestamptz(6)
+  gas_price_gwei Decimal? @db.Decimal(10, 2)
+}
+
+model icebox_tokens {
+  id                Int       @id @default(autoincrement())
+  token_symbol      String    @unique @db.VarChar(255)
+  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
+  removed_timestamp DateTime? @db.Timestamptz(6)
+  reason            String?
+}
+
+model pool_groups {
+  id               Int      @id @default(autoincrement())
+  pool_id          String   @db.VarChar(255)
+  date             DateTime @db.Date
+  group_assignment String   @db.VarChar(50)
+  apy_delta        Decimal? @db.Decimal(20, 4)
+  d7_stddev        Decimal? @map("7d_stddev") @db.Decimal(20, 4)
+  d30_stddev       Decimal? @map("30d_stddev") @db.Decimal(20, 4)
+  pools            Pool     @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model raw_coinmarketcap_ohlcv {
+  id                  Int       @id @default(autoincrement())
+  data_timestamp      DateTime  @db.Timestamptz(6)
+  symbol              String    @db.VarChar(255)
+  raw_json_data       Json?
+  insertion_timestamp DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@unique([data_timestamp, symbol])
+}
+
+model raw_defillama_pool_history {
+  id                  Int       @id @default(autoincrement())
+  pool_id             String    @db.VarChar(255)
+  timestamp           DateTime? @default(now()) @db.Timestamptz(6)
+  raw_json_data       Json?
+  insertion_timestamp DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model raw_defillama_pools {
+  id                  Int       @id @default(autoincrement())
+  timestamp           DateTime? @default(now()) @db.Timestamptz(6)
+  raw_json_data       Json?
+  insertion_timestamp DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model raw_ethgastracker_hourly_gas_data {
+  id                  Int       @id @default(autoincrement())
+  timestamp           DateTime? @default(now()) @db.Timestamptz(6)
+  raw_json_data       Json?
+  insertion_timestamp DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model raw_ethplorer_account_transaction_details {
+  transaction_hash String    @id @db.VarChar(255)
+  raw_json         Json
+  fetched_at       DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([fetched_at], map: "idx_reatd_fetched_at")
+}
+
+model raw_ethplorer_account_transactions {
+  id                   Int                    @id @default(autoincrement())
+  raw_json_data        Json
+  insertion_timestamp  DateTime?              @default(now()) @db.Timestamptz(6)
+  account_transactions account_transactions[]
 }
