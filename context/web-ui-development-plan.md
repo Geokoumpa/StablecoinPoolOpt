@@ -11,14 +11,17 @@ This document provides a comprehensive development plan for implementing the adm
 #### 0.1 Pipeline Modification for Default Parameters
 **Tasks:**
 - Modify asset allocation pipeline to read from default_allocation_parameters
-- Update fetch_allocation_parameters() function to use defaults when no run exists
+- Update create_allocation_snapshots.py to use defaults when no run exists
+- Modify fetch_allocation_parameters() in optimize_allocations.py to read defaults first
 - Implement parameter override logic for custom runs
 - Add logging for parameter source tracking
 
 **Deliverables:**
-- Updated pipeline code
-- Default parameter integration
-- Parameter override functionality
+- Modified create_allocation_snapshots.py to read from default_allocation_parameters
+- Updated fetch_allocation_parameters() in optimize_allocations.py
+- Pipeline changes to use defaults when no run exists
+- Parameter override functionality for custom runs
+- Logging for parameter source tracking
 
 **Dependencies:**
 - Database schema implementation
