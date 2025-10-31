@@ -1,0 +1,138 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Add your models here
+// Example models based on the existing database structure
+
+model Pool {
+  id               String   @id @default(cuid())
+  pool_id          String   @unique
+  name             String
+  protocol         String
+  chain            String
+  address          String?
+  currently_filtered_out Boolean @default(false)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  // Relations
+  daily_metrics    PoolDailyMetrics[]
+  underlying_tokens UnderlyingToken[]
+
+  @@map("pools")
+}
+
+model PoolDailyMetrics {
+  id             String   @id @default(cuid())
+  pool_id        String
+  date           DateTime
+  actual_tvl     Decimal?
+  forecasted_tvl  Decimal?
+  actual_apy      Decimal?
+  forecasted_apy   Decimal?
+  is_filtered_out Boolean  @default(false)
+  filter_reason  String?
+  created_at     DateTime @default(now())
+
+  // Relations
+  pool           Pool @relation(fields: [pool_id], references: [pool_id])
+
+  @@map("pool_daily_metrics")
+}
+
+model UnderlyingToken {
+  id       String @id @default(cuid())
+  pool_id  String
+  token_id String
+  symbol   String
+  address  String
+
+  // Relations
+  pool     Pool @relation(fields: [pool_id], references: [pool_id])
+
+  @@map("underlying_tokens")
+}
+
+model ApprovedProtocol {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  status      String   @default("active")
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("approved_protocols")
+}
+
+model ApprovedToken {
+  id          String   @id @default(cuid())
+  symbol      String
+  address     String   @unique
+  status      String   @default("active")
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("approved_tokens")
+}
+
+model BlacklistedToken {
+  id          String   @id @default(cuid())
+  symbol      String
+  address     String?
+  reason      String?
+  status      String   @default("active")
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("blacklisted_tokens")
+}
+
+model AllocationParameter {
+  id                    String   @id @default(cuid())
+  run_id                String   @unique
+  tvl_limit_percentage   Decimal?
+  max_alloc_percentage   Decimal?
+  conversion_rate        Decimal?
+  min_pools             Int?
+  profit_optimization    Boolean?
+  token_marketcap_limit  Decimal?
+  pool_tvl_limit        Decimal?
+  pool_apy_limit        Decimal?
+  projected_apy         Decimal?
+  transaction_costs     Decimal?
+  transaction_sequence   Json?
+  created_at            DateTime @default(now())
+
+  @@map("allocation_parameters")
+}
+
+model AssetAllocation {
+  id             String   @id @default(cuid())
+  run_id         String
+  pool_id        String
+  amount         Decimal
+  percentage     Decimal
+  expected_apy   Decimal?
+  created_at     DateTime @default(now())
+
+  @@map("asset_allocations")
+}
+
+model DefaultAllocationParameter {
+  id              String   @id @default(cuid())
+  parameter_name  String   @unique
+  parameter_value Json
+  description     String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@map("default_allocation_parameters")
+}
