@@ -126,10 +126,13 @@ def fetch_optimization_results():
             # Calculate USD amounts (assuming amount is in USD for allocations)
             allocations_with_pools['amount_usd'] = allocations_with_pools['amount']
             
-            # Group by pool and token
+            # Group by pool (sum all tokens for each pool)
             pool_summary = allocations_with_pools.groupby(['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl']).agg({
                 'amount_usd': 'sum'
             }).reset_index()
+            
+            # Create a mapping of pool_id to total pool allocation
+            pool_total_mapping = pool_summary.set_index('pool_id')['amount_usd'].to_dict()
             pool_summary = pool_summary.sort_values('amount_usd', ascending=False)
             
             # Group by token
@@ -161,9 +164,10 @@ def fetch_optimization_results():
             'top_pools': pool_summary.head(5).to_dict('records'),
             'token_allocation': token_summary.to_dict('records'),
             'allocations_df': allocations_with_pools if not allocation_transactions.empty else pd.DataFrame(),
-            'transactions_df': transactions_df
-        }
+            'transactions_df': transactions_df,
+            'pool_total_mapping': pool_total_mapping if not allocation_transactions.empty else {}
         
+        }
     except Exception as e:
         logger.error(f"Error fetching optimization results: {e}")
         return None
@@ -271,13 +275,36 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
         Formatted Slack message string
     """
     from datetime import datetime
+    from database.db_utils import get_db_connection
+    import pandas as pd
     
     date_str = datetime.now().strftime("%Y-%m-%d")
+    # Mapping of pool_id -> total pool allocation provided by fetch_optimization_results (if available)
+    pool_total_mapping = results.get('pool_total_mapping', {})
+    
+    # Fetch total AUM from daily_balances to calculate correct percentages
+    # The constraint is based on total AUM, not just allocated amount
+    total_aum = results['total_allocated']  # Default to allocated if can't get AUM
+    try:
+        engine = get_db_connection()
+        if engine:
+            aum_query = """
+            SELECT SUM(allocated_balance + unallocated_balance) as total_aum
+            FROM daily_balances
+            WHERE date = CURRENT_DATE
+            """
+            aum_df = pd.read_sql(aum_query, engine)
+            if not aum_df.empty and pd.notna(aum_df['total_aum'].iloc[0]):
+                total_aum = float(aum_df['total_aum'].iloc[0])
+            engine.dispose()
+    except Exception as e:
+        logger.warning(f"Could not fetch total AUM, using allocated amount: {e}")
     
     message = f"""
 *📊 Daily Allocation Report - {date_str}*
 
 *💰 Portfolio Summary:*
+• Total AUM: ${total_aum:,.2f}
 • Total Allocated: ${results['total_allocated']:,.2f}
 • Number of Pools: {results['pool_count']}
 • Number of Tokens: {results['token_count']}
@@ -304,13 +331,18 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
 """
     
     for pool in results['top_pools']:
-        percentage = (pool['amount_usd'] / results['total_allocated']) * 100 if results['total_allocated'] > 0 else 0
+        # Get total pool allocation (sum of all tokens in this pool)
+        pool_id = pool['pool_id']
+        pool_total_amount = pool_total_mapping.get(pool_id, pool['amount_usd'])
+        # Calculate percentage based on total AUM (same as optimizer constraint)
+        percentage = (pool_total_amount / total_aum) * 100 if total_aum > 0 else 0
         apy = pool.get('forecasted_apy', 0)
         tvl = pool.get('forecasted_tvl', 0)
         tvl_str = f"${tvl:,.0f}" if tvl and tvl > 0 else "N/A"
         apy_str = f"{apy:.2f}%" if apy and apy > 0 else "N/A"
         
-        message += f"• {pool['symbol']} (ID: {pool['pool_id']}): ${pool['amount_usd']:,.2f} ({percentage:.1f}%) | APY: {apy_str} | TVL: {tvl_str}\n"
+        # Display the total pool allocation amount (not individual token amount)
+        message += f"• {pool['symbol']} (ID: {pool['pool_id']}): ${pool_total_amount:,.2f} ({percentage:.1f}% of AUM) | APY: {apy_str} | TVL: {tvl_str}\n"
     
     message += "\n*💎 Token Allocation:*\n"
     for token in results['token_allocation']:
@@ -355,11 +387,22 @@ def main():
         logger.error("No optimization results found. Cannot send notification.")
         return
     
+    # Debug: Log pool total mapping
+    logger.info(f"Pool total mapping: {results.get('pool_total_mapping', {})}")
+    logger.info(f"Top pools data: {results.get('top_pools', [])}")
+    
     # Calculate yield metrics
     yield_metrics = calculate_yield_metrics(results)
     
     # Format message
     message = format_slack_message(results, yield_metrics)
+    
+    # Print the message that will be sent to Slack
+    logger.info("\n" + "="*80)
+    logger.info("SLACK MESSAGE PREVIEW:")
+    logger.info("="*80)
+    print(message)
+    logger.info("="*80)
     
     # Send notification
     notifier = SlackNotifier()

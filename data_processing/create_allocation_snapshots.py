@@ -28,7 +28,8 @@ def fetch_default_parameters(engine):
         result = conn.execute(text("SELECT parameter_name, parameter_value FROM default_allocation_parameters"))
         defaults = {}
         for row in result:
-            defaults[row['parameter_name']] = row['parameter_value']
+            # Access tuple by index instead of string keys
+            defaults[row[0]] = row[1]  # row[0] is parameter_name, row[1] is parameter_value
         logger.info(f"Loaded {len(defaults)} default parameters from default_allocation_parameters")
         return defaults
 

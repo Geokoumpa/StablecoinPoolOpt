@@ -366,7 +366,7 @@ def fetch_allocation_parameters(engine, custom_overrides: Dict = None) -> Dict:
             'min_transaction_value': 50.0,
             'tvl_limit_percentage': float(default_params.get('tvl_limit_percentage', 0.05)),
             'min_pools': int(default_params.get('min_pools', 5)),
-            'profit_optimization': default_params.get('profit_optimization', 'true').lower() == 'true',
+            
             'token_marketcap_limit': float(default_params.get('token_marketcap_limit', 1000000000.0)),
             'pool_tvl_limit': float(default_params.get('pool_tvl_limit', 100000.0)),
             'pool_apy_limit': float(default_params.get('pool_apy_limit', 0.01)),
@@ -410,9 +410,7 @@ def fetch_allocation_parameters(engine, custom_overrides: Dict = None) -> Dict:
         if params.get('min_pools') is None:
             logger.warning("min_pools is NULL, using default value")
             params['min_pools'] = int(default_params.get('min_pools', 5))
-        if params.get('profit_optimization') is None:
-            logger.warning("profit_optimization is NULL, using default value")
-            params['profit_optimization'] = default_params.get('profit_optimization', 'true').lower() == 'true'
+        
         
         logger.info(f"Parameter source: Latest allocation_parameters with run_id={params.get('run_id')}")
     
@@ -605,11 +603,11 @@ class AllocationOptimizer:
         # Constants
         self.conversion_rate = alloc_params.get('conversion_rate', 0.0004)
         self.min_transaction_value = alloc_params.get('min_transaction_value', 50.0)
-        self.max_alloc_percentage = alloc_params.get('max_alloc_percentage', 0.20)
+        self.max_alloc_percentage = alloc_params.get('max_alloc_percentage', 0.25)
         self.tvl_limit_percentage = alloc_params.get('tvl_limit_percentage', 0.05) or 0.05
         
         logger.info(f"Optimizer initialized: {self.n_pools} pools, {self.n_tokens} tokens, AUM=${self.total_aum:,.2f}")
-        logger.info(f"Parameters: max_alloc={self.max_alloc_percentage:.1%}, tvl_limit={self.tvl_limit_percentage:.1%}, conversion_rate={self.conversion_rate:.4%}")
+        logger.info(f"Parameters: max_alloc={self.max_alloc_percentage:.1%} (${self.max_alloc_percentage * self.total_aum:,.2f} per pool), tvl_limit={self.tvl_limit_percentage:.1%}, conversion_rate={self.conversion_rate:.4%}")
     
     def build_model(self) -> cp.Problem:
         """
@@ -800,9 +798,13 @@ class AllocationOptimizer:
         
         # 5. Pool allocation limits
         # Maximum allocation per pool as percentage of total AUM
+        # Apply constraint with a small buffer to ensure strict compliance
+        max_pool_allocation_usd = self.max_alloc_percentage * self.total_aum * 0.999  # 0.1% buffer for numerical stability
+        
         for i in range(self.n_pools):
             pool_total_usd = cp.sum(cp.multiply(self.alloc[i, :], price_vector))
-            constraints.append(pool_total_usd <= self.max_alloc_percentage * self.total_aum)
+            # Strict constraint: each pool allocation must be strictly less than max percentage
+            constraints.append(pool_total_usd <= max_pool_allocation_usd)
             
             # TVL limit constraint: allocation cannot exceed tvl_limit_percentage of pool's forecasted TVL
             pool_id = self.pools[i]
@@ -1389,10 +1391,39 @@ def optimize_allocations(custom_overrides: Dict = None):
         logger.info("OPTIMIZATION RESULTS")
         logger.info("=" * 80)
         
+        # Validate allocation constraints
+        logger.info("\nALLOCATION CONSTRAINT VALIDATION:")
+        logger.info(f"Total AUM: ${optimizer.total_aum:,.2f}")
+        logger.info(f"Max allocation per pool: {optimizer.max_alloc_percentage:.1%} = ${optimizer.max_alloc_percentage * optimizer.total_aum:,.2f}")
+        
+        constraint_violations = []
+        for pool_id, pool_data in formatted_results["final_allocations"].items():
+            pool_total_usd = sum(token_data['amount_usd'] for token_data in pool_data["tokens"].values())
+            pool_percentage = pool_total_usd / optimizer.total_aum
+            status = "✓" if pool_percentage <= optimizer.max_alloc_percentage else "✗ VIOLATION"
+            logger.info(f"  Pool {pool_id} ({pool_data['pool_symbol']}): ${pool_total_usd:,.2f} ({pool_percentage:.2%}) {status}")
+            
+            if pool_percentage > optimizer.max_alloc_percentage:
+                constraint_violations.append({
+                    'pool_id': pool_id,
+                    'pool_symbol': pool_data['pool_symbol'],
+                    'amount_usd': pool_total_usd,
+                    'percentage': pool_percentage
+                })
+        
+        if constraint_violations:
+            logger.error(f"\n{'='*80}")
+            logger.error(f"CONSTRAINT VIOLATION DETECTED: {len(constraint_violations)} pool(s) exceed max allocation")
+            for v in constraint_violations:
+                logger.error(f"  Pool {v['pool_id']} ({v['pool_symbol']}): ${v['amount_usd']:,.2f} ({v['percentage']:.2%}) exceeds {optimizer.max_alloc_percentage:.1%}")
+            logger.error(f"{'='*80}\n")
+        
         # Print final allocations
         logger.info("\nFINAL ALLOCATIONS:")
         for pool_id, pool_data in formatted_results["final_allocations"].items():
-            logger.info(f"\nPool: {pool_id} ({pool_data['pool_symbol']})")
+            pool_total_usd = sum(token_data['amount_usd'] for token_data in pool_data["tokens"].values())
+            pool_percentage = pool_total_usd / optimizer.total_aum
+            logger.info(f"\nPool: {pool_id} ({pool_data['pool_symbol']}) - Total: ${pool_total_usd:,.2f} ({pool_percentage:.2%})")
             for token, token_data in pool_data["tokens"].items():
                 logger.info(f"  {token}: {token_data['amount']:,.2f} (${token_data['amount_usd']:,.2f})")
         
