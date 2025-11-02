@@ -7,88 +7,47 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Pool {
-  pool_id                    String             @id @db.VarChar(255)
-  name                       String             @db.VarChar(255)
-  chain                      String             @db.VarChar(255)
-  protocol                   String             @db.VarChar(255)
-  symbol                     String             @db.VarChar(255)
-  tvl                        Decimal?           @db.Decimal(20, 2)
-  apy                        Decimal?           @db.Decimal(20, 4)
-  last_updated               DateTime?          @db.Timestamptz(6)
-  currently_filtered_out     Boolean?           @default(false)
-  pool_address               String?            @db.VarChar(255)
-  underlying_tokens          String[]
-  underlying_token_addresses String[]
-  asset_allocations          AssetAllocation[]
-  daily_metrics              PoolDailyMetrics[]
-  pool_groups                pool_groups[]
+model account_transactions {
+  id                                 Int                                 @default(autoincrement())
+  transaction_hash                   String                              @db.VarChar(255)
+  timestamp                          DateTime                            @db.Timestamptz(6)
+  from_address                       String?                             @db.VarChar(255)
+  to_address                         String?                             @db.VarChar(255)
+  value                              Decimal?                            @db.Decimal
+  token_symbol                       String?                             @db.VarChar(50)
+  token_decimals                     Int?
+  raw_transaction_id                 Int?
+  insertion_timestamp                DateTime?                           @default(now()) @db.Timestamptz(6)
+  block_number                       Int?
+  confirmations                      Int?
+  success                            Boolean?
+  transaction_index                  Int?
+  nonce                              BigInt?
+  raw_value                          Decimal?                            @db.Decimal
+  input_data                         String?
+  gas_limit                          Decimal?                            @db.Decimal
+  gas_price                          Decimal?                            @db.Decimal
+  gas_used                           Decimal?                            @db.Decimal
+  method_id                          String?                             @db.VarChar(20)
+  function_name                      String?
+  creates                            String?                             @db.VarChar(255)
+  operation_index                    Int
+  operation_type                     String?                             @db.VarChar(255)
+  operation_priority                 Int?
+  token_address                      String?                             @db.VarChar(255)
+  token_name                         String?                             @db.VarChar(255)
+  token_price_rate                   Decimal?                            @db.Decimal
+  token_price_currency               String?                             @db.VarChar(10)
+  raw_ethplorer_account_transactions raw_ethplorer_account_transactions? @relation(fields: [raw_transaction_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@index([pool_address], map: "idx_pools_pool_address")
-  @@index([underlying_token_addresses], map: "idx_pools_underlying_token_addresses", type: Gin)
-  @@index([underlying_tokens], map: "idx_pools_underlying_tokens", type: Gin)
-  @@map("pools")
+  @@id([transaction_hash, operation_index])
+  @@index([block_number], map: "idx_at_block_number")
+  @@index([timestamp], map: "idx_at_timestamp")
+  @@index([transaction_hash], map: "idx_at_transaction_hash")
 }
 
-model PoolDailyMetrics {
-  id                        Int      @id @default(autoincrement())
-  pool_id                   String   @db.VarChar(255)
-  date                      DateTime @db.Date
-  actual_apy                Decimal? @db.Decimal(20, 4)
-  forecasted_apy            Decimal? @db.Decimal(20, 4)
-  actual_tvl                Decimal? @db.Decimal(20, 2)
-  forecasted_tvl            Decimal? @db.Decimal(20, 2)
-  eth_open                  Decimal? @db.Decimal(20, 8)
-  btc_open                  Decimal? @db.Decimal(20, 8)
-  gas_price_gwei            Decimal? @db.Decimal(20, 4)
-  is_filtered_out           Boolean? @default(false)
-  filter_reason             String?
-  rolling_apy_7d            Decimal? @db.Decimal(20, 4)
-  rolling_apy_30d           Decimal? @db.Decimal(20, 4)
-  apy_delta_today_yesterday Decimal? @db.Decimal(20, 4)
-  stddev_apy_7d             Decimal? @db.Decimal(20, 4)
-  stddev_apy_30d            Decimal? @db.Decimal(20, 4)
-  stddev_apy_7d_delta       Decimal? @db.Decimal(20, 4)
-  stddev_apy_30d_delta      Decimal? @db.Decimal(20, 4)
-  pool_group                Int?
-  pool                      Pool     @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
-
-  @@unique([pool_id, date])
-  @@index([date], map: "idx_pool_metrics_extended_date")
-  @@index([pool_id], map: "idx_pool_metrics_extended_pool_id")
-  @@map("pool_daily_metrics")
-}
-
-model ApprovedProtocol {
-  id                Int       @id @default(autoincrement())
-  protocol_name     String    @unique @db.VarChar(255)
-  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
-  removed_timestamp DateTime? @db.Timestamptz(6)
-
-  @@map("approved_protocols")
-}
-
-model ApprovedToken {
-  id                Int       @id @default(autoincrement())
-  token_symbol      String    @unique @db.VarChar(255)
-  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
-  removed_timestamp DateTime? @db.Timestamptz(6)
-  token_address     String?   @unique(map: "uk_approved_tokens_token_address") @db.VarChar(42)
-
-  @@index([token_address], map: "idx_approved_tokens_token_address")
-  @@map("approved_tokens")
-}
-
-model BlacklistedToken {
-  id                Int       @id @default(autoincrement())
-  token_symbol      String    @unique @db.VarChar(255)
-  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
-  removed_timestamp DateTime? @db.Timestamptz(6)
-
-  @@map("blacklisted_tokens")
-}
-
-model AllocationParameter {
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model allocation_parameters {
   run_id                           String    @id @db.Uuid
   timestamp                        DateTime? @default(now()) @db.Timestamptz(6)
   tvl_limit_percentage             Decimal?  @db.Decimal(5, 4)
@@ -129,11 +88,33 @@ model AllocationParameter {
   projected_apy                    Decimal?  @db.Decimal(20, 4)
   transaction_costs                Decimal?  @db.Decimal(20, 2)
   transaction_sequence             Json?
-
-  @@map("allocation_parameters")
 }
 
-model AssetAllocation {
+model applied_migrations {
+  id         Int       @id @default(autoincrement())
+  version    String    @unique @db.VarChar(255)
+  applied_at DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model approved_protocols {
+  id                Int       @id @default(autoincrement())
+  protocol_name     String    @unique @db.VarChar(255)
+  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
+  removed_timestamp DateTime? @db.Timestamptz(6)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model approved_tokens {
+  id                Int       @id @default(autoincrement())
+  token_symbol      String    @unique @db.VarChar(255)
+  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
+  removed_timestamp DateTime? @db.Timestamptz(6)
+  token_address     String?   @unique(map: "uk_approved_tokens_token_address") @db.VarChar(42)
+
+  @@index([token_address], map: "idx_approved_tokens_token_address")
+}
+
+model asset_allocations {
   id          Int      @id @default(autoincrement())
   run_id      String   @db.Uuid
   timestamp   DateTime @default(now()) @db.Timestamptz(6)
@@ -143,67 +124,16 @@ model AssetAllocation {
   to_asset    String?  @db.VarChar(50)
   amount      Decimal? @db.Decimal(20, 8)
   pool_id     String?  @db.VarChar(255)
-  pools       Pool?    @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
+  pools       pools?   @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([run_id, step_number])
-  @@map("asset_allocations")
 }
 
-model DefaultAllocationParameter {
-  id              Int       @id @default(autoincrement())
-  parameter_name  String    @unique @db.VarChar(255)
-  parameter_value Json
-  description     String?
-  created_at      DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime? @default(now()) @updatedAt @db.Timestamptz(6)
-
-  @@index([parameter_name], map: "idx_default_allocation_parameters_name")
-  @@map("default_allocation_parameters")
-}
-
-model account_transactions {
-  id                                 Int                                 @default(autoincrement())
-  transaction_hash                   String                              @db.VarChar(255)
-  timestamp                          DateTime                            @db.Timestamptz(6)
-  from_address                       String?                             @db.VarChar(255)
-  to_address                         String?                             @db.VarChar(255)
-  value                              Decimal?                            @db.Decimal
-  token_symbol                       String?                             @db.VarChar(50)
-  token_decimals                     Int?
-  raw_transaction_id                 Int?
-  insertion_timestamp                DateTime?                           @default(now()) @db.Timestamptz(6)
-  block_number                       Int?
-  confirmations                      Int?
-  success                            Boolean?
-  transaction_index                  Int?
-  nonce                              BigInt?
-  raw_value                          Decimal?                            @db.Decimal
-  input_data                         String?
-  gas_limit                          Decimal?                            @db.Decimal
-  gas_price                          Decimal?                            @db.Decimal
-  gas_used                           Decimal?                            @db.Decimal
-  method_id                          String?                             @db.VarChar(20)
-  function_name                      String?
-  creates                            String?                             @db.VarChar(255)
-  operation_index                    Int
-  operation_type                     String?                             @db.VarChar(255)
-  operation_priority                 Int?
-  token_address                      String?                             @db.VarChar(255)
-  token_name                         String?                             @db.VarChar(255)
-  token_price_rate                   Decimal?                            @db.Decimal
-  token_price_currency               String?                             @db.VarChar(10)
-  raw_ethplorer_account_transactions raw_ethplorer_account_transactions? @relation(fields: [raw_transaction_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-
-  @@id([transaction_hash, operation_index])
-  @@index([block_number], map: "idx_at_block_number")
-  @@index([timestamp], map: "idx_at_timestamp")
-  @@index([transaction_hash], map: "idx_at_transaction_hash")
-}
-
-model applied_migrations {
-  id         Int       @id @default(autoincrement())
-  version    String    @unique @db.VarChar(255)
-  applied_at DateTime? @default(now()) @db.Timestamptz(6)
+model blacklisted_tokens {
+  id                Int       @id @default(autoincrement())
+  token_symbol      String    @unique @db.VarChar(255)
+  added_timestamp   DateTime? @default(now()) @db.Timestamptz(6)
+  removed_timestamp DateTime? @db.Timestamptz(6)
 }
 
 model daily_balances {
@@ -214,6 +144,17 @@ model daily_balances {
   unallocated_balance Decimal? @db.Decimal(20, 10)
   allocated_balance   Decimal? @db.Decimal(20, 10)
   pool_id             String?  @db.VarChar(255)
+}
+
+model default_allocation_parameters {
+  id              Int       @id @default(autoincrement())
+  parameter_name  String    @unique @db.VarChar(255)
+  parameter_value Json
+  description     String?
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([parameter_name], map: "idx_default_allocation_parameters_name")
 }
 
 model gas_fees_daily {
@@ -241,6 +182,35 @@ model icebox_tokens {
   reason            String?
 }
 
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model pool_daily_metrics {
+  id                        Int      @id @default(autoincrement())
+  pool_id                   String   @db.VarChar(255)
+  date                      DateTime @db.Date
+  actual_apy                Decimal? @db.Decimal(20, 4)
+  forecasted_apy            Decimal? @db.Decimal(20, 4)
+  actual_tvl                Decimal? @db.Decimal(20, 2)
+  forecasted_tvl            Decimal? @db.Decimal(20, 2)
+  eth_open                  Decimal? @db.Decimal(20, 8)
+  btc_open                  Decimal? @db.Decimal(20, 8)
+  gas_price_gwei            Decimal? @db.Decimal(20, 4)
+  is_filtered_out           Boolean? @default(false)
+  filter_reason             String?
+  rolling_apy_7d            Decimal? @db.Decimal(20, 4)
+  rolling_apy_30d           Decimal? @db.Decimal(20, 4)
+  apy_delta_today_yesterday Decimal? @db.Decimal(20, 4)
+  stddev_apy_7d             Decimal? @db.Decimal(20, 4)
+  stddev_apy_30d            Decimal? @db.Decimal(20, 4)
+  stddev_apy_7d_delta       Decimal? @db.Decimal(20, 4)
+  stddev_apy_30d_delta      Decimal? @db.Decimal(20, 4)
+  pool_group                Int?
+  pools                     pools    @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([pool_id, date])
+  @@index([date], map: "idx_pool_metrics_extended_date")
+  @@index([pool_id], map: "idx_pool_metrics_extended_pool_id")
+}
+
 model pool_groups {
   id               Int      @id @default(autoincrement())
   pool_id          String   @db.VarChar(255)
@@ -249,7 +219,30 @@ model pool_groups {
   apy_delta        Decimal? @db.Decimal(20, 4)
   d7_stddev        Decimal? @map("7d_stddev") @db.Decimal(20, 4)
   d30_stddev       Decimal? @map("30d_stddev") @db.Decimal(20, 4)
-  pools            Pool     @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
+  pools            pools    @relation(fields: [pool_id], references: [pool_id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model pools {
+  pool_id                    String               @id @db.VarChar(255)
+  name                       String               @db.VarChar(255)
+  chain                      String               @db.VarChar(255)
+  protocol                   String               @db.VarChar(255)
+  symbol                     String               @db.VarChar(255)
+  tvl                        Decimal?             @db.Decimal(20, 2)
+  apy                        Decimal?             @db.Decimal(20, 4)
+  last_updated               DateTime?            @db.Timestamptz(6)
+  currently_filtered_out     Boolean?             @default(false)
+  pool_address               String?              @db.VarChar(255)
+  underlying_tokens          String[]
+  underlying_token_addresses String[]
+  asset_allocations          asset_allocations[]
+  pool_daily_metrics         pool_daily_metrics[]
+  pool_groups                pool_groups[]
+
+  @@index([pool_address], map: "idx_pools_pool_address")
+  @@index([underlying_token_addresses], map: "idx_pools_underlying_token_addresses", type: Gin)
+  @@index([underlying_tokens], map: "idx_pools_underlying_tokens", type: Gin)
 }
 
 model raw_coinmarketcap_ohlcv {

@@ -263,8 +263,8 @@ def train_and_forecast_gas_fees() -> dict:
         y_max_clean = y_max_clean.reset_index(drop=True)
     
     # Ensure all data is finite
-    logger.info(f"Avg gas data check - finite: {np.isfinite(y_avg_clean).all()}, any NaN: {y_avg_clean.isna().any()}")
-    logger.info(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().any().any()}")
+    logger.info(f"Avg gas data check - finite: {np.isfinite(y_avg_clean).all()}, any NaN: {y_avg_clean.isna().values.any()}")
+    logger.info(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().values.any()}")
     if max_gas_data_available:
         logger.info(f"Max gas data check - finite: {np.isfinite(y_max_clean).all()}, any NaN: {y_max_clean.isna().any()}")
 

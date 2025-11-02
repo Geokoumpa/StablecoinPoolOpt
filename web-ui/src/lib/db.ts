@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 
+
 let prisma: PrismaClient;
 
 declare global {
@@ -10,10 +11,22 @@ declare global {
 // the server with every change, but we want to make sure we don't
 // create a new connection to the DB with every change either.
 if (process.env.NODE_ENV === 'production') {
-    prisma = new PrismaClient();
+    prisma = new PrismaClient({
+        datasources: {
+            db: {
+                url: process.env.DATABASE_URL
+            }
+        }
+    });
 } else {
     if (!global.__db__) {
-        global.__db__ = new PrismaClient();
+        global.__db__ = new PrismaClient({
+            datasources: {
+                db: {
+                    url: process.env.DATABASE_URL
+                }
+            }
+        });
     }
     prisma = global.__db__;
     prisma.$connect();

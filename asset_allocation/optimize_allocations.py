@@ -1232,6 +1232,76 @@ def store_results(engine, run_id: str, allocations_df: pd.DataFrame,
         cursor.close()
 
 
+def update_allocation_parameters_with_results(engine, run_id: str, transactions: List[Dict], 
+                                       pools_df: pd.DataFrame, allocations_df: pd.DataFrame):
+    """
+    Updates allocation_parameters table with optimization results.
+    
+    Args:
+        engine: Database engine
+        run_id: Unique run identifier
+        transactions: List of transaction dictionaries
+        pools_df: DataFrame with pool information
+        allocations_df: DataFrame with final allocations
+    """
+    conn = engine.raw_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Calculate total transaction costs
+        total_transaction_costs = 0.0
+        for txn in transactions:
+            total_cost = txn.get('total_cost_usd', 0)
+            if hasattr(total_cost, 'dtype'):
+                total_cost = float(total_cost)
+            total_transaction_costs += total_cost
+        
+        # Calculate projected APY (weighted average of allocated pools)
+        projected_apy = 0.0
+        if not allocations_df.empty:
+            # Merge allocations with pool data to get APYs
+            allocations_with_apy = allocations_df.merge(
+                pools_df[['pool_id', 'forecasted_apy']], 
+                on='pool_id', 
+                how='left'
+            )
+            
+            if not allocations_with_apy.empty and 'amount_usd' in allocations_with_apy.columns:
+                # Calculate weighted average APY
+                total_amount = allocations_with_apy['amount_usd'].sum()
+                if total_amount > 0:
+                    weighted_apy_sum = (allocations_with_apy['amount_usd'] * allocations_with_apy['forecasted_apy']).sum()
+                    projected_apy = weighted_apy_sum / total_amount
+        
+        # Prepare transaction sequence as JSON
+        transaction_sequence = json.dumps(transactions, default=str)
+        
+        # Update allocation_parameters table
+        cursor.execute("""
+            UPDATE allocation_parameters
+            SET 
+                projected_apy = %s,
+                transaction_costs = %s,
+                transaction_sequence = %s
+            WHERE run_id = %s;
+        """, (
+            projected_apy,
+            total_transaction_costs,
+            transaction_sequence,
+            run_id
+        ))
+        
+        conn.commit()
+        logger.info(f"✓ Updated allocation_parameters with results - Projected APY: {projected_apy:.4f}%, Transaction Costs: ${total_transaction_costs:.4f}")
+        
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error updating allocation parameters: {e}")
+        raise
+    finally:
+        cursor.close()
+
+
 # ============================================================================
 # MAIN ORCHESTRATION
 # ============================================================================
@@ -1484,6 +1554,12 @@ def optimize_allocations(custom_overrides: Dict = None):
         ])
         
         store_results(engine, run_id, allocations_df, formatted_results["transactions"], alloc_params)
+        
+        # Update allocation_parameters with optimization results
+        update_allocation_parameters_with_results(
+            engine, run_id, formatted_results["transactions"], 
+            pools_df, allocations_df
+        )
         
         # Save results to JSON file (DISABLED)
         # results_file = f"optimization_results_{run_id}.json"

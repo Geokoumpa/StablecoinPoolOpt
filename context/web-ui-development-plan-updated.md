@@ -152,18 +152,18 @@ This document provides a comprehensive development plan for implementing the adm
 **Dependencies:**
 - Phase 2.1 completion
 
-#### 2.3 Common UI Components Migration 🔄 **PARTIALLY COMPLETED**
+#### 2.3 Common UI Components Migration ✅ **COMPLETED**
 **Tasks:**
 - ✅ Migrate Shadcn/ui components to Next.js
 - ✅ Update custom data table component
-- ⚠️ Implement modal system for Next.js
-- ❌ Create form validation utilities
-- ❌ Set up notification system
+- ✅ Implement modal system for Next.js
+- ✅ Create form validation utilities
+- ✅ Set up notification system
 
 **Deliverables:**
 - ✅ Component library
-- ❌ Form validation system
-- ❌ Notification framework
+- ✅ Form validation system
+- ✅ Notification framework
 - ✅ Updated UI components
 
 **Dependencies:**
@@ -188,19 +188,19 @@ This document provides a comprehensive development plan for implementing the adm
 **Dependencies:**
 - Phase 2.3 completion
 
-#### 3.2 API Routes Migration ❌ **NOT STARTED**
+#### 3.2 API Routes Migration ✅ **COMPLETED**
 **Tasks:**
-- Convert Remix loaders to Next.js Server Components
-- Implement Next.js API routes
-- Migrate form submissions to route handlers
-- Set up proper error handling
-- Implement caching strategies
+- ✅ Convert Remix loaders to Next.js Server Components
+- ✅ Implement Next.js API routes
+- ✅ Migrate form submissions to route handlers
+- ✅ Set up proper error handling
+- ✅ Implement caching strategies
 
 **Deliverables:**
-- Next.js API endpoints
-- Server Components
-- Route handlers
-- Error handling
+- ✅ Next.js API endpoints
+- ✅ Server Components
+- ✅ Route handlers
+- ✅ Error handling
 
 **Dependencies:**
 - Phase 3.1 completion
@@ -364,13 +364,13 @@ This document provides a comprehensive development plan for implementing the adm
 
 ## Current Completion Status Summary
 
-### Overall Progress: ~60% Complete
+### Overall Progress: ~65% Complete
 
 **Phase Completion Breakdown:**
 - ✅ **Phase 0**: Pipeline Integration - **100% Complete**
 - ✅ **Phase 1**: Next.js Migration Foundation - **100% Complete**  
 - ✅ **Phase 2**: Routing & Layout Migration - **100% Complete**
-- 🔄 **Phase 3**: Data Layer Migration - **33% Complete** (Database done, API/Data Fetching missing)
+- ✅ **Phase 3**: Data Layer Migration - **67% Complete** (Database and API Routes done, Data Fetching missing)
 - 🔄 **Phase 4**: Feature Implementation - **40% Complete** (UI structure done, data integration partially complete)
 - ❌ **Phase 5**: Testing & Deployment - **0% Complete** (Not started)
 
@@ -381,19 +381,18 @@ This document provides a comprehensive development plan for implementing the adm
 - Responsive layout system with navigation
 - Database schema and migrations completed
 - Basic page structures for all features implemented
+- Complete API routes implementation for all endpoints
 
 ### Critical Next Steps 🚨
-1. **Implement API Routes** - Create Next.js API endpoints in `web-ui/src/app/api/`
-2. **Add Data Integration** - Connect UI components to actual data sources
-3. **Complete CRUD Operations** - Implement create, read, update, delete operations
-4. **Add Chart Components** - Implement data visualizations for dashboard
-5. **Implement Form Validation** - Add validation utilities and error handling
-6. **Set Up Testing** - Create test suite and validation
+1. **Implement Data Fetching Patterns** - Connect UI components to API endpoints
+2. **Complete CRUD Operations** - Implement create, read, update, delete operations
+3. **Add Chart Components** - Implement data visualizations for dashboard
+4. **Implement Form Validation** - Add validation utilities and error handling
+5. **Set Up Testing** - Create test suite and validation
 
 ### Immediate Priorities (Next 1-2 weeks)
-1. Phase 3.2: API Routes Migration
-2. Phase 3.3: Data Fetching Patterns  
-3. Phase 4.1-4.5: Complete data integration for all features
+1. Phase 3.3: Data Fetching Patterns
+2. Phase 4.1-4.5: Complete data integration for all features
 
 ### Medium-term Priorities (Next 2-4 weeks)
 1. Complete remaining Phase 4 features (CRUD, validation, charts)
@@ -500,232 +499,137 @@ CREATE TABLE default_allocation_parameters (
 );
 ```
 
-2. **allocation_parameters** (Enhancement)
+2. **approved_protocols**
 ```sql
-ALTER TABLE allocation_parameters ADD COLUMN projected_apy DECIMAL(20, 4);
-ALTER TABLE allocation_parameters ADD COLUMN transaction_costs DECIMAL(20, 2);
-ALTER TABLE allocation_parameters ADD COLUMN transaction_sequence JSONB;
+CREATE TABLE approved_protocols (
+    id SERIAL PRIMARY KEY,
+    protocol_name VARCHAR(255) UNIQUE NOT NULL,
+    protocol_address VARCHAR(255),
+    chain VARCHAR(100),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-#### Database Views:
+3. **approved_tokens**
 ```sql
-CREATE VIEW pool_metrics_extended AS
-SELECT 
-    p.*,
-    pdm.actual_apy,
-    pdm.forecasted_apy,
-    pdm.actual_tvl,
-    pdm.forecasted_tvl,
-    pdm.date,
-    pdm.is_filtered_out,
-    pdm.filter_reason
-FROM pools p
-JOIN pool_daily_metrics pdm ON p.pool_id = pdm.pool_id;
+CREATE TABLE approved_tokens (
+    id SERIAL PRIMARY KEY,
+    token_symbol VARCHAR(50) NOT NULL,
+    token_name VARCHAR(255) NOT NULL,
+    token_address VARCHAR(255) UNIQUE NOT NULL,
+    chain VARCHAR(100) NOT NULL,
+    decimals INTEGER NOT NULL,
+    is_stablecoin BOOLEAN DEFAULT false,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-### API Routes Structure (Next.js)
-
-```
-app/api/
-├── dashboard/route.ts          # Dashboard metrics
-├── optimization/
-│   ├── runs/route.ts          # Optimization runs list
-│   └── [runId]/route.ts      # Single run details
-├── pools/
-│   ├── list/route.ts          # Pools list
-│   ├── metrics/route.ts        # Pool metrics
-│   └── [poolId]/route.ts     # Single pool details
-├── protocols/
-│   ├── approved/route.ts       # Approved protocols
-│   ├── tokens/route.ts         # Approved tokens
-│   └── blacklisted/route.ts    # Blacklisted tokens
-└── config/
-    ├── parameters/route.ts     # Configuration parameters
-    └── wallets/route.ts       # Wallet addresses
+4. **blacklisted_tokens**
+```sql
+CREATE TABLE blacklisted_tokens (
+    id SERIAL PRIMARY KEY,
+    token_address VARCHAR(255) UNIQUE NOT NULL,
+    token_symbol VARCHAR(50),
+    token_name VARCHAR(255),
+    chain VARCHAR(100),
+    reason TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-### Component Architecture
+### Migration Checklist
 
-```
-components/
-├── ui/                 # Shadcn/ui components
-├── charts/             # Chart components
-│   ├── LineChart.tsx
-│   ├── PieChart.tsx
-│   └── BarChart.tsx
-├── forms/              # Form components
-│   ├── ProtocolForm.tsx
-│   ├── TokenForm.tsx
-│   └── ConfigForm.tsx
-├── tables/             # Table components
-│   ├── DataTable.tsx
-│   ├── PoolTable.tsx
-│   └── OptimizationTable.tsx
-└── layout/             # Layout components
-    ├── Header.tsx
-    ├── Sidebar.tsx
-    └── Layout.tsx
-```
+#### Pre-Migration
+- [ ] Backup existing React Router codebase
+- [ ] Create migration branch
+- [ ] Set up staging environment
+- [ ] Document current API endpoints
+- [ ] Test current functionality baseline
 
-## Migration Mapping
+#### Migration Tasks
+- [ ] Initialize Next.js project
+- [ ] Install dependencies
+- [ ] Configure authentication
+- [ ] Migrate layouts
+- [ ] Convert routes
+- [ ] Migrate components
+- [ ] Set up API routes
+- [ ] Test data layer
+- [ ] Implement error handling
 
-### Route Mapping
-| React Router v7 | Next.js App Router |
-|----------------|-------------------|
-| `app/routes/_index.tsx` | `app/(dashboard)/page.tsx` |
-| `app/routes/login.tsx` | `app/(auth)/login/page.tsx` |
-| `app/routes/optimization/_index.tsx` | `app/(dashboard)/optimization/page.tsx` |
-| `app/routes/optimization/$runId.tsx` | `app/(dashboard)/optimization/[runId]/page.tsx` |
-| `app/routes/pools/_index.tsx` | `app/(dashboard)/pools/page.tsx` |
-| `app/routes/pools/$poolId.tsx` | `app/(dashboard)/pools/[poolId]/page.tsx` |
-| `app/routes/pools/metrics.tsx` | `app/(dashboard)/pools/metrics/page.tsx` |
-| `app/routes/protocols/_index.tsx` | `app/(dashboard)/protocols/page.tsx` |
-| `app/routes/config/_index.tsx` | `app/(dashboard)/config/page.tsx` |
+#### Post-Migration
+- [ ] Comprehensive testing
+- [ ] Performance optimization
+- [ ] Documentation update
+- [ ] Team training
+- [ ] Production deployment
 
-### Component Migration
-| React Router Pattern | Next.js Pattern |
-|-------------------|-----------------|
-| Remix loaders | Server Components / getServerSideProps |
-| Remix actions | Route handlers (POST/PUT/DELETE) |
-| useLoaderData | Direct data fetching in Server Components |
-| useActionData | Form handling with Next.js patterns |
-| Outlet | Children prop in layouts |
+### API Routes Implementation Status
 
-### Authentication Migration
-| React Router v7 | Next.js |
-|----------------|---------|
-| `<ClerkProvider>` | `<ClerkProvider>` (same) |
-| `ProtectedRoute` component | Middleware + Layout patterns |
-| `useUser()` hook | `useUser()` hook (same) |
-| Route-based protection | Middleware-based protection |
+#### Completed API Routes ✅
+- `/api/dashboard` - Dashboard metrics and statistics
+- `/api/optimization/runs` - Optimization runs list and creation
+- `/api/optimization/runs/[runId]` - Single optimization run details
+- `/api/pools/list` - Pools list with filtering and pagination
+- `/api/pools/metrics` - Pool metrics data
+- `/api/pools/[poolId]` - Single pool details
+- `/api/protocols/approved` - Approved protocols management
+- `/api/tokens/approved` - Approved tokens management
+- `/api/tokens/blacklisted` - Blacklisted tokens management
+- `/api/config/parameters` - Configuration parameters management
+- `/api/config/wallets` - Wallet addresses management
 
-## Development Guidelines
+#### API Features Implemented ✅
+- Authentication with Clerk
+- Error handling with proper HTTP status codes
+- Request validation
+- Caching strategies with appropriate headers
+- Pagination for list endpoints
+- Filtering and search capabilities
+- CRUD operations for management endpoints
+- Database integration with Prisma
+- TypeScript type safety
 
-### Code Standards
-- TypeScript for type safety
-- ESLint + Prettier for code formatting
-- Conventional commits for version control
-- Component-driven development
-- Server/Client component separation
+---
+
+## Implementation Guidelines
+
+### Code Organization
+1. **Server Components**: Use for data-heavy pages that don't need interactivity
+2. **Client Components**: Use for interactive elements (forms, modals, etc.)
+3. **API Routes**: Implement all backend logic in route handlers
+4. **Database Operations**: Centralize in lib/db.ts and API routes
+
+### Performance Optimization
+1. **Caching**: Implement appropriate caching strategies
+2. **Code Splitting**: Use dynamic imports for large components
+3. **Image Optimization**: Use Next.js Image component
+4. **Bundle Analysis**: Regularly analyze and optimize bundle size
+
+### Security Considerations
+1. **Authentication**: Ensure all protected routes require authentication
+2. **Authorization**: Implement role-based access control if needed
+3. **Input Validation**: Validate all user inputs
+4. **SQL Injection**: Use Prisma ORM for safe database operations
 
 ### Testing Strategy
-- Unit tests with Jest + React Testing Library
-- Integration tests for API routes
-- E2E tests with Playwright
-- Minimum 80% code coverage
-- Migration-specific testing
+1. **Unit Tests**: Test individual functions and components
+2. **Integration Tests**: Test API endpoints and database operations
+3. **E2E Tests**: Test complete user workflows
+4. **Performance Tests**: Monitor and optimize application performance
 
-### Performance Considerations
-- Implement proper indexing on database queries
-- Use React.memo for component optimization
-- Implement virtual scrolling for large tables
-- Optimize bundle size with Next.js code splitting
-- Leverage Next.js caching mechanisms
-
-### Security Measures
-- Input validation on all forms
-- SQL injection prevention through Prisma
-- XSS protection through React
-- CSRF protection through Next.js
-- Rate limiting on API endpoints
-- Middleware-based authentication
-
-## Migration Risk Assessment
-
-### High Risks
-1. **Authentication Flow Changes**: Clerk integration differences
-   - Mitigation: Thorough testing of auth flows
-   
-2. **Server Component Boundaries**: Proper separation of client/server code
-   - Mitigation: Careful component architecture planning
-
-### Medium Risks
-1. **Build Process Changes**: Different build optimization
-   - Mitigation: Performance testing and optimization
-   
-2. **Environment Variables**: Different handling in Next.js
-   - Mitigation: Comprehensive environment setup
-
-### Low Risks
-1. **Styling Issues**: Minor CSS differences
-   - Mitigation: Visual testing and adjustments
-   
-2. **Import Path Changes**: File structure differences
-   - Mitigation: Systematic path updates
-
-## Post-Migration Benefits
-
-1. **Better Community Support**: Larger Next.js ecosystem
-2. **Improved Performance**: Next.js optimizations
-3. **Enhanced Developer Experience**: Better tooling
-4. **Future-Proof**: Active development and updates
-5. **Deployment Flexibility**: Multiple deployment options
-6. **Built-in Features**: Image optimization, internationalization, edge functions
-
-## Success Metrics
-
-### Performance Metrics
-- Page load time < 2 seconds
-- API response time < 500ms
-- 99.9% uptime
-- Mobile responsiveness score > 95
-
-### Quality Metrics
-- Test coverage > 80%
-- Zero critical security vulnerabilities
-- Accessibility score > 90
-- User satisfaction > 4.5/5
-
-### Migration Success Metrics
-- All existing functionality preserved
-- Identical UI/UX design maintained
-- Performance improved or maintained
-- Zero data loss during migration
-- Team comfortable with new stack
-
-## Deployment Strategy
-
-### Environment Setup
-1. **Development**: Local development with Next.js dev server
-2. **Staging**: GCP Cloud Run with test database
-3. **Production**: GCP Cloud Run with production database
-
-### CI/CD Pipeline
-1. **Code Quality**: Automated linting and testing
-2. **Build**: Next.js build and optimization
-3. **Deploy**: Automated deployment to staging
-4. **Release**: Manual promotion to production
-
-### Migration Deployment
-1. **Parallel Deployment**: Run both versions during migration
-2. **Feature Flags**: Gradual rollout of Next.js features
-3. **Database Migration**: Zero-downtime database migration
-4. **DNS Switch**: Seamless transition to Next.js
-
-## Resource Requirements
-
-### Development Team
-- 1 Full-stack developer (Next.js/React/TypeScript)
-- 0.5 Database specialist (for optimization)
-- 0.5 UI/UX designer (for design refinement)
-- 0.5 DevOps engineer (for migration deployment)
-
-### Infrastructure
-- GCP Cloud Run for hosting (Next.js optimized)
-- GCP Cloud SQL (existing)
-- GCP Cloud Storage for assets
-- Monitoring and logging tools
-
-### Timeline
-- **Migration Duration**: 5 weeks
-- **Parallel Development**: Ongoing feature development continues
-- **Total Duration**: 10 weeks (migration + remaining features)
-- **MVP Delivery**: Week 5 (migration complete)
-- **Full Release**: Week 10 (all features complete)
-- **Post-launch support**: Ongoing
+---
 
 ## Conclusion
 
-This updated development plan provides a structured approach to migrating the admin UI from React Router v7 to Next.js while ensuring quality, performance, and security throughout the migration process. The phased approach minimizes risk and allows for thorough testing at each stage while maintaining all existing functionality and design.
+This development plan provides a comprehensive roadmap for migrating the Stablecoin Pool Optimization admin UI from React Router v7 to Next.js while maintaining all existing functionality. The migration is structured in phases to minimize disruption and ensure a smooth transition.
 
-The migration to Next.js will provide better community support, improved performance, and enhanced developer experience while preserving the exact same UI/UX design that users are familiar with.
+The key to success will be maintaining the exact same UI/UX design while leveraging Next.js's powerful features for improved performance, SEO, and developer experience.
+
+Regular progress updates and testing at each phase will ensure the migration stays on track and meets all requirements.

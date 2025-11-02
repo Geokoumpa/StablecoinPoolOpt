@@ -54,7 +54,39 @@ def test_slack_notification_calculation():
     # Simulate Slack notification formatting
     results = {
         'total_allocated': total_allocated,
-        'top_pools': pool_summary.to_dict('records')
+        'top_pools': pool_summary.to_dict('records'),
+        'projected_apy': 11.5,  # Simulated projected APY
+        'total_transaction_cost': 25.50,  # Simulated transaction costs
+        'transaction_sequence': [
+            {
+                'seq': 1,
+                'type': 'CONVERSION',
+                'from_token': 'USDT',
+                'to_token': 'USDC',
+                'amount_usd': 500.0,
+                'gas_cost_usd': 2.5,
+                'conversion_cost_usd': 0.2,
+                'total_cost_usd': 2.7
+            },
+            {
+                'seq': 2,
+                'type': 'ALLOCATION',
+                'token': 'USDC',
+                'to_location': 'pool1',
+                'amount_usd': 1000.0,
+                'gas_cost_usd': 1.8,
+                'total_cost_usd': 1.8
+            },
+            {
+                'seq': 3,
+                'type': 'ALLOCATION',
+                'token': 'USDT',
+                'to_location': 'pool2',
+                'amount_usd': 800.0,
+                'gas_cost_usd': 1.8,
+                'total_cost_usd': 1.8
+            }
+        ]
     }
     
     for pool in results['top_pools']:
@@ -66,6 +98,19 @@ def test_slack_notification_calculation():
         print(f"• {pool['symbol']} (ID: {pool['pool_id']}): ${pool['amount_usd']:,.2f} ({percentage:.1f}%)")
     
     print("\n✓ Pool percentages calculated based on total pool allocation, not individual token allocations!")
+    
+    print("\n=== New Fields Demonstration ===")
+    print(f"Projected APY: {results.get('projected_apy', 0):.2f}%")
+    print(f"Total Transaction Costs: ${results.get('total_transaction_cost', 0):.2f}")
+    print("Transaction Sequence:")
+    for txn in results.get('transaction_sequence', []):
+        txn_type = txn.get('type', '')
+        if txn_type == 'CONVERSION':
+            print(f"  {txn['seq']}. {txn_type}: ${txn['amount_usd']:.2f} {txn['from_token']} → {txn['to_token']} (Gas: ${txn['gas_cost_usd']:.4f}, Conv: ${txn['conversion_cost_usd']:.4f}, Total: ${txn['total_cost_usd']:.4f})")
+        elif txn_type == 'ALLOCATION':
+            print(f"  {txn['seq']}. {txn_type}: ${txn['amount_usd']:.2f} {txn['token']} → {txn['to_location']} (Gas: ${txn['gas_cost_usd']:.4f}, Total: ${txn['total_cost_usd']:.4f})")
+        else:
+            print(f"  {txn['seq']}. {txn_type}: ${txn['amount_usd']:.2f} (Gas: ${txn['gas_cost_usd']:.4f}, Total: ${txn['total_cost_usd']:.4f})")
 
 if __name__ == "__main__":
     test_slack_notification_calculation()

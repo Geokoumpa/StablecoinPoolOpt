@@ -135,7 +135,7 @@ def run_pipeline(phases=None):
         logger.info("--- Phase 6: Reporting & Notification ---")
         try:
             run_script("reporting_notification.post_slack_notification", "post_slack_notification.py")
-            logger.info("Phase 7 completed successfully.")
+            logger.info("Phase 6 completed successfully.")
         except Exception as e:
             logger.error(f"Error during Phase 7 (Reporting & Notification): {e}")
             sys.exit(1)

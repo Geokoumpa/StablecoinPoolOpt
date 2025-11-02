@@ -74,7 +74,8 @@ def fetch_optimization_results():
         
         # Get the latest optimization run
         query = """
-        SELECT run_id, timestamp, max_alloc_percentage, conversion_rate
+        SELECT run_id, timestamp, max_alloc_percentage, conversion_rate, 
+               projected_apy, transaction_costs, transaction_sequence
         FROM allocation_parameters
         ORDER BY timestamp DESC
         LIMIT 1
@@ -87,6 +88,31 @@ def fetch_optimization_results():
         
         run_id = params_df['run_id'].iloc[0]
         timestamp = params_df['timestamp'].iloc[0]
+        projected_apy = params_df['projected_apy'].iloc[0] if not pd.isna(params_df['projected_apy'].iloc[0]) else 0.0
+        transaction_costs = params_df['transaction_costs'].iloc[0] if not pd.isna(params_df['transaction_costs'].iloc[0]) else 0.0
+
+        # Robustly extract transaction_sequence avoiding ambiguous truth-value of arrays
+        transaction_sequence_raw = params_df['transaction_sequence'].iloc[0]
+        transaction_sequence = []
+        try:
+            # None or explicit NaN -> treat as empty
+            if transaction_sequence_raw is None or (isinstance(transaction_sequence_raw, float) and pd.isna(transaction_sequence_raw)):
+                transaction_sequence = []
+            elif isinstance(transaction_sequence_raw, str):
+                # keep string as-is (will be parsed later)
+                transaction_sequence = transaction_sequence_raw
+            else:
+                # If array-like (numpy array, pandas Series, list), convert to plain list
+                if hasattr(transaction_sequence_raw, '__iter__') and not isinstance(transaction_sequence_raw, (str, bytes)):
+                    try:
+                        transaction_sequence = list(transaction_sequence_raw)
+                    except Exception:
+                        transaction_sequence = transaction_sequence_raw
+                else:
+                    transaction_sequence = transaction_sequence_raw
+        except Exception as e:
+            logger.warning(f"Error reading transaction_sequence from DB: {e}")
+            transaction_sequence = []
         
         # Get the transactions/allocations for this run
         transactions_query = """
@@ -117,6 +143,7 @@ def fetch_optimization_results():
         # Process allocation transactions to get final allocations
         allocation_transactions = transactions_df[transactions_df['operation'] == 'ALLOCATION']
         
+        # Use explicit empty-check to avoid ambiguous truth-value on pandas objects
         if not allocation_transactions.empty:
             # Merge with pool information
             allocations_with_pools = allocation_transactions.merge(
@@ -144,20 +171,75 @@ def fetch_optimization_results():
             
             total_allocated = allocations_with_pools['amount_usd'].sum()
         else:
+            # Ensure consistent return shapes when there are no allocations
             pool_summary = pd.DataFrame(columns=['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl', 'amount_usd'])
             token_summary = pd.DataFrame(columns=['token', 'amount_usd'])
             total_allocated = 0.0
+            pool_total_mapping = {}
         
         # Calculate transaction costs
         total_transaction_count = len(transactions_df)
+        
+        # Parse transaction sequence if available
+        parsed_transaction_sequence = []
+        # Avoid ambiguous truth-value checks on array-like objects (numpy / pandas)
+        if transaction_sequence is not None and not (hasattr(transaction_sequence, '__len__') and len(transaction_sequence) == 0):
+            try:
+                if isinstance(transaction_sequence, str):
+                    parsed_transaction_sequence = json.loads(transaction_sequence)
+                else:
+                    # Ensure array-like types become plain Python lists for downstream checks
+                    try:
+                        parsed_transaction_sequence = list(transaction_sequence)
+                    except Exception:
+                        parsed_transaction_sequence = transaction_sequence
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Error parsing transaction sequence: {e}")
+                parsed_transaction_sequence = []
+        
+        # Compute transaction cost breakdowns from parsed transaction sequence where possible
+        total_gas_cost = 0.0
+        total_conversion_cost = 0.0
+        # parsed_transaction_sequence can be a list of dicts, a string, or other types.
+        if isinstance(parsed_transaction_sequence, list):
+            for txn in parsed_transaction_sequence:
+                try:
+                    total_gas_cost += float(txn.get('gas_cost_usd', 0) or 0)
+                except Exception:
+                    # ignore malformed values
+                    pass
+                try:
+                    total_conversion_cost += float(txn.get('conversion_cost_usd', 0) or 0)
+                except Exception:
+                    pass
+        else:
+            # If it's a string JSON, try to parse it and aggregate
+            if isinstance(parsed_transaction_sequence, str):
+                try:
+                    seq_parsed = json.loads(parsed_transaction_sequence)
+                    if isinstance(seq_parsed, list):
+                        for txn in seq_parsed:
+                            try:
+                                total_gas_cost += float(txn.get('gas_cost_usd', 0) or 0)
+                            except Exception:
+                                pass
+                            try:
+                                total_conversion_cost += float(txn.get('conversion_cost_usd', 0) or 0)
+                            except Exception:
+                                pass
+                except Exception:
+                    # leave totals at 0 if parsing fails
+                    pass
         
         return {
             'run_id': run_id,
             'timestamp': timestamp,
             'total_allocated': total_allocated,
-            'total_gas_cost': 0.0,  # Not stored in current schema
-            'total_conversion_cost': 0.0,  # Not stored in current schema
-            'total_transaction_cost': 0.0,  # Not stored in current schema
+            'total_gas_cost': total_gas_cost,
+            'total_conversion_cost': total_conversion_cost,
+            'total_transaction_cost': transaction_costs if transaction_costs is not None else (total_gas_cost + total_conversion_cost),
+            'projected_apy': projected_apy,  # New field
+            'transaction_sequence': parsed_transaction_sequence,  # New field
             'pool_count': len(pool_summary),
             'token_count': len(token_summary),
             'transaction_count': total_transaction_count,
@@ -169,7 +251,8 @@ def fetch_optimization_results():
         
         }
     except Exception as e:
-        logger.error(f"Error fetching optimization results: {e}")
+        # Log full traceback to help identify where the ambiguous-array error originates
+        logger.exception("Error fetching optimization results")
         return None
 
 
@@ -219,16 +302,15 @@ def calculate_yield_metrics(results: Dict) -> Dict:
             logger.warning("forecasted_apy column not found in APY data")
             return {}
         
-        # Merge allocations with APYs
-        allocations_with_apy = results['allocations_df'].merge(
-            apy_df[['pool_id', 'forecasted_apy']], 
-            on='pool_id', 
-            how='left'
-        )
-        
-        # Check if merge was successful
-        if 'forecasted_apy' not in allocations_with_apy.columns:
-            logger.error("forecasted_apy column missing after merge")
+        # Instead of relying on a merge that may produce unexpected column names,
+        # build a mapping and map forecasted_apy onto allocations to ensure the
+        # column is always present.
+        try:
+            apy_map = apy_df.set_index('pool_id')['forecasted_apy'].to_dict()
+            allocations_with_apy = results['allocations_df'].copy()
+            allocations_with_apy['forecasted_apy'] = allocations_with_apy['pool_id'].map(apy_map)
+        except Exception as map_error:
+            logger.error(f"Error mapping APY values onto allocations: {map_error}")
             return {}
         
         # Fill missing APY values with 0
@@ -294,7 +376,7 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
             WHERE date = CURRENT_DATE
             """
             aum_df = pd.read_sql(aum_query, engine)
-            if not aum_df.empty and pd.notna(aum_df['total_aum'].iloc[0]):
+            if not aum_df.empty and not pd.isna(aum_df['total_aum'].iloc[0]):
                 total_aum = float(aum_df['total_aum'].iloc[0])
             engine.dispose()
     except Exception as e:
@@ -327,6 +409,9 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
 • Conversion Fees: ${results['total_conversion_cost']:.4f}
 • Total Transaction Cost: ${results['total_transaction_cost']:.4f}
 
+*📈 Optimization Metrics:*
+• Projected APY: {results.get('projected_apy', 0):.2f}%
+
 *🏆 Top Pool Allocations:*
 """
     
@@ -350,19 +435,46 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
         message += f"• {token['token']}: ${token['amount_usd']:,.2f} ({percentage:.1f}%)\n"
     
     # Add transaction details if available
-    if not results['transactions_df'].empty:
+    transaction_sequence = results.get('transaction_sequence', [])
+    if transaction_sequence:
+        message += "\n*🔄 Transaction Sequence:*\n"
+        for txn in transaction_sequence:
+            txn_type = txn.get('type', '')
+            seq = txn.get('seq', 0)
+            amount_usd = txn.get('amount_usd', 0)
+            gas_cost = txn.get('gas_cost_usd', 0)
+            conv_cost = txn.get('conversion_cost_usd', 0)
+            total_cost = txn.get('total_cost_usd', 0)
+            
+            if txn_type == 'ALLOCATION':
+                token = txn.get('token', '')
+                pool_id = txn.get('to_location', '')
+                pool_info = f" (Pool ID: {pool_id})" if pool_id else ""
+                message += f"• Step {seq}: ALLOCATE ${amount_usd:,.2f} {token}{pool_info} | Gas: ${gas_cost:.4f} | Total: ${total_cost:.4f}\n"
+            elif txn_type == 'WITHDRAWAL':
+                token = txn.get('token', '')
+                pool_id = txn.get('from_location', '')
+                pool_info = f" (Pool ID: {pool_id})" if pool_id else ""
+                message += f"• Step {seq}: WITHDRAW ${amount_usd:,.2f} {token}{pool_info} | Gas: ${gas_cost:.4f} | Total: ${total_cost:.4f}\n"
+            elif txn_type == 'CONVERSION':
+                from_token = txn.get('from_token', '')
+                to_token = txn.get('to_token', '')
+                message += f"• Step {seq}: CONVERT ${amount_usd:,.2f} {from_token} → {to_token} | Gas: ${gas_cost:.4f} | Conv: ${conv_cost:.4f} | Total: ${total_cost:.4f}\n"
+    elif not results['transactions_df'].empty:
+        # Fallback to old method if transaction_sequence is not available
+        # Use explicit empty-check to avoid ambiguous truth-value on pandas objects
         message += "\n*🔄 Transaction Sequence:*\n"
         for _, txn in results['transactions_df'].iterrows():
             if txn['operation'] == 'ALLOCATION':
                 pool_info = ""
-                if pd.notna(txn['pool_id']):
+                if not pd.isna(txn['pool_id']):
                     pool_row = results['allocations_df'][results['allocations_df']['pool_id'] == txn['pool_id']]
                     if not pool_row.empty:
                         pool_symbol = pool_row['symbol'].iloc[0]
                         pool_apy = pool_row['forecasted_apy'].iloc[0]
                         pool_info = f" ({pool_symbol}, APY: {pool_apy:.2f}%)" if pool_apy else f" ({pool_symbol})"
                 
-                pool_id_info = f" (Pool ID: {txn['pool_id']})" if pd.notna(txn['pool_id']) else ""
+                pool_id_info = f" (Pool ID: {txn['pool_id']})" if not pd.isna(txn['pool_id']) else ""
                 message += f"• Step {txn['step_number']}: ALLOCATE ${txn['amount']:,.2f} {txn['to_asset']}{pool_info}{pool_id_info}\n"
             elif txn['operation'] == 'WITHDRAWAL':
                 message += f"• Step {txn['step_number']}: WITHDRAW ${txn['amount']:,.2f} {txn['from_asset']}\n"

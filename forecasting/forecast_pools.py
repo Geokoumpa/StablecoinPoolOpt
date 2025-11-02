@@ -117,7 +117,8 @@ def fallback_forecast_and_persist(pool_id: str, data: pd.DataFrame, steps: int =
 
     # TVL fallback
     tvl_val = 0.0
-    if 'tvl_usd' in data.columns and data['tvl_usd'].dropna().any():
+    # Use explicit empty-check instead of relying on the truth-value of a Series
+    if 'tvl_usd' in data.columns and not data['tvl_usd'].dropna().empty:
         tvl_val = float(data['tvl_usd'].dropna().iloc[-1])
     else:
         engine = get_db_connection()
@@ -217,12 +218,13 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     exogenous_cols = ['eth_open', 'btc_open', 'gas_price_gwei']
     
     # Check if we have sufficient exogenous data
-    has_missing_exog = data[exogenous_cols].isna().any().any()
+    # Use .values.any() to produce a scalar boolean from the boolean array
+    has_missing_exog = data[exogenous_cols].isna().values.any()
     if has_missing_exog:
         logger.info(f"Pool {pool_id} has missing exogenous data, filling with forward fill...")
         data[exogenous_cols] = data[exogenous_cols].ffill()
 
-    has_missing_exog_after_ffill = data[exogenous_cols].isna().any().any()
+    has_missing_exog_after_ffill = data[exogenous_cols].isna().values.any()
     if has_missing_exog_after_ffill:
         logger.info(f"Pool {pool_id} still has missing exogenous data after forward fill, using backward fill...")
         data[exogenous_cols] = data[exogenous_cols].bfill()
@@ -403,8 +405,8 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
     exog_data_clean = exog_data_clean.reset_index(drop=True)
     
     # Ensure all data is finite
-    logger.info(f"Y data check - finite: {np.isfinite(y_clean).all()}, any NaN: {y_clean.isna().any()}")
-    logger.info(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().any().any()}")
+    logger.info(f"Y data check - finite: {np.isfinite(y_clean).all()}, any NaN: {y_clean.isna().values.any()}")
+    logger.info(f"Exog data check - finite: {np.isfinite(exog_data_clean).all().all()}, any NaN: {exog_data_clean.isna().values.any()}")
 
     # Skip Bayesian optimization for now and use default parameters to test if that's the issue
     logger.info("Skipping Bayesian search and using default parameters to avoid array ambiguity...")
