@@ -1,11 +1,24 @@
 'use client';
 
-import { useDashboard } from '@/hooks/api-hooks';
+import { useDashboard, useDashboardCharts } from '@/hooks/api-hooks';
 import { transformDashboardData } from '@/lib/data-transformations';
 import { formatCurrency, formatPercentage, formatNumber } from '@/lib/fetch-utils';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { PoolAPYDistribution } from '@/components/charts/pool-apy-distribution';
+import { TVLByProtocol } from '@/components/charts/tvl-by-protocol';
+import { OptimizationTrends } from '@/components/charts/optimization-trends';
 
 export default function DashboardPage() {
-    const { data: dashboardData, isLoading, error, refetch } = useDashboard();
+    const { data: dashboardData, isLoading: dashboardLoading, error: dashboardError, refetch: refetchDashboard } = useDashboard();
+    const { data: chartData, isLoading: chartsLoading, error: chartsError, refetch: refetchCharts } = useDashboardCharts();
+
+    const isLoading = dashboardLoading || chartsLoading;
+    const error = dashboardError || chartsError;
+
+    const handleRefresh = () => {
+        refetchDashboard();
+        refetchCharts();
+    };
 
     if (isLoading) {
         return (
@@ -28,6 +41,17 @@ export default function DashboardPage() {
                         </div>
                     ))}
                 </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {[...Array(3)].map((_, i) => (
+                        <div key={i} className="bg-white shadow rounded-lg p-6">
+                            <div className="animate-pulse">
+                                <div className="h-6 bg-gray-200 rounded w-1/3 mb-4"></div>
+                                <div className="h-64 bg-gray-200 rounded"></div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
             </div>
         );
     }
@@ -40,7 +64,7 @@ export default function DashboardPage() {
                         <h2 className="text-xl font-semibold mb-2">Error Loading Dashboard</h2>
                         <p>{error}</p>
                         <button
-                            onClick={() => refetch()}
+                            onClick={handleRefresh}
                             className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
                         >
                             Try Again
@@ -64,7 +88,7 @@ export default function DashboardPage() {
                         </p>
                     </div>
                     <button
-                        onClick={() => refetch()}
+                        onClick={handleRefresh}
                         className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2"
                     >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -77,37 +101,100 @@ export default function DashboardPage() {
 
             {transformedData && (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                    <div className="bg-white shadow rounded-lg p-6">
-                        <h3 className="text-lg font-medium text-gray-900 mb-2">Total Pools</h3>
-                        <p className="text-3xl font-bold text-blue-600">
-                            {transformedData.totalPoolsFormatted}
-                        </p>
-                        <p className="text-sm text-gray-500">Active pools</p>
-                    </div>
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Total Pools</CardTitle>
+                            <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                            </svg>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="text-2xl font-bold text-blue-600">
+                                {transformedData.totalPoolsFormatted}
+                            </div>
+                            <p className="text-xs text-muted-foreground">Active pools</p>
+                        </CardContent>
+                    </Card>
 
-                    <div className="bg-white shadow rounded-lg p-6">
-                        <h3 className="text-lg font-medium text-gray-900 mb-2">Optimization Runs</h3>
-                        <p className="text-3xl font-bold text-green-600">
-                            {transformedData.totalOptimizationRunsFormatted}
-                        </p>
-                        <p className="text-sm text-gray-500">Total runs</p>
-                    </div>
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Optimization Runs</CardTitle>
+                            <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="text-2xl font-bold text-green-600">
+                                {transformedData.totalOptimizationRunsFormatted}
+                            </div>
+                            <p className="text-xs text-muted-foreground">Total runs</p>
+                        </CardContent>
+                    </Card>
 
-                    <div className="bg-white shadow rounded-lg p-6">
-                        <h3 className="text-lg font-medium text-gray-900 mb-2">Total Value Locked</h3>
-                        <p className="text-3xl font-bold text-purple-600">
-                            {transformedData.totalValueLockedFormatted}
-                        </p>
-                        <p className="text-sm text-gray-500">Across all pools</p>
-                    </div>
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Total Value Locked</CardTitle>
+                            <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="text-2xl font-bold text-purple-600">
+                                {transformedData.totalValueLockedFormatted}
+                            </div>
+                            <p className="text-xs text-muted-foreground">Across all pools</p>
+                        </CardContent>
+                    </Card>
 
-                    <div className="bg-white shadow rounded-lg p-6">
-                        <h3 className="text-lg font-medium text-gray-900 mb-2">Average APY</h3>
-                        <p className="text-3xl font-bold text-orange-600">
-                            {transformedData.averageAPYFormatted}
-                        </p>
-                        <p className="text-sm text-gray-500">Weighted average</p>
-                    </div>
+                    <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Average APY</CardTitle>
+                            <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                            </svg>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="text-2xl font-bold text-orange-600">
+                                {transformedData.averageAPYFormatted}
+                            </div>
+                            <p className="text-xs text-muted-foreground">Weighted average</p>
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+
+            {/* Charts Section */}
+            {chartData && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Pool APY Distribution</CardTitle>
+                            <CardDescription>Top 10 pools by APY</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <PoolAPYDistribution data={chartData.poolAPYDistribution} />
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>TVL by Protocol</CardTitle>
+                            <CardDescription>Total value locked across protocols</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <TVLByProtocol data={chartData.tvlByProtocol} />
+                        </CardContent>
+                    </Card>
+
+                    <Card className="lg:col-span-2">
+                        <CardHeader>
+                            <CardTitle>Optimization Trends</CardTitle>
+                            <CardDescription>Recent optimization runs performance</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <OptimizationTrends data={chartData.optimizationTrends} />
+                        </CardContent>
+                    </Card>
                 </div>
             )}
 

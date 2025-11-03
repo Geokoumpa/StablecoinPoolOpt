@@ -1,12 +1,30 @@
 import { useApi, usePaginatedApi, useMutation, PaginationParams } from '@/lib/fetch-utils';
 
-// Types based on the API responses
+// Types based on API responses
 export interface DashboardData {
     totalPools: number;
     totalOptimizationRuns: number;
     totalValueLocked: number;
     averageAPY: number;
     recentActivity: any[];
+}
+
+export interface ChartData {
+    poolAPYDistribution: Array<{
+        name: string;
+        apy: number;
+    }>;
+    tvlByProtocol: Array<{
+        name: string;
+        tvl: number;
+        percentage: number;
+    }>;
+    optimizationTrends: Array<{
+        date: string;
+        projected_apy: number;
+        transaction_costs: number;
+        run_id: string;
+    }>;
 }
 
 export interface Pool {
@@ -71,6 +89,10 @@ export interface AllocationParameter {
 // Dashboard hooks
 export function useDashboard() {
     return useApi<DashboardData>('/api/dashboard', {}, 'api_dashboard');
+}
+
+export function useDashboardCharts() {
+    return useApi<ChartData>('/api/dashboard/charts', {}, 'api_dashboard_charts');
 }
 
 // Pools hooks
