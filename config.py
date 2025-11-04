@@ -15,6 +15,7 @@ DB_PORT = os.getenv("DB_PORT")
 # API Keys
 COINMARKETCAP_API_KEY = os.getenv("COINMARKETCAP_API_KEY")
 ETHPLORER_API_KEY = os.getenv("ETHPLORER_API_KEY")
+FRED_API_KEY = os.getenv("FRED_API_KEY")
 ETHGASTRACKER_API_KEY = os.getenv("ETHGASTRACKER_API_KEY")
 
 # Other Configurations

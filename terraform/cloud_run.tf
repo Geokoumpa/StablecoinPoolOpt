@@ -63,6 +63,18 @@ resource "google_secret_manager_secret_version" "ethgastracker_api_key_version" 
   secret      = google_secret_manager_secret.ethgastracker_api_key.id
   secret_data = var.ethgastracker_api_key
 }
+resource "google_secret_manager_secret" "fred_api_key" {
+  secret_id = "fred-api-key"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "fred_api_key_version" {
+  secret      = google_secret_manager_secret.fred_api_key.id
+  secret_data = var.fred_api_key
+}
 
 resource "google_secret_manager_secret" "main_asset_holding_address" {
   secret_id = "main-asset-holding-address"
@@ -121,6 +133,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
     "fetch_gas_ethgastracker",
     "fetch_defillama_pools",
     "fetch_account_transactions",
+    "fetch_macroeconomic_data",
     "filter_pools_pre",
     "fetch_filtered_pool_histories",
     "calculate_pool_metrics",
@@ -272,6 +285,18 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
           }
         }
 
+        dynamic "env" {
+          for_each = contains(["fetch_macroeconomic_data"], each.key) ? [1] : []
+          content {
+            name  = "FRED_API_KEY"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.fred_api_key.id
+                version = "latest"
+              }
+            }
+          }
+        }
         dynamic "env" {
           for_each = contains(["manage_ledger"], each.key) ? [1] : []
           content {

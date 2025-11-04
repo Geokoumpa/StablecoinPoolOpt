@@ -12,6 +12,7 @@ resource "google_workflows_workflow" "main" {
     PIPELINE_STEP_FETCH_GAS_ETHGASTRACKER_ID           = google_cloud_run_v2_job.pipeline_step["fetch_gas_ethgastracker"].id
     PIPELINE_STEP_FETCH_DEFILLAMA_POOLS_ID             = google_cloud_run_v2_job.pipeline_step["fetch_defillama_pools"].id
     PIPELINE_STEP_FETCH_ACCOUNT_TRANSACTIONS_ID      = google_cloud_run_v2_job.pipeline_step["fetch_account_transactions"].id
+     PIPELINE_STEP_FETCH_MACROECONOMIC_DATA_ID = google_cloud_run_v2_job.pipeline_step["fetch_macroeconomic_data"].id
     PIPELINE_STEP_FILTER_POOLS_PRE_ID                  = google_cloud_run_v2_job.pipeline_step["filter_pools_pre"].id
     PIPELINE_STEP_FETCH_FILTERED_POOL_HISTORIES_ID     = google_cloud_run_v2_job.pipeline_step["fetch_filtered_pool_histories"].id
     PIPELINE_STEP_CALCULATE_POOL_METRICS_ID            = google_cloud_run_v2_job.pipeline_step["calculate_pool_metrics"].id
