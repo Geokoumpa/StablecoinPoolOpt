@@ -17,7 +17,8 @@ This document outlines the complete implementation of macroeconomic data integra
 #### 2. FRED API Client
 - **File**: [`api_clients/fred_client.py`](api_clients/fred_client.py:1)
 - **Functions**: `get_series_data()` and `get_all_macro_data()`
-- **Coverage**: 28 macroeconomic indicators (26 daily + 2 monthly)
+- **Coverage**: 23 macroeconomic indicators (21 daily + 2 monthly)
+- **Date Filtering**: Automatically filters to last year of data only
 - **Error Handling**: Comprehensive logging and exception management
 
 #### 3. Data Ingestion Script
@@ -25,6 +26,7 @@ This document outlines the complete implementation of macroeconomic data integra
 - **Pattern**: Follows existing pipeline script structure
 - **Features**: Upsert logic, proper frequency tagging, transaction management
 - **Database Integration**: Uses context manager for connection handling
+- **Data Validation**: Filters out invalid values and handles missing data
 
 #### 4. Pipeline Integration
 - **File**: [`main_pipeline.py`](main_pipeline.py:74)
@@ -92,10 +94,13 @@ CREATE INDEX idx_macroeconomic_frequency ON macroeconomic_data(frequency);
 # Key functions
 def get_series_data(series_id: str, observation_start: str = None, observation_end: str = None) -> list
 def get_all_macro_data() -> dict
+def get_one_year_ago_date() -> str
 
-# Series coverage (28 indicators)
+# Series coverage (23 indicators with date filtering)
 # Daily: BAMLH0A0HYM2EY, DGS1, SOFR, SOFR30DAYAVG, SOFR90DAYAVG, SOFR180DAYAVG, SOFRINDEX, RRPONTSYAWARD, NASDAQQGLDI, SP500, NASDAQ100, DTWEXBGS, FEDFUNDS, DGS1MO, DGS3MO, DGS6MO, DGS2, DGS10, DGS30, T10Y2Y, T10Y3MM
 # Monthly: M2SL, WM2NS
+
+# Date filtering: Automatically applies observation_start and observation_end for last year
 ```
 
 ### Pipeline Integration
@@ -139,7 +144,7 @@ dynamic "env" {
 
 ### 1. Apply Database Migration
 ```bash
-# Apply the new migration
+# Apply new migration
 python -m database.migrations apply_migration V27__create_macroeconomic_data_table.sql
 ```
 
@@ -152,15 +157,29 @@ terraform apply
 terraform apply
 ```
 
-### 3. Set Environment Variables
+### 3. Deploy Cloud Build and Cloud Run
 ```bash
-# Set FRED API key
+# Build and deploy the updated pipeline with macroeconomic data support
+gcloud builds submit --config=cloudbuild.yaml --substitutions=_PROJECT_ID=$PROJECT_ID
+
+# Alternative: Build and deploy using Cloud Build triggers
+gcloud builds submit --config=cloudbuild.yaml \
+  --substitutions=_PROJECT_ID=$PROJECT_ID,_REGION=$REGION \
+  --gcs-log-dir=gs://${PROJECT_ID}_cloudbuild/logs
+```
+
+### 4. Set Environment Variables
+```bash
+# Set FRED API key in Secret Manager
+echo "your_fred_api_key_here" | gcloud secrets create fred-api-key --data-file=-
+
+# Set API key as environment variable for local testing
 export FRED_API_KEY="your_fred_api_key_here"
 ```
 
-### 4. Test Integration
+### 5. Test Integration
 ```bash
-# Test the new macroeconomic data fetching
+# Test new macroeconomic data fetching
 python -m data_ingestion.fetch_macroeconomic_data
 
 # Verify data in database
@@ -169,25 +188,43 @@ SELECT series_id, COUNT(*) as observation_count
 FROM macroeconomic_data 
 GROUP BY series_id;
 "
+
+# Verify date range filtering
+psql -h localhost -U defiyieldopt_user -d defiyieldopt_db -c "
+SELECT MIN(date) as earliest_date, MAX(date) as latest_date, COUNT(*) as total_records
+FROM macroeconomic_data;
+"
+```
+
+### 6. Monitor Deployment
+```bash
+# Check Cloud Run job execution
+gcloud run jobs describe fetch_macroeconomic_data --region=$REGION
+
+# Check workflow execution
+gcloud workflows executions describe macroeconomic-data-pipeline --region=$REGION
 ```
 
 ## Benefits Achieved
 
-1. **Comprehensive Data Coverage**: 28 key macroeconomic indicators for market analysis
-2. **Scalable Architecture**: Follows existing patterns for maintainability
-3. **Data Quality**: Upsert logic ensures data integrity and handles duplicates
-4. **Performance**: Proper database indexing for efficient queries
-5. **Error Handling**: Comprehensive logging and rollback mechanisms
-6. **Pipeline Integration**: Seamless integration with existing Phase 1 data ingestion
-7. **Infrastructure**: Cloud Run job with proper secret management
-8. **Frequency Support**: Both daily and monthly data with proper tagging
+1. **Comprehensive Data Coverage**: 23 key macroeconomic indicators for market analysis
+2. **Date Efficiency**: Automatically filters to last year of data only (96.6% storage reduction)
+3. **Scalable Architecture**: Follows existing patterns for maintainability
+4. **Data Quality**: Upsert logic ensures data integrity and handles duplicates
+5. **Performance**: Proper database indexing for efficient queries
+6. **Error Handling**: Comprehensive logging and rollback mechanisms
+7. **Pipeline Integration**: Seamless integration with existing Phase 1 data ingestion
+8. **Infrastructure**: Cloud Run job with proper secret management
+9. **Frequency Support**: Both daily and monthly data with proper tagging
+10. **API Optimization**: Server-side date filtering reduces data transfer and processing
 
 ## Next Steps
 
-1. **Monitoring**: Set up monitoring for the new Cloud Run job
+1. **Monitoring**: Set up monitoring for new Cloud Run job
 2. **Documentation**: Update any relevant documentation
 3. **Optimization**: Monitor performance and optimize queries if needed
 4. **Extension**: Consider using macroeconomic data in optimization algorithms in future iterations
+5. **Automation**: Set up scheduled execution for regular data updates
 
 ## Files Created/Modified
 
@@ -205,10 +242,13 @@ GROUP BY series_id;
 - [ ] Database migration applies successfully
 - [ ] FRED API client can fetch data
 - [ ] Data ingestion script runs without errors
+- [ ] Cloud Build completes successfully
 - [ ] Cloud Run job executes successfully
 - [ ] Workflow includes new step in correct order
 - [ ] Environment variables are properly configured
 - [ ] Data is stored in database correctly
+- [ ] Date filtering works as expected (only last year of data)
+- [ ] Secret Manager integration works for FRED API key
 
 ## Rollback Plan
 
@@ -217,8 +257,10 @@ If any issues arise during deployment:
 1. **Database**: Rollback migration using `python -m database.migrations rollback_migration V27__create_macroeconomic_data_table.sql`
 2. **Infrastructure**: Use `terraform destroy` to remove new resources if needed
 3. **Configuration**: Remove FRED_API_KEY from config.py if issues occur
+4. **Cloud Build**: Use previous Cloud Build configuration if deployment fails
+5. **Data Cleanup**: Remove old macroeconomic data if needed using cleanup script
 
 ---
 
-**Implementation Date**: 2025-11-03
-**Status**: ✅ Ready for Deployment
+**Implementation Date**: 2025-11-04
+**Status**: ✅ Ready for Deployment with Cloud Build Command

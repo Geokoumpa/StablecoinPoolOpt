@@ -81,9 +81,10 @@ variable "cold_wallet_address" {
   description = "The cold wallet address for tracking investments."
   type        = string
   sensitive   = true
+}
+
 variable "fred_api_key" {
   description = "The FRED API key for fetching macroeconomic data."
   type        = string
   sensitive   = true
-}
 }

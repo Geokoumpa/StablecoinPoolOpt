@@ -90,6 +90,7 @@ def main():
                 "fetch_ohlcv_coinmarketcap": "data_ingestion.fetch_ohlcv_coinmarketcap", 
                 "fetch_gas_ethgastracker": "data_ingestion.fetch_gas_ethgastracker",
                 "fetch_account_transactions": "data_ingestion.fetch_account_transactions",
+                "fetch_macroeconomic_data": "data_ingestion.fetch_macroeconomic_data",
                 "fetch_filtered_pool_histories": "data_ingestion.fetch_filtered_pool_histories",
                 
                 # Data processing modules
