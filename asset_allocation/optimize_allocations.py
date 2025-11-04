@@ -1271,11 +1271,36 @@ def update_allocation_parameters_with_results(engine, run_id: str, transactions:
                 total_amount = allocations_with_apy['amount_usd'].sum()
                 if total_amount > 0:
                     weighted_apy_sum = (allocations_with_apy['amount_usd'] * allocations_with_apy['forecasted_apy']).sum()
+                    # DEBUG: Log type information before conversion
+                    logger.info(f"DEBUG: weighted_apy_sum type: {type(weighted_apy_sum)}, value: {weighted_apy_sum}")
+                    logger.info(f"DEBUG: total_amount type: {type(total_amount)}, value: {total_amount}")
                     projected_apy = weighted_apy_sum / total_amount
+                    logger.info(f"DEBUG: projected_apy type: {type(projected_apy)}, value: {projected_apy}")
+                    # Convert to native Python float to avoid PostgreSQL schema error
+                    if hasattr(projected_apy, 'dtype'):
+                        projected_apy = float(projected_apy)
+                    # Ensure we have a native Python float
+                    if isinstance(projected_apy, (np.floating, np.integer)):
+                        projected_apy = float(projected_apy)
+                        logger.info(f"DEBUG: force converted projected_apy type: {type(projected_apy)}, value: {projected_apy}")
+                        logger.info(f"DEBUG: converted projected_apy type: {type(projected_apy)}, value: {projected_apy}")
+        
+        # Ensure total_transaction_costs is also a native Python float
+        if isinstance(total_transaction_costs, (np.floating, np.integer)):
+            total_transaction_costs = float(total_transaction_costs)
+            logger.info(f"DEBUG: force converted total_transaction_costs type: {type(total_transaction_costs)}, value: {total_transaction_costs}")
+
         
         # Prepare transaction sequence as JSON
         transaction_sequence = json.dumps(transactions, default=str)
         
+        # DEBUG: Log all SQL parameters before execution
+        logger.info(f"DEBUG: SQL Parameters - projected_apy type: {type(projected_apy)}, value: {projected_apy}")
+        logger.info(f"DEBUG: SQL Parameters - total_transaction_costs type: {type(total_transaction_costs)}, value: {total_transaction_costs}")
+        logger.info(f"DEBUG: SQL Parameters - transaction_sequence type: {type(transaction_sequence)}, length: {len(transaction_sequence)}")
+        logger.info(f"DEBUG: SQL Parameters - run_id type: {type(run_id)}, value: {run_id}")
+        
+        # Update allocation_parameters table
         # Update allocation_parameters table
         cursor.execute("""
             UPDATE allocation_parameters
