@@ -43,7 +43,14 @@ def get_tx_info(tx_hash: str, api_key: Optional[str] = None, timeout: int = 10) 
     Fetch transaction details from Ethplorer /getTxInfo/{txHash}.
     """
     params = {"apiKey": api_key} if api_key else None
-    return _get(f"/getTxInfo/{tx_hash}", params=params, timeout=timeout)
+    result = _get(f"/getTxInfo/{tx_hash}", params=params, timeout=timeout)
+    
+    # Ensure we always return None or a dict
+    if result is None or isinstance(result, dict):
+        return result
+    else:
+        logger.warning(f"get_tx_info returned unexpected type for {tx_hash}: {type(result)}")
+        return None
 
 
 def get_address_history(address: str, api_key: Optional[str] = None, limit: int = 100, timeout: int = 10) -> Optional[Dict]:
@@ -54,4 +61,11 @@ def get_address_history(address: str, api_key: Optional[str] = None, limit: int 
     params = {"limit": limit}
     if api_key:
         params["apiKey"] = api_key
-    return _get(f"/getAddressHistory/{address}", params=params, timeout=timeout)
+    result = _get(f"/getAddressHistory/{address}", params=params, timeout=timeout)
+    
+    # Ensure we always return None or a dict
+    if result is None or isinstance(result, dict):
+        return result
+    else:
+        logger.warning(f"get_address_history returned unexpected type for {address}: {type(result)}")
+        return None

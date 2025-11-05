@@ -63,10 +63,11 @@ def filter_pools_pre():
             
             logger.info("================================================")
 
-            # Fetch all pools for pre-filtering
+            # Fetch all active pools for pre-filtering (exclude inactive pools)
             result = conn.execute(text("""
                 SELECT pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses
-                FROM pools p;
+                FROM pools p
+                WHERE is_active = TRUE;
             """))
             pools_data = result.fetchall()
 
