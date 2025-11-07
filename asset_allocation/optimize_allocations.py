@@ -43,19 +43,20 @@ if not logger.handlers:
 def fetch_pool_data(engine) -> pd.DataFrame:
     """
     Fetches approved pools with forecasted APY and metadata.
-    Includes pools with current allocations even if they're below the APY limit.
+    Includes pools with current allocations even if they're below the APY limit or inactive.
+    Only includes active pools (is_active = TRUE) for new allocations.
     
     Returns:
         DataFrame with columns: pool_id, symbol, chain, protocol, forecasted_apy, forecasted_tvl, underlying_tokens
     """
     from config import MAIN_ASSET_HOLDING_ADDRESS
     
-    # First, get pools with current allocations (include them regardless of APY)
+    # First, get pools with current allocations (include them regardless of APY or active status)
     allocated_pools_query = """
     SELECT DISTINCT pdm.pool_id
     FROM daily_balances db
     JOIN pool_daily_metrics pdm ON db.pool_id = pdm.pool_id
-    WHERE db.date = CURRENT_DATE 
+    WHERE db.date = CURRENT_DATE
       AND (db.wallet_address = %s OR db.wallet_address IS NULL)
       AND db.allocated_balance > 0
       AND pdm.date = CURRENT_DATE
@@ -63,7 +64,7 @@ def fetch_pool_data(engine) -> pd.DataFrame:
     allocated_pools_df = pd.read_sql(allocated_pools_query, engine, params=(MAIN_ASSET_HOLDING_ADDRESS,))
     allocated_pool_ids = allocated_pools_df['pool_id'].tolist()
     
-    # Build query to include both approved pools AND pools with current allocations
+    # Build query to include both approved active pools AND pools with current allocations
     if allocated_pool_ids:
         pool_ids_str = "', '".join(allocated_pool_ids)
         query = f"""
@@ -77,15 +78,22 @@ def fetch_pool_data(engine) -> pd.DataFrame:
             p.underlying_tokens
         FROM pool_daily_metrics pdm
         JOIN pools p ON pdm.pool_id = p.pool_id
-        WHERE pdm.date = CURRENT_DATE 
-          AND pdm.is_filtered_out = FALSE
-          AND pdm.forecasted_apy IS NOT NULL
-          AND pdm.forecasted_apy > 0
-          AND pdm.forecasted_tvl IS NOT NULL
-          AND pdm.forecasted_tvl > 0
-          OR (pdm.pool_id IN ('{pool_ids_str}') 
-              AND pdm.date = CURRENT_DATE
-              AND pdm.forecasted_apy IS NOT NULL)
+        WHERE (
+            -- Active pools meeting all criteria
+            pdm.date = CURRENT_DATE
+            AND pdm.is_filtered_out = FALSE
+            AND pdm.forecasted_apy IS NOT NULL
+            AND pdm.forecasted_apy > 0
+            AND pdm.forecasted_tvl IS NOT NULL
+            AND pdm.forecasted_tvl > 0
+            AND p.is_active = TRUE
+          )
+          OR (
+            -- Already allocated pools (regardless of active status)
+            pdm.pool_id IN ('{pool_ids_str}')
+            AND pdm.date = CURRENT_DATE
+            AND pdm.forecasted_apy IS NOT NULL
+          )
         """
     else:
         query = """
@@ -99,12 +107,13 @@ def fetch_pool_data(engine) -> pd.DataFrame:
             p.underlying_tokens
         FROM pool_daily_metrics pdm
         JOIN pools p ON pdm.pool_id = p.pool_id
-        WHERE pdm.date = CURRENT_DATE 
+        WHERE pdm.date = CURRENT_DATE
           AND pdm.is_filtered_out = FALSE
           AND pdm.forecasted_apy IS NOT NULL
           AND pdm.forecasted_apy > 0
           AND pdm.forecasted_tvl IS NOT NULL
-          AND pdm.forecasted_tvl > 0;
+          AND pdm.forecasted_tvl > 0
+          AND p.is_active = TRUE;
         """
     
     df = pd.read_sql(query, engine)

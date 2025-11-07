@@ -103,7 +103,7 @@ def calculate_pool_metrics():
     try:
         conn = get_db_connection()
         with conn.connect() as connection:
-            # Fetch historical pool data
+            # Fetch historical pool data only for active pools
             from sqlalchemy import text
             result = connection.execute(text("""
                 WITH date_range AS (
@@ -115,8 +115,10 @@ def calculate_pool_metrics():
                     FROM raw_defillama_pool_history
                 ),
                 unique_pools AS (
-                    SELECT DISTINCT pool_id
-                    FROM raw_defillama_pool_history
+                    SELECT DISTINCT h.pool_id
+                    FROM raw_defillama_pool_history h
+                    JOIN pools p ON h.pool_id = p.pool_id
+                    WHERE p.is_active = TRUE
                 ),
                 daily_data AS (
                     SELECT

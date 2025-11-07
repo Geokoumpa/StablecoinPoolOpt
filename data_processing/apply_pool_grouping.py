@@ -41,18 +41,20 @@ def apply_pool_grouping():
              group2_apy_delta_max, group2_7d_stddev_max, group2_30d_stddev_max,
              group3_apy_delta_min, group3_7d_stddev_min, group3_30d_stddev_min) = grouping_params
 
-            # Fetch calculated metrics from pool_daily_metrics
+            # Fetch calculated metrics from pool_daily_metrics only for active pools
             result = connection.execute(text("""
                 SELECT
-                    pool_id,
-                    date,
-                    apy_delta_today_yesterday,
-                    stddev_apy_7d_delta,
-                    stddev_apy_30d_delta,
-                    stddev_apy_7d, -- Mean volatility for 7d
-                    stddev_apy_30d -- Mean volatility for 30d
-                FROM pool_daily_metrics
-                WHERE date = CURRENT_DATE;
+                    pdm.pool_id,
+                    pdm.date,
+                    pdm.apy_delta_today_yesterday,
+                    pdm.stddev_apy_7d_delta,
+                    pdm.stddev_apy_30d_delta,
+                    pdm.stddev_apy_7d, -- Mean volatility for 7d
+                    pdm.stddev_apy_30d -- Mean volatility for 30d
+                FROM pool_daily_metrics pdm
+                JOIN pools p ON pdm.pool_id = p.pool_id
+                WHERE pdm.date = CURRENT_DATE
+                  AND p.is_active = TRUE;
             """))
             pool_metrics_data = result.fetchall()
 

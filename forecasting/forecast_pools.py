@@ -568,14 +568,16 @@ def train_and_forecast_pool(pool_id: str, steps: int = 1) -> dict:
 
 def get_filtered_pool_ids() -> list:
     """
-    Fetches pool_ids from pool_daily_metrics that are not filtered out.
+    Fetches pool_ids from pool_daily_metrics that are not filtered out and are active.
     """
     engine = get_db_connection()
     with engine.connect() as conn:
         query = """
-        SELECT DISTINCT pool_id
-        FROM pool_daily_metrics
-        WHERE is_filtered_out = FALSE
+        SELECT DISTINCT pdm.pool_id
+        FROM pool_daily_metrics pdm
+        JOIN pools p ON pdm.pool_id = p.pool_id
+        WHERE pdm.is_filtered_out = FALSE
+          AND p.is_active = TRUE
         """
         df = pd.read_sql(query, conn)
         return df['pool_id'].tolist()
