@@ -14,3 +14,4 @@ ecos
 python-dateutil
 highspy
 cylp
+lightgbm

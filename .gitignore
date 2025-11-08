@@ -46,4 +46,7 @@ terraform.rc
 # Environment variables
 .env
 
-models/
+models/exports/
+*.csv
+*.png
+*.pdf
