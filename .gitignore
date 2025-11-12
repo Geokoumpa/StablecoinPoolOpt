@@ -52,3 +52,5 @@ models/exports/
 *.pdf
 
 /archives
+/mlruns
+/ mlflow_artifacts
