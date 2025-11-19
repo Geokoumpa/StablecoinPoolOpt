@@ -336,7 +336,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
           }
         }
       }
-      timeout = "1800s" # Set timeout to 30 minutes
+      timeout = "3600s" # Set timeout to 60 minutes
     }
   }
 }
