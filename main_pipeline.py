@@ -89,40 +89,45 @@ def run_pipeline(phases=None):
             logger.error(f"Error during Phase 2 (Pre-Filtering & Pool History Ingestion): {e}")
             sys.exit(1)
 
-    # Phase 3: Pool Analysis & Final Filtering
+    # Phase 3: Pool Analysis & Metrics Calculation
     if "all" in phases or "phase3" in phases:
-        logger.info("--- Phase 3: Pool Analysis & Final Filtering ---")
+        logger.info("--- Phase 3: Pool Analysis & Metrics Calculation ---")
         try:
             run_script("data_processing.calculate_pool_metrics", "calculate_pool_metrics.py")
             run_script("data_processing.apply_pool_grouping", "apply_pool_grouping.py")
             run_script("data_processing.process_icebox_logic", "process_icebox_logic.py")
             # Update allocation snapshots after icebox logic
             run_script("data_processing.update_allocation_snapshots", "update_allocation_snapshots.py")
-            run_script("data_processing.filter_pools_final", "filter_pools_final.py")
-            run_script("data_processing.process_account_transactions", "process_account_transactions.py")
             logger.info("Phase 3 completed successfully.")
         except Exception as e:
-            logger.error(f"Error during Phase 3 (Pool Analysis & Final Filtering): {e}")
+            logger.error(f"Error during Phase 3 (Pool Analysis & Metrics Calculation): {e}")
             sys.exit(1)
 
-
-
-    
-
-    # Phase 4: Forecasting
+    # Phase 4: Forecasting (moved up from original Phase 4)
     if "all" in phases or "phase4" in phases:
         logger.info("--- Phase 4: Forecasting ---")
         try:
             run_script("forecasting.forecast_pools", "forecast_pools.py")
             run_script("forecasting.forecast_gas_fees", "forecast_gas_fees.py")
-            logger.info("Phase 5 completed successfully.")
+            logger.info("Phase 4 completed successfully.")
         except Exception as e:
-            logger.error(f"Error during Phase 5 (Forecasting): {e}")
+            logger.error(f"Error during Phase 4 (Forecasting): {e}")
             sys.exit(1)
 
-    # Phase 5: Asset Allocation
+    # Phase 5: Final Filtering & Transaction Processing (moved down from original Phase 3)
     if "all" in phases or "phase5" in phases:
-        logger.info("--- Phase 5: Asset Allocation ---")
+        logger.info("--- Phase 5: Final Filtering & Transaction Processing ---")
+        try:
+            run_script("data_processing.filter_pools_final", "filter_pools_final.py")
+            run_script("data_processing.process_account_transactions", "process_account_transactions.py")
+            logger.info("Phase 5 completed successfully.")
+        except Exception as e:
+            logger.error(f"Error during Phase 5 (Final Filtering & Transaction Processing): {e}")
+            sys.exit(1)
+
+    # Phase 6: Asset Allocation (renumbered from original Phase 5)
+    if "all" in phases or "phase6" in phases:
+        logger.info("--- Phase 6: Asset Allocation ---")
         try:
             run_script("reporting_notification.manage_ledger", "manage_ledger.py")
             run_script("asset_allocation.optimize_allocations", "optimize_allocations.py")
@@ -131,12 +136,12 @@ def run_pipeline(phases=None):
             logger.error(f"Error during Phase 6 (Asset Allocation): {e}")
             sys.exit(1)
 
-    # Phase 6: Reporting & Notification
-    if "all" in phases or "phase6" in phases:
-        logger.info("--- Phase 6: Reporting & Notification ---")
+    # Phase 7: Reporting & Notification (renumbered from original Phase 6)
+    if "all" in phases or "phase7" in phases:
+        logger.info("--- Phase 7: Reporting & Notification ---")
         try:
             run_script("reporting_notification.post_slack_notification", "post_slack_notification.py")
-            logger.info("Phase 6 completed successfully.")
+            logger.info("Phase 7 completed successfully.")
         except Exception as e:
             logger.error(f"Error during Phase 7 (Reporting & Notification): {e}")
             sys.exit(1)
@@ -166,25 +171,25 @@ def run_pipeline(phases=None):
         logger.info("     • Pre-filtering applied (no icebox)")
         logger.info("     • Historical data fetched for filtered pools")
     if "all" in phases or "phase3" in phases:
-        logger.info("  ✅ Phase 3: Pool Analysis & Final Filtering")
+        logger.info("  ✅ Phase 3: Pool Analysis & Metrics Calculation")
         logger.info("     • Pool metrics calculated")
         logger.info("     • Pool grouping applied")
         logger.info("     • Icebox logic processed")
         logger.info("     • Allocation snapshots updated (post-icebox)")
-        logger.info("     • Final filtering completed (with icebox)")
-        logger.info("     • Historical metrics calculated for filtered pools (6 months)")
-        logger.info("     • Missing historical metrics filled for filtered pools")
-    
     if "all" in phases or "phase4" in phases:
         logger.info("  ✅ Phase 4: Forecasting")
-        logger.info("     • Pool forecasts generated")
+        logger.info("     • Pool forecasts generated using forecasted values")
         logger.info("     • Gas fee forecasts generated")
     if "all" in phases or "phase5" in phases:
-        logger.info("  ✅ Phase 5: Asset Allocation")
+        logger.info("  ✅ Phase 5: Final Filtering & Transaction Processing")
+        logger.info("     • Final filtering completed using forecasted values")
+        logger.info("     • Account transactions processed")
+    if "all" in phases or "phase6" in phases:
+        logger.info("  ✅ Phase 6: Asset Allocation")
         logger.info("     • Daily balances updated")
         logger.info("     • Portfolio optimization completed")
-    if "all" in phases or "phase6" in phases:
-        logger.info("  ✅ Phase 6: Reporting & Notification")
+    if "all" in phases or "phase7" in phases:
+        logger.info("  ✅ Phase 7: Reporting & Notification")
         logger.info("     • Slack notifications sent")
     logger.info("")
     logger.info("💾 Data stored in PostgreSQL database")
