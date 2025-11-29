@@ -71,6 +71,7 @@ def run_pipeline(phases=None):
             run_script("data_ingestion.fetch_ohlcv_coinmarketcap", "fetch_ohlcv_coinmarketcap.py")
             run_script("data_ingestion.fetch_gas_ethgastracker", "fetch_gas_ethgastracker.py")
             run_script("data_ingestion.fetch_defillama_pools", "fetch_defillama_pools.py")
+            run_script("data_ingestion.fetch_defillama_pool_addresses", "fetch_defillama_pool_addresses.py")
             run_script("data_ingestion.fetch_macroeconomic_data", "fetch_macroeconomic_data.py")
             run_script("data_ingestion.fetch_account_transactions", "fetch_account_transactions.py")
             logger.info("Phase 1 completed successfully.")
@@ -163,6 +164,7 @@ def run_pipeline(phases=None):
     if "all" in phases or "phase1" in phases:
         logger.info("  ✅ Phase 1: Initial Data Ingestion")
         logger.info("     • DeFiLlama pools data fetched")
+        logger.info("     • DeFiLlama pool addresses fetched")
         logger.info("     • CoinMarketCap OHLCV data fetched")
         logger.info("     • Gas tracker data fetched")
         logger.info("     • Ethplorer account data fetched")

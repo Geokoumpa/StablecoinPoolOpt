@@ -132,6 +132,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
     "fetch_ohlcv_coinmarketcap",
     "fetch_gas_ethgastracker",
     "fetch_defillama_pools",
+    "fetch_defillama_pool_addresses",
     "fetch_account_transactions",
     "fetch_macroeconomic_data",
     "filter_pools_pre",
@@ -332,6 +333,28 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
                 secret  = google_secret_manager_secret.main_asset_holding_address.id
                 version = "latest"
               }
+            }
+          }
+        }
+
+        # Increase resources for browser operations
+        dynamic "resources" {
+          for_each = contains(["fetch_defillama_pool_addresses"], each.key) ? [1] : []
+          content {
+            limits = {
+              cpu    = "2"
+              memory = "4Gi"
+            }
+          }
+        }
+
+        # Default resources for other jobs
+        dynamic "resources" {
+          for_each = contains(["fetch_defillama_pool_addresses"], each.key) ? [] : [1]
+          content {
+            limits = {
+              cpu    = "1"
+              memory = "2Gi"
             }
           }
         }

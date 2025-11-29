@@ -2,59 +2,60 @@ main:
   steps:
     - init:
         assign:
-          - project: "innate-concept-430315-q2"
-          - location: "us-central1"
-          - job_ids:
-              - "PIPELINE_STEP_APPLY_MIGRATIONS_ID"
-              - "PIPELINE_STEP_CREATE_ALLOCATION_SNAPSHOTS_ID"
-              - "PIPELINE_STEP_FETCH_OHLCV_COINMARKETCAP_ID"
-              - "PIPELINE_STEP_FETCH_GAS_ETHGASTRACKER_ID"
-              - "PIPELINE_STEP_FETCH_DEFILLAMA_POOLS_ID"
-              - "PIPELINE_STEP_FETCH_ACCOUNT_TRANSACTIONS_ID"
-              - "PIPELINE_STEP_FETCH_MACROECONOMIC_DATA_ID"
-              - "PIPELINE_STEP_FILTER_POOLS_PRE_ID"
-              - "PIPELINE_STEP_FETCH_FILTERED_POOL_HISTORIES_ID"
-              - "PIPELINE_STEP_CALCULATE_POOL_METRICS_ID"
-              - "PIPELINE_STEP_APPLY_POOL_GROUPING_ID"
-              - "PIPELINE_STEP_PROCESS_ICEBOX_LOGIC_ID"
-              - "PIPELINE_STEP_UPDATE_ALLOCATION_SNAPSHOTS_ID"
-              - "PIPELINE_STEP_FORECAST_POOLS_ID"
-              - "PIPELINE_STEP_FORECAST_GAS_FEES_ID"
-              - "PIPELINE_STEP_FILTER_POOLS_FINAL_ID"
-              - "PIPELINE_STEP_PROCESS_ACCOUNT_TRANSACTIONS_ID"
-              - "PIPELINE_STEP_MANAGE_LEDGER_ID"
-              - "PIPELINE_STEP_OPTIMIZE_ALLOCATIONS_ID"
-              - "PIPELINE_STEP_POST_SLACK_NOTIFICATION_ID"
+          - project_id: ${sys.get_env("PROJECT_ID")}
+          - location: ${sys.get_env("REGION")}
+          # The list of steps matches the keys in cloud_run.tf
+          - steps_list:
+              - "apply_migrations"
+              - "create_allocation_snapshots"
+              - "fetch_ohlcv_coinmarketcap"
+              - "fetch_gas_ethgastracker"
+              - "fetch_defillama_pools"
+              - "fetch_defillama_pool_addresses"
+              - "fetch_account_transactions"
+              - "fetch_macroeconomic_data"
+              - "filter_pools_pre"
+              - "fetch_filtered_pool_histories"
+              - "calculate_pool_metrics"
+              - "apply_pool_grouping"
+              - "process_icebox_logic"
+              - "update_allocation_snapshots"
+              - "forecast_pools"
+              - "forecast_gas_fees"
+              - "filter_pools_final"
+              - "process_account_transactions" # Note: order matters if there are dependencies
+              - "manage_ledger"
+              - "optimize_allocations"
+              - "post_slack_notification"
 
     - run_pipeline_steps:
         for:
-          value: job_env_var
+          value: step_key
           index: step_index
-          in: ${job_ids}
+          in: ${steps_list}
           steps:
+            - construct_job_name:
+                assign:
+                  # Replicate Terraform's naming logic: "pipeline-step-" + step_key (with _ replaced by -)
+                  - job_name: ${"pipeline-step-" + text.replace_all(step_key, "_", "-")}
+            
             - log_current_step:
                 call: sys.log
                 args:
-                  data: '${"=== Starting step " + string(step_index + 1) + " -> " + job_env_var + " ==="}'
-
-            - get_job_id:
-                assign:
-                  - job_id: ${sys.get_env(job_env_var)}
-                  - project_id: ${text.split(job_id, "/")[1]}
-                  - job_location: ${text.split(job_id, "/")[3]}
-                  - job_name: ${text.split(job_id, "/")[5]}
+                  data: '${"=== Starting step " + string(step_index + 1) + " -> " + job_name + " ==="}'
 
             - log_job_details:
                 call: sys.log
                 args:
-                  data: '${"Job ID -> " + job_id + ", Project ID -> " + project_id + ", Location -> " + job_location + ", Job Name -> " + job_name}'
+                  data: '${"Running job: " + job_name + " in project " + project_id + ", location " + location}'
 
             - run_job:
                 try:
                   call: googleapis.run.v1.namespaces.jobs.run
                   args:
+                    # Construct the full resource name dynamically
                     name: ${"namespaces/" + project_id + "/jobs/" + job_name}
-                    location: ${job_location}
+                    location: ${location}
                     body: {}
                     connector_params:
                       timeout: 3600  # Increased from default 1800 to 3600 seconds (1 hour)
@@ -67,7 +68,7 @@ main:
                         args:
                           data: '${"Error starting job -> " + text.decode(json.encode(e))}'
                     - fail_with_details:
-                        raise: '${"Failed to start job at step " + string(step_index + 1) + ": " + text.decode(json.encode(e)) }'
+                        raise: '${"Failed to start job " + job_name + " at step " + string(step_index + 1) + ": " + text.decode(json.encode(e))}'
 
             - log_job_execution_details:
                 call: sys.log

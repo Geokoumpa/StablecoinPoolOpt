@@ -8,6 +8,8 @@ import sys
 import os
 import logging
 import json
+import asyncio
+import inspect
 from pathlib import Path
 
 class JsonFormatter(logging.Formatter):
@@ -55,7 +57,13 @@ def run_module(module_path, script_name):
     if hasattr(module, script_name):
         main_func = getattr(module, script_name)
         logger.info(f"Calling main function: {script_name}()")
-        main_func()
+        
+        # Check if the function is async
+        if inspect.iscoroutinefunction(main_func):
+            logger.info(f"Detected async function, running with asyncio.run()")
+            asyncio.run(main_func())
+        else:
+            main_func()
     elif hasattr(module, 'main'):
         logger.info(f"Calling generic main() function")
         module.main()
@@ -92,6 +100,7 @@ def main():
                 "fetch_account_transactions": "data_ingestion.fetch_account_transactions",
                 "fetch_macroeconomic_data": "data_ingestion.fetch_macroeconomic_data",
                 "fetch_filtered_pool_histories": "data_ingestion.fetch_filtered_pool_histories",
+                "fetch_defillama_pool_addresses": "data_ingestion.fetch_defillama_pool_addresses",
                 
                 # Data processing modules
                 "create_allocation_snapshots": "data_processing.create_allocation_snapshots",

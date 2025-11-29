@@ -6,26 +6,8 @@ resource "google_workflows_workflow" "main" {
   source_contents = file("${path.module}/../workflow.yaml")
 
   user_env_vars = {
-    PIPELINE_STEP_APPLY_MIGRATIONS_ID              = google_cloud_run_v2_job.pipeline_step["apply_migrations"].id
-    PIPELINE_STEP_CREATE_ALLOCATION_SNAPSHOTS_ID   = google_cloud_run_v2_job.pipeline_step["create_allocation_snapshots"].id
-    PIPELINE_STEP_FETCH_OHLCV_COINMARKETCAP_ID     = google_cloud_run_v2_job.pipeline_step["fetch_ohlcv_coinmarketcap"].id
-    PIPELINE_STEP_FETCH_GAS_ETHGASTRACKER_ID       = google_cloud_run_v2_job.pipeline_step["fetch_gas_ethgastracker"].id
-    PIPELINE_STEP_FETCH_DEFILLAMA_POOLS_ID         = google_cloud_run_v2_job.pipeline_step["fetch_defillama_pools"].id
-    PIPELINE_STEP_FETCH_ACCOUNT_TRANSACTIONS_ID    = google_cloud_run_v2_job.pipeline_step["fetch_account_transactions"].id
-    PIPELINE_STEP_FETCH_MACROECONOMIC_DATA_ID      = google_cloud_run_v2_job.pipeline_step["fetch_macroeconomic_data"].id
-    PIPELINE_STEP_FILTER_POOLS_PRE_ID              = google_cloud_run_v2_job.pipeline_step["filter_pools_pre"].id
-    PIPELINE_STEP_FETCH_FILTERED_POOL_HISTORIES_ID = google_cloud_run_v2_job.pipeline_step["fetch_filtered_pool_histories"].id
-    PIPELINE_STEP_CALCULATE_POOL_METRICS_ID        = google_cloud_run_v2_job.pipeline_step["calculate_pool_metrics"].id
-    PIPELINE_STEP_APPLY_POOL_GROUPING_ID           = google_cloud_run_v2_job.pipeline_step["apply_pool_grouping"].id
-    PIPELINE_STEP_PROCESS_ICEBOX_LOGIC_ID          = google_cloud_run_v2_job.pipeline_step["process_icebox_logic"].id
-    PIPELINE_STEP_UPDATE_ALLOCATION_SNAPSHOTS_ID   = google_cloud_run_v2_job.pipeline_step["update_allocation_snapshots"].id
-    PIPELINE_STEP_FORECAST_POOLS_ID                = google_cloud_run_v2_job.pipeline_step["forecast_pools"].id
-    PIPELINE_STEP_FORECAST_GAS_FEES_ID             = google_cloud_run_v2_job.pipeline_step["forecast_gas_fees"].id
-    PIPELINE_STEP_FILTER_POOLS_FINAL_ID            = google_cloud_run_v2_job.pipeline_step["filter_pools_final"].id
-    PIPELINE_STEP_OPTIMIZE_ALLOCATIONS_ID          = google_cloud_run_v2_job.pipeline_step["optimize_allocations"].id
-    PIPELINE_STEP_MANAGE_LEDGER_ID                 = google_cloud_run_v2_job.pipeline_step["manage_ledger"].id
-    PIPELINE_STEP_POST_SLACK_NOTIFICATION_ID       = google_cloud_run_v2_job.pipeline_step["post_slack_notification"].id
-    PIPELINE_STEP_PROCESS_ACCOUNT_TRANSACTIONS_ID  = google_cloud_run_v2_job.pipeline_step["process_account_transactions"].id
+    PROJECT_ID = var.project_id
+    REGION     = var.region
   }
 }
 
