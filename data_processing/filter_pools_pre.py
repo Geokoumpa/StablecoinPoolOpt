@@ -89,9 +89,9 @@ def filter_pools_pre():
 
                 # Enhanced filtering for pendle protocol pools
                 if protocol.lower() == "pendle" and not is_filtered_out:
-                    # First check if poolmeta contains "PT"
-                    if poolmeta and "PT" in poolmeta:
-                        logger.info(f"Pendle pool {pool_id} ({name}) contains 'PT' in poolmeta: {poolmeta}")
+                    # First check if poolmeta contains "PT" or "LP"
+                    if poolmeta and ("PT" in poolmeta or "LP" in poolmeta):
+                        logger.info(f"Pendle pool {pool_id} ({name}) contains 'PT' or 'LP' in poolmeta: {poolmeta}")
                         
                         if underlying_token_addresses:
                             # Use Ethplorer API to find the most frequent token address
@@ -113,7 +113,7 @@ def filter_pools_pre():
                             filter_reason.append("Pendle pool has no underlying token addresses")
                             is_filtered_out = True
                     else:
-                        filter_reason.append("Pendle pool poolmeta does not contain 'PT'")
+                        filter_reason.append("Pendle pool poolmeta does not contain 'PT' or 'LP'")
                         is_filtered_out = True
                 else:
                     # Check token composition using address-based filtering for non-pendle protocols
