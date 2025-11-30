@@ -128,7 +128,9 @@ resource "google_project_iam_member" "cloudbuild_runner_sa_roles" {
   for_each = toset([
     "roles/logging.logWriter",       # Required to write build logs
     "roles/run.admin",               # Required to deploy to Cloud Run
-    "roles/iam.serviceAccountUser"   # Required to act as the Cloud Run runtime SA
+    "roles/iam.serviceAccountUser",  # Required to act as the Cloud Run runtime SA
+    "roles/artifactregistry.writer", # Required to push to Artifact Registry
+    "roles/storage.admin"            # Required to push to Container Registry (GCR)
   ])
   project = var.project_id
   role    = each.key
