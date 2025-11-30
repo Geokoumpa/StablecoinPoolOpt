@@ -18,7 +18,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir \
     playwright \
     psycopg2-binary \
-    sqlalchemy
+    sqlalchemy \
+    python-dotenv
 
 # Install Playwright and browsers in the correct location
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
