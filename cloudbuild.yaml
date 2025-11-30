@@ -5,7 +5,10 @@ steps:
     args:
       - '-c'
       - |
-        docker pull gcr.io/$PROJECT_ID/defi-pipeline:latest || exit 0
+        # Try to pull the latest image for caching, but don't fail if it doesn't exist
+        docker pull gcr.io/$PROJECT_ID/defi-pipeline:latest || true
+        
+        # Build the image
         docker build \
           -t gcr.io/$PROJECT_ID/defi-pipeline:latest \
           -t gcr.io/$PROJECT_ID/defi-pipeline:$COMMIT_SHA \

@@ -112,33 +112,49 @@ resource "google_compute_router_nat" "nat_gateway" {
   }
 }
 
-# Cloud Build Trigger for Docker image builds on git push to main
+# --------------------------------------------------------------------------------
+# CI/CD Pipeline Configuration
+# --------------------------------------------------------------------------------
+
+# 1. Create a dedicated User-Managed Service Account for Cloud Build
+resource "google_service_account" "cloudbuild_runner_sa" {
+  account_id   = "cloudbuild-runner-sa"
+  display_name = "Service Account for Cloud Build Pipeline"
+  project      = var.project_id
+}
+
+# 2. Grant necessary permissions to this Service Account
+resource "google_project_iam_member" "cloudbuild_runner_sa_roles" {
+  for_each = toset([
+    "roles/logging.logWriter",       # Required to write build logs
+    "roles/run.admin",               # Required to deploy to Cloud Run
+    "roles/iam.serviceAccountUser"   # Required to act as the Cloud Run runtime SA
+  ])
+  project = var.project_id
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.cloudbuild_runner_sa.email}"
+}
+
+# 3. Cloud Build Trigger
+# We use a new name to force recreation and avoid "update" errors.
 resource "google_cloudbuild_trigger" "docker_build_trigger" {
-  name        = "defi-pipeline-build-trigger"
+  name        = "defi-pipeline-main-trigger" # Renamed from defi-pipeline-build-trigger
   description = "Build and push defi-pipeline Docker images on main branch push"
   filename    = "cloudbuild.yaml"
 
-  # Explicitly using the Cloud Build Service Account to match permissions granted below
-  service_account = "projects/${var.project_id}/serviceAccounts/${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+  # Use the dedicated user-managed service account
+  service_account = google_service_account.cloudbuild_runner_sa.id
 
   github {
-    owner = "Geokoumpa" # Updated to match case in screenshot
+    owner = "Geokoumpa"
     name  = "StablecoinPoolOpt"
     push {
       branch = "^master$"
     }
   }
 
-  depends_on = [google_project_service.project_services["cloudbuild.googleapis.com"]]
-}
-
-# Cloud Build Service Account Permissions
-resource "google_project_iam_member" "cloudbuild_sa_roles" {
-  for_each = toset([
-    "roles/run.admin",
-    "roles/iam.serviceAccountUser"
-  ])
-  project = var.project_id
-  role    = each.key
-  member  = "serviceAccount:${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+  depends_on = [
+    google_project_service.project_services["cloudbuild.googleapis.com"],
+    google_project_iam_member.cloudbuild_runner_sa_roles
+  ]
 }
