@@ -1,0 +1,57 @@
+# Version Control
+.git
+.gitignore
+
+# Environment Variables
+.env
+.env.*
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Documentation & Reports
+context/
+vulture_report.txt
+*.md
+!README.md
+
+# Testing
+tests/
+test_*.py
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Terraform
+terraform/
+*.tf
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Web UI
+web-ui/
+
+# IDE
+.vscode/
+.idea/
+.roo/
+
+# Local Data Files
+*.csv
+*.ipynb
+scan_scripts.sh
+
+# Build & Deployment
+cloudbuild.yaml
+docker-compose.yml
+Dockerfile
