@@ -13,19 +13,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Install Python dependencies for web scraping
-COPY requirements.txt .
+# Install only Python dependencies needed for web scraping
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir \
-    pandas \
-    numpy \
+    playwright \
     psycopg2-binary \
-    sqlalchemy \
-    google-cloud-storage \
-    requests \
-    python-dotenv \
-    python-dateutil \
-    playwright
+    sqlalchemy
 
 # Install Playwright and browsers in the correct location
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
