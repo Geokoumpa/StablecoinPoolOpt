@@ -113,19 +113,32 @@ resource "google_compute_router_nat" "nat_gateway" {
 }
 
 # Cloud Build Trigger for Docker image builds on git push to main
-# Commented out temporarily due to configuration issues
-# resource "google_cloudbuild_trigger" "docker_build_trigger" {
-#   name        = "defi-pipeline-build-trigger"
-#   description = "Build and push defi-pipeline Docker images on main branch push"
-#   filename    = "cloudbuild.yaml"
-#
-#   github {
-#     owner = "your-github-username"  # Replace with actual GitHub username
-#     name  = "stablecoin-yield-pipeline"  # Replace with actual repo name
-#     push {
-#       branch = "^master$"
-#     }
-#   }
-#
-#   depends_on = [google_project_service.project_services["cloudbuild.googleapis.com"]]
-# }
+resource "google_cloudbuild_trigger" "docker_build_trigger" {
+  name        = "defi-pipeline-build-trigger"
+  description = "Build and push defi-pipeline Docker images on main branch push"
+  filename    = "cloudbuild.yaml"
+
+  # Explicitly using the Cloud Build Service Account to match permissions granted below
+  service_account = "projects/${var.project_id}/serviceAccounts/${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+
+  github {
+    owner = "Geokoumpa" # Updated to match case in screenshot
+    name  = "StablecoinPoolOpt"
+    push {
+      branch = "^master$"
+    }
+  }
+
+  depends_on = [google_project_service.project_services["cloudbuild.googleapis.com"]]
+}
+
+# Cloud Build Service Account Permissions
+resource "google_project_iam_member" "cloudbuild_sa_roles" {
+  for_each = toset([
+    "roles/run.admin",
+    "roles/iam.serviceAccountUser"
+  ])
+  project = var.project_id
+  role    = each.key
+  member  = "serviceAccount:${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+}

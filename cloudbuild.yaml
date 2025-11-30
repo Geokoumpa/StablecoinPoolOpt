@@ -1,11 +1,43 @@
 steps:
-  # Build the Docker image
+  # Build the Docker image with caching
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/defi-pipeline:latest', '.']
-  
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker pull gcr.io/$PROJECT_ID/defi-pipeline:latest || exit 0
+        docker build \
+          -t gcr.io/$PROJECT_ID/defi-pipeline:latest \
+          -t gcr.io/$PROJECT_ID/defi-pipeline:$COMMIT_SHA \
+          --cache-from gcr.io/$PROJECT_ID/defi-pipeline:latest \
+          .
+
   # Push the image to GCR
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:latest']
-  
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:$COMMIT_SHA']
+
+  # Deploy/Update Cloud Run Jobs
+  # Note: This step assumes the jobs are already created via Terraform
+  # We're just updating the image reference if needed, though :latest tag usage usually means
+  # we might just need to ensure the jobs pick up the new image.
+  # However, Cloud Run Jobs are immutable in terms of execution, so new executions will pick up :latest.
+  # If we want to be explicit, we can update the job definition.
+  # For now, we'll just log that the build is complete.
+
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Build and push complete. Cloud Run Jobs using :latest tag will pick up new image on next execution."
+
 images:
   - 'gcr.io/$PROJECT_ID/defi-pipeline:latest'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline:$COMMIT_SHA'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY

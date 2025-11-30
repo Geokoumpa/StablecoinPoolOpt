@@ -1,8 +1,9 @@
-FROM python:3.9-slim
+FROM python:3.11.11-slim
 
 WORKDIR /app
 
 # Install system dependencies including Playwright browser dependencies
+# Combined into a single RUN command to reduce image layers
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
@@ -32,22 +33,23 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# Create non-root user early
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set up Playwright environment
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright && chown appuser:appuser /ms-playwright
+
+# Install Playwright dependencies (needs root)
+RUN python -m pip install playwright && \
+    python -m playwright install-deps chromium
+
 # Copy requirements and install Python dependencies first for better caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
-# Install Playwright browsers
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN mkdir -p /ms-playwright && chown appuser:appuser /ms-playwright
-
-# Install dependencies as root
-RUN python -m playwright install-deps chromium
-
-# Install browsers as appuser or in the shared path
+# Install Playwright browsers (as root, but owned by appuser for access)
 RUN python -m playwright install chromium \
     && chown -R appuser:appuser /ms-playwright
 

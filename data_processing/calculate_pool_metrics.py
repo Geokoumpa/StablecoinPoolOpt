@@ -92,6 +92,65 @@ def fetch_exogenous_data(connection) -> pd.DataFrame:
     df = pd.merge(df, df_gas, left_index=True, right_index=True, how='outer')
     return df
 
+def bulk_insert_metrics(connection, metrics_to_insert, batch_size=1000):
+    """
+    Perform bulk insert using psycopg2's execute_values for better performance.
+    """
+    if not metrics_to_insert:
+        return
+        
+    # Get raw connection for psycopg2 operations
+    raw_conn = connection.connection
+    cursor = raw_conn.cursor()
+    
+    try:
+        # Prepare the bulk insert query
+        upsert_query = """
+            INSERT INTO pool_daily_metrics (
+                pool_id, date, actual_apy, forecasted_apy, actual_tvl, forecasted_tvl,
+                rolling_apy_7d, rolling_apy_30d, apy_delta_today_yesterday,
+                stddev_apy_7d, stddev_apy_30d, stddev_apy_7d_delta, stddev_apy_30d_delta,
+                eth_open, btc_open, gas_price_gwei
+            ) VALUES %s
+            ON CONFLICT (pool_id, date) DO UPDATE SET
+                actual_apy = EXCLUDED.actual_apy,
+                actual_tvl = EXCLUDED.actual_tvl,
+                rolling_apy_7d = EXCLUDED.rolling_apy_7d,
+                rolling_apy_30d = EXCLUDED.rolling_apy_30d,
+                apy_delta_today_yesterday = EXCLUDED.apy_delta_today_yesterday,
+                stddev_apy_7d = EXCLUDED.stddev_apy_7d,
+                stddev_apy_30d = EXCLUDED.stddev_apy_30d,
+                stddev_apy_7d_delta = EXCLUDED.stddev_apy_7d_delta,
+                stddev_apy_30d_delta = EXCLUDED.stddev_apy_30d_delta,
+                eth_open = EXCLUDED.eth_open,
+                btc_open = EXCLUDED.btc_open,
+                gas_price_gwei = EXCLUDED.gas_price_gwei;
+        """
+        
+        # Process in batches to avoid memory issues
+        total_batches = (len(metrics_to_insert) + batch_size - 1) // batch_size
+        
+        for i in range(0, len(metrics_to_insert), batch_size):
+            batch = metrics_to_insert[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            
+            logger.info(f"Processing batch {batch_num}/{total_batches} with {len(batch)} records...")
+            
+            # Use execute_values for efficient bulk insert
+            extras.execute_values(cursor, upsert_query, batch, template=None, page_size=100)
+            
+            # Commit each batch to avoid large transactions
+            raw_conn.commit()
+            
+        logger.info(f"Successfully bulk inserted/updated {len(metrics_to_insert)} metrics records.")
+        
+    except Exception as e:
+        raw_conn.rollback()
+        logger.error(f"Error during bulk insert: {e}")
+        raise
+    finally:
+        cursor.close()
+
 def calculate_pool_metrics():
     """
     Calculates daily metrics for pools including rolling APY, APY deltas, and standard deviations.
@@ -252,55 +311,10 @@ def calculate_pool_metrics():
 
             logger.info(f"Finished calculating metrics for all {total_pools} pools.")
 
-            # Bulk Insert/Update into pool_daily_metrics
+            # Bulk Insert/Update into pool_daily_metrics using optimized bulk insert
             logger.info(f"Bulk inserting/updating {len(metrics_to_insert)} metrics into the database...")
-            for metric in metrics_to_insert:
-                connection.execute(
-                    text("""
-                        INSERT INTO pool_daily_metrics (
-                            pool_id, date, actual_apy, forecasted_apy, actual_tvl, forecasted_tvl,
-                            rolling_apy_7d, rolling_apy_30d, apy_delta_today_yesterday,
-                            stddev_apy_7d, stddev_apy_30d, stddev_apy_7d_delta, stddev_apy_30d_delta,
-                            eth_open, btc_open, gas_price_gwei
-                        ) VALUES (:pool_id, :date, :actual_apy, :forecasted_apy, :actual_tvl, :forecasted_tvl,
-                                 :rolling_apy_7d, :rolling_apy_30d, :apy_delta_today_yesterday,
-                                 :stddev_apy_7d, :stddev_apy_30d, :stddev_apy_7d_delta, :stddev_apy_30d_delta,
-                                 :eth_open, :btc_open, :gas_price_gwei)
-                        ON CONFLICT (pool_id, date) DO UPDATE SET
-                            actual_apy = EXCLUDED.actual_apy,
-                            actual_tvl = EXCLUDED.actual_tvl,
-                            rolling_apy_7d = EXCLUDED.rolling_apy_7d,
-                            rolling_apy_30d = EXCLUDED.rolling_apy_30d,
-                            apy_delta_today_yesterday = EXCLUDED.apy_delta_today_yesterday,
-                            stddev_apy_7d = EXCLUDED.stddev_apy_7d,
-                            stddev_apy_30d = EXCLUDED.stddev_apy_30d,
-                            stddev_apy_7d_delta = EXCLUDED.stddev_apy_7d_delta,
-                            stddev_apy_30d_delta = EXCLUDED.stddev_apy_30d_delta,
-                            eth_open = EXCLUDED.eth_open,
-                            btc_open = EXCLUDED.btc_open,
-                            gas_price_gwei = EXCLUDED.gas_price_gwei;
-                    """),
-                    {
-                        "pool_id": metric[0],
-                        "date": metric[1],
-                        "actual_apy": metric[2],
-                        "forecasted_apy": metric[3],
-                        "actual_tvl": metric[4],
-                        "forecasted_tvl": metric[5],
-                        "rolling_apy_7d": metric[6],
-                        "rolling_apy_30d": metric[7],
-                        "apy_delta_today_yesterday": metric[8],
-                        "stddev_apy_7d": metric[9],
-                        "stddev_apy_30d": metric[10],
-                        "stddev_apy_7d_delta": metric[11],
-                        "stddev_apy_30d_delta": metric[12],
-                        "eth_open": metric[13],
-                        "btc_open": metric[14],
-                        "gas_price_gwei": metric[15]
-                    }
-                )
-
-            connection.commit()
+            bulk_insert_metrics(connection, metrics_to_insert, batch_size=1000)
+            
             # Now handle historical metrics for filtered pools to ensure 7 months of data
             logger.info("Checking for missing historical metrics for filtered pools...")
 
@@ -403,54 +417,10 @@ def calculate_pool_metrics():
                                     float(row['gas_price_gwei']) if pd.notnull(row['gas_price_gwei']) else None
                                 ))
 
-            # Bulk insert historical metrics
+            # Bulk insert historical metrics using optimized bulk insert
             if historical_metrics_to_insert:
                 logger.info(f"Bulk inserting {len(historical_metrics_to_insert)} historical metrics for filtered pools...")
-                for metric in historical_metrics_to_insert:
-                    connection.execute(
-                        text("""
-                            INSERT INTO pool_daily_metrics (
-                                pool_id, date, actual_apy, forecasted_apy, actual_tvl, forecasted_tvl,
-                                rolling_apy_7d, rolling_apy_30d, apy_delta_today_yesterday,
-                                stddev_apy_7d, stddev_apy_30d, stddev_apy_7d_delta, stddev_apy_30d_delta,
-                                eth_open, btc_open, gas_price_gwei
-                            ) VALUES (:pool_id, :date, :actual_apy, :forecasted_apy, :actual_tvl, :forecasted_tvl,
-                                     :rolling_apy_7d, :rolling_apy_30d, :apy_delta_today_yesterday,
-                                     :stddev_apy_7d, :stddev_apy_30d, :stddev_apy_7d_delta, :stddev_apy_30d_delta,
-                                     :eth_open, :btc_open, :gas_price_gwei)
-                            ON CONFLICT (pool_id, date) DO UPDATE SET
-                                actual_apy = EXCLUDED.actual_apy,
-                                actual_tvl = EXCLUDED.actual_tvl,
-                                rolling_apy_7d = EXCLUDED.rolling_apy_7d,
-                                rolling_apy_30d = EXCLUDED.rolling_apy_30d,
-                                apy_delta_today_yesterday = EXCLUDED.apy_delta_today_yesterday,
-                                stddev_apy_7d = EXCLUDED.stddev_apy_7d,
-                                stddev_apy_30d = EXCLUDED.stddev_apy_30d,
-                                stddev_apy_7d_delta = EXCLUDED.stddev_apy_7d_delta,
-                                stddev_apy_30d_delta = EXCLUDED.stddev_apy_30d_delta,
-                                eth_open = EXCLUDED.eth_open,
-                                btc_open = EXCLUDED.btc_open,
-                                gas_price_gwei = EXCLUDED.gas_price_gwei;
-                        """),
-                        {
-                            "pool_id": metric[0],
-                            "date": metric[1],
-                            "actual_apy": metric[2],
-                            "forecasted_apy": metric[3],
-                            "actual_tvl": metric[4],
-                            "forecasted_tvl": metric[5],
-                            "rolling_apy_7d": metric[6],
-                            "rolling_apy_30d": metric[7],
-                            "apy_delta_today_yesterday": metric[8],
-                            "stddev_apy_7d": metric[9],
-                            "stddev_apy_30d": metric[10],
-                            "stddev_apy_7d_delta": metric[11],
-                            "stddev_apy_30d_delta": metric[12],
-                            "eth_open": metric[13],
-                            "btc_open": metric[14],
-                            "gas_price_gwei": metric[15]
-                        }
-                    )
+                bulk_insert_metrics(connection, historical_metrics_to_insert, batch_size=1000)
 
             logger.info("Historical metrics calculation for filtered pools completed.")
             logger.info("Pool metrics calculation completed successfully.")
