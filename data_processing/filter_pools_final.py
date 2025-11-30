@@ -64,16 +64,20 @@ def filter_pools_final():
                 pools_missing_forecasts.append((pool_id, symbol, forecasted_tvl, forecasted_apy))
         
         if pools_missing_forecasts:
-            logger.error(f"Found {len(pools_missing_forecasts)} pools missing forecasted values!")
+            logger.error(f"Found {len(pools_missing_forecasts)} pools missing forecasted values! These will be filtered out.")
             for pool_id, symbol, tvl, apy in pools_missing_forecasts[:5]:  # Log first 5
                 logger.error(f"Pool {pool_id} ({symbol}): TVL={tvl}, APY={apy}")
             if len(pools_missing_forecasts) > 5:
                 logger.error(f"... and {len(pools_missing_forecasts) - 5} more pools")
-            raise ValueError("Forecasted values not available for filtering. Ensure forecasting phase completed successfully.")
 
         for pool_id, symbol, forecasted_tvl, forecasted_apy, existing_reason in pre_filtered_pools:
             additional_reasons = []
             should_filter_out = False
+
+            # Check for missing forecasts
+            if forecasted_tvl is None or forecasted_apy is None:
+                additional_reasons.append("Forecasted values missing")
+                should_filter_out = True
 
             # Check for icebox tokens
             if symbol:
