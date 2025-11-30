@@ -1,16 +1,46 @@
+# Multi-stage build for web scraping jobs with Playwright
+FROM python:3.11.11-slim as builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    wget \
+    gnupg \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Python dependencies for web scraping
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+    pandas \
+    numpy \
+    psycopg2-binary \
+    sqlalchemy \
+    google-cloud-storage \
+    requests \
+    python-dotenv \
+    python-dateutil \
+    playwright
+
+# Install Playwright and browsers in the correct location
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m pip install playwright && \
+    python -m playwright install-deps chromium && \
+    python -m playwright install chromium
+
+# Final stage
 FROM python:3.11.11-slim
 
 WORKDIR /app
 
-# Install system dependencies including Playwright browser dependencies
-# Combined into a single RUN command to reduce image layers
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libpq-dev \
-    # Playwright browser dependencies
-    wget \
-    gnupg \
-    ca-certificates \
+# Install only runtime dependencies for web scraping
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Playwright browser dependencies (runtime only)
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -30,6 +60,7 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
+    libpq5 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -40,20 +71,15 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN mkdir -p /ms-playwright && chown appuser:appuser /ms-playwright
 
-# Install Playwright dependencies (needs root)
-RUN python -m pip install playwright && \
-    python -m playwright install-deps chromium
+# Copy Python packages from builder stage
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy requirements and install Python dependencies first for better caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# Copy Playwright browsers from builder stage
+COPY --from=builder /ms-playwright /ms-playwright
 
-# Install Playwright browsers (as root, but owned by appuser for access)
-RUN python -m playwright install chromium \
-    && chown -R appuser:appuser /ms-playwright
-
-# Copy application code
+# Copy requirements and application code
+COPY --chown=appuser:appuser requirements.txt .
 COPY --chown=appuser:appuser . .
 
 # Set Python path to include the application directory
@@ -66,7 +92,7 @@ if [ -z "$SCRIPT_NAME" ]; then\n\
     echo "ERROR: SCRIPT_NAME environment variable is required"\n\
     exit 1\n\
 fi\n\
-echo "Starting DeFi Pipeline - Script: $SCRIPT_NAME"\n\
+echo "Starting DeFi Pipeline (Web Scraping) - Script: $SCRIPT_NAME"\n\
 echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"\n\
 echo "PYTHONPATH: $PYTHONPATH"\n\
 exec python pipeline_runner.py "$SCRIPT_NAME"' > /app/entrypoint.sh \

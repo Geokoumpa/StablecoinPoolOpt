@@ -1,45 +1,123 @@
 steps:
-  # Build the Docker image with caching
+  # Build Web Scraping Image
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # Try to pull the latest image for caching, but don't fail if it doesn't exist
-        docker pull gcr.io/$PROJECT_ID/defi-pipeline:latest || true
+        # Try to pull the latest web-scraping image for caching
+        docker pull gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest || true
         
-        # Build the image
+        # Build the web-scraping image
         docker build \
-          -t gcr.io/$PROJECT_ID/defi-pipeline:latest \
-          -t gcr.io/$PROJECT_ID/defi-pipeline:$COMMIT_SHA \
-          --cache-from gcr.io/$PROJECT_ID/defi-pipeline:latest \
+          -f dockerfiles/Dockerfile.web-scraping \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:$COMMIT_SHA \
+          --cache-from gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest \
           .
 
-  # Push the image to GCR
+  # Build ML/Science Image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:latest']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Try to pull the latest ml-science image for caching
+        docker pull gcr.io/$PROJECT_ID/defi-pipeline-ml-science:latest || true
+        
+        # Build the ml-science image
+        docker build \
+          -f dockerfiles/Dockerfile.ml-science \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-ml-science:latest \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-ml-science:$COMMIT_SHA \
+          --cache-from gcr.io/$PROJECT_ID/defi-pipeline-ml-science:latest \
+          .
+
+  # Build Lightweight Image
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Try to pull the latest lightweight image for caching
+        docker pull gcr.io/$PROJECT_ID/defi-pipeline-lightweight:latest || true
+        
+        # Build the lightweight image
+        docker build \
+          -f dockerfiles/Dockerfile.lightweight \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-lightweight:latest \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-lightweight:$COMMIT_SHA \
+          --cache-from gcr.io/$PROJECT_ID/defi-pipeline-lightweight:latest \
+          .
+
+  # Build Database Image
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Try to pull the latest database image for caching
+        docker pull gcr.io/$PROJECT_ID/defi-pipeline-database:latest || true
+        
+        # Build the database image
+        docker build \
+          -f dockerfiles/Dockerfile.database \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-database:latest \
+          -t gcr.io/$PROJECT_ID/defi-pipeline-database:$COMMIT_SHA \
+          --cache-from gcr.io/$PROJECT_ID/defi-pipeline-database:latest \
+          .
+
+  # Push Web Scraping Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest']
 
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:$COMMIT_SHA']
 
-  # Deploy/Update Cloud Run Jobs
-  # Note: This step assumes the jobs are already created via Terraform
-  # We're just updating the image reference if needed, though :latest tag usage usually means
-  # we might just need to ensure the jobs pick up the new image.
-  # However, Cloud Run Jobs are immutable in terms of execution, so new executions will pick up :latest.
-  # If we want to be explicit, we can update the job definition.
-  # For now, we'll just log that the build is complete.
+  # Push ML/Science Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-ml-science:latest']
 
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-ml-science:$COMMIT_SHA']
+
+  # Push Lightweight Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-lightweight:latest']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-lightweight:$COMMIT_SHA']
+
+  # Push Database Image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-database:latest']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-database:$COMMIT_SHA']
+
+  # Log completion
   - name: 'gcr.io/cloud-builders/gcloud'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        echo "Build and push complete. Cloud Run Jobs using :latest tag will pick up new image on next execution."
+        echo "Build and push complete for all specialized images:"
+        echo "- Web Scraping: gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:$COMMIT_SHA"
+        echo "- ML/Science: gcr.io/$PROJECT_ID/defi-pipeline-ml-science:$COMMIT_SHA"
+        echo "- Lightweight: gcr.io/$PROJECT_ID/defi-pipeline-lightweight:$COMMIT_SHA"
+        echo "- Database: gcr.io/$PROJECT_ID/defi-pipeline-database:$COMMIT_SHA"
+        echo ""
+        echo "Cloud Run Jobs using specialized images will pick up new images on next execution."
 
 images:
-  - 'gcr.io/$PROJECT_ID/defi-pipeline:latest'
-  - 'gcr.io/$PROJECT_ID/defi-pipeline:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-ml-science:latest'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-ml-science:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-lightweight:latest'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-lightweight:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-database:latest'
+  - 'gcr.io/$PROJECT_ID/defi-pipeline-database:$COMMIT_SHA'
 
 options:
   machineType: 'E2_HIGHCPU_8'

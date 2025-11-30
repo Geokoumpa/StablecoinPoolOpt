@@ -119,10 +119,64 @@ resource "google_project_service" "secret_manager_api" {
 }
 
 # Cloud Run Jobs for each pipeline step
-resource "google_project_iam_member" "cloud_run_vpc_access" {
-  project = var.project_id
-  role    = "roles/vpcaccess.user"
-  member  = "serviceAccount:${google_service_account.cloud_run_sa.email}"
+# Note: roles/vpcaccess.user is no longer needed with Direct VPC Egress
+
+locals {
+  job_profiles = {
+    "fetch_ohlcv_coinmarketcap"      = { cpu = "1", memory = "1Gi" }
+    "fetch_gas_ethgastracker"        = { cpu = "1", memory = "1Gi" }
+    "fetch_defillama_pools"          = { cpu = "1", memory = "2Gi" }
+    "fetch_defillama_pool_addresses" = { cpu = "2", memory = "4Gi" }
+    "fetch_account_transactions"     = { cpu = "1", memory = "1Gi" }
+    "fetch_macroeconomic_data"       = { cpu = "1", memory = "1Gi" }
+    "filter_pools_pre"               = { cpu = "1", memory = "2Gi" }
+    "fetch_filtered_pool_histories"  = { cpu = "1", memory = "2Gi" }
+    "calculate_pool_metrics"         = { cpu = "2", memory = "4Gi" }
+    "apply_pool_grouping"            = { cpu = "1", memory = "2Gi" }
+    "process_icebox_logic"           = { cpu = "1", memory = "2Gi" }
+    "update_allocation_snapshots"    = { cpu = "1", memory = "2Gi" }
+    "forecast_pools"                 = { cpu = "2", memory = "4Gi" }
+    "forecast_gas_fees"              = { cpu = "1", memory = "2Gi" }
+    "filter_pools_final"             = { cpu = "1", memory = "2Gi" }
+    "process_account_transactions"   = { cpu = "1", memory = "2Gi" }
+    "manage_ledger"                  = { cpu = "1", memory = "1Gi" }
+    "optimize_allocations"           = { cpu = "2", memory = "4Gi" }
+    "post_slack_notification"        = { cpu = "1", memory = "512Mi" }
+    "apply_migrations"               = { cpu = "1", memory = "1Gi" }
+    "create_allocation_snapshots"    = { cpu = "1", memory = "1Gi" }
+  }
+
+  # Image mapping for specialized Docker images
+  image_mapping = {
+    # Web Scraping Jobs
+    "fetch_defillama_pool_addresses" = "defi-pipeline-web-scraping"
+    
+    # ML/Forecasting Jobs
+    "forecast_pools" = "defi-pipeline-ml-science"
+    "forecast_gas_fees" = "defi-pipeline-ml-science"
+    "optimize_allocations" = "defi-pipeline-ml-science"
+    "calculate_pool_metrics" = "defi-pipeline-ml-science"
+    
+    # Database Operations Jobs
+    "apply_migrations" = "defi-pipeline-database"
+    "create_allocation_snapshots" = "defi-pipeline-database"
+    "manage_ledger" = "defi-pipeline-database"
+    "post_slack_notification" = "defi-pipeline-database"
+    
+    # Lightweight Data Processing Jobs (default)
+    "fetch_ohlcv_coinmarketcap" = "defi-pipeline-lightweight"
+    "fetch_gas_ethgastracker" = "defi-pipeline-lightweight"
+    "fetch_defillama_pools" = "defi-pipeline-lightweight"
+    "fetch_account_transactions" = "defi-pipeline-lightweight"
+    "fetch_macroeconomic_data" = "defi-pipeline-lightweight"
+    "filter_pools_pre" = "defi-pipeline-lightweight"
+    "fetch_filtered_pool_histories" = "defi-pipeline-lightweight"
+    "apply_pool_grouping" = "defi-pipeline-lightweight"
+    "process_icebox_logic" = "defi-pipeline-lightweight"
+    "update_allocation_snapshots" = "defi-pipeline-lightweight"
+    "filter_pools_final" = "defi-pipeline-lightweight"
+    "process_account_transactions" = "defi-pipeline-lightweight"
+  }
 }
 
 resource "google_cloud_run_v2_job" "pipeline_step" {
@@ -156,22 +210,24 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
   deletion_protection = false
 
   depends_on = [
-    google_project_service.run_api,
-    google_vpc_access_connector.cloud_sql_connector
+    google_project_service.run_api
   ]
 
   template {
     template {
       service_account = google_service_account.cloud_run_sa.email
       
-      # VPC Access for private Cloud SQL connectivity
+      # Direct VPC Egress for private Cloud SQL connectivity
       vpc_access {
-        connector = google_vpc_access_connector.cloud_sql_connector.id
-        egress    = "PRIVATE_RANGES_ONLY"
+        network_interfaces {
+          network    = "default"
+          subnetwork = "default"
+        }
+        egress = "PRIVATE_RANGES_ONLY"
       }
       
       containers {
-        image = "gcr.io/${var.project_id}/defi-pipeline:latest"
+        image = "gcr.io/${var.project_id}/${lookup(local.image_mapping, each.key, "defi-pipeline-lightweight")}:latest"
 
         env {
           name  = "SCRIPT_NAME"
@@ -337,25 +393,10 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
           }
         }
 
-        # Increase resources for browser operations
-        dynamic "resources" {
-          for_each = contains(["fetch_defillama_pool_addresses"], each.key) ? [1] : []
-          content {
-            limits = {
-              cpu    = "2"
-              memory = "4Gi"
-            }
-          }
-        }
-
-        # Default resources for other jobs
-        dynamic "resources" {
-          for_each = contains(["fetch_defillama_pool_addresses"], each.key) ? [] : [1]
-          content {
-            limits = {
-              cpu    = "1"
-              memory = "2Gi"
-            }
+        resources {
+          limits = {
+            cpu    = lookup(local.job_profiles, each.key, { cpu = "1", memory = "2Gi" }).cpu
+            memory = lookup(local.job_profiles, each.key, { cpu = "1", memory = "2Gi" }).memory
           }
         }
       }

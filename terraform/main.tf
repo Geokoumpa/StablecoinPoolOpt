@@ -44,7 +44,7 @@ resource "google_project_service" "project_services" {
     "cloudscheduler.googleapis.com",
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
-    "vpcaccess.googleapis.com" # Required for Serverless VPC Access
+    # "vpcaccess.googleapis.com" # No longer needed with Direct VPC Egress
   ])
   service                    = each.key
   disable_dependent_services = true

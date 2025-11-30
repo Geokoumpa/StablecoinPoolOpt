@@ -16,21 +16,22 @@ Current uniform allocation (1 CPU, 2Gi) is inefficient for diverse workloads:
 
 | Job Category | Examples | Current Allocation | Recommended Allocation | Issue |
 |---------------|-------------|-------------------|-------------------|--------|
-| API Data Fetchers | fetch_ohlcv, fetch_gas | 1 CPU, 2Gi | 0.5 CPU, 1Gi | Over-provisioned |
+| API Data Fetchers | fetch_ohlcv, fetch_gas | 1 CPU, 2Gi | 1 CPU, 1Gi | Over-provisioned (Memory) |
 | Simple Processing | filter_pools_pre | 1 CPU, 2Gi | 1 CPU, 2Gi | Appropriate |
 | Heavy Processing | calculate_pool_metrics | 1 CPU, 2Gi | 2 CPU, 4Gi | Under-provisioned |
 | ML/Forecasting | forecast_pools, optimize_allocations | 1 CPU, 2Gi | 2 CPU, 4Gi | Under-provisioned |
-| Database Ops | apply_migrations, manage_ledger | 1 CPU, 2Gi | 0.5 CPU, 1Gi | Over-provisioned |
+| Database Ops | apply_migrations, manage_ledger | 1 CPU, 2Gi | 1 CPU, 1Gi | Over-provisioned (Memory) |
 | Browser Ops | fetch_defillama_pool_addresses | 2 CPU, 4Gi | 2 CPU, 4Gi | Appropriate |
+
+**Note:** Cloud Run Jobs require a minimum of 1 CPU. The initial plan's recommendation for 0.5 CPU has been updated to 1 CPU with reduced memory for "over-provisioned" jobs.
 
 ## Optimization Strategy
 
 ### Phase 1: Quick Wins (1-2 days implementation)
 
 #### 1.1 Enable CPU Boost for Startup
-- Add `startup_cpu_boost = true` to all Cloud Run job configurations
-- Expected impact: 30-40% reduction in cold start time
-- Cost implication: Minimal additional cost during startup only
+- **Status: Not Applicable**
+- **Finding:** The `startup_cpu_boost` feature is only available for Cloud Run Services and Functions, not for Cloud Run Jobs. This optimization cannot be applied to the current pipeline architecture.
 
 #### 1.2 Implement Lazy Import Pattern
 - Refactor Python scripts to import heavy libraries only when needed
@@ -38,10 +39,12 @@ Current uniform allocation (1 CPU, 2Gi) is inefficient for diverse workloads:
 - Expected impact: 2-3 seconds faster script initialization
 
 #### 1.3 Right-Size Resources by Job Type
-- Implement job-specific resource profiles in Terraform
-- Reduce resources for I/O-bound jobs
-- Increase resources for CPU-intensive ML jobs
-- Expected impact: 30-40% cost reduction, 50% performance improvement for ML jobs
+- **Status: Completed**
+- **Action:** Implemented job-specific resource profiles in Terraform (`terraform/cloud_run.tf`).
+- **Details:**
+    - A `locals` map (`job_profiles`) was created to define specific CPU and memory for each job.
+    - The `google_cloud_run_v2_job` resource now dynamically assigns resources using a `lookup` function.
+- **Expected impact: 30-40% cost reduction, 50% performance improvement for ML jobs
 
 ### Phase 2: Container Architecture Improvements (1 week implementation)
 
@@ -70,15 +73,16 @@ Expected impact: 40-50% reduction in image size for non-browser jobs
 Implement Terraform module for job-specific resources:
 
 ```hcl
-# Job resource profiles
+# Job resource profiles (already implemented in Phase 1.3)
 locals {
   job_profiles = {
-    "fetch_ohlcv_coinmarketcap"    = { cpu = "0.5", memory = "1Gi", image = "lightweight" }
-    "fetch_defillama_pools"        = { cpu = "1",   memory = "2Gi", image = "standard" }
-    "calculate_pool_metrics"        = { cpu = "2",   memory = "4Gi", image = "datascience" }
-    "forecast_pools"               = { cpu = "2",   memory = "4Gi", image = "datascience" }
-    "fetch_defillama_pool_addresses" = { cpu = "2",   memory = "4Gi", image = "browser" }
-    "apply_migrations"              = { cpu = "0.5", memory = "1Gi", image = "database" }
+    "fetch_ohlcv_coinmarketcap"    = { cpu = "1", memory = "1Gi" }
+    "fetch_defillama_pools"        = { cpu = "1", memory = "2Gi" }
+    "calculate_pool_metrics"        = { cpu = "2", memory = "4Gi" }
+    "forecast_pools"               = { cpu = "2", memory = "4Gi" }
+    "fetch_defillama_pool_addresses" = { cpu = "2", memory = "4Gi" }
+    "apply_migrations"              = { cpu = "1", memory = "1Gi" }
+    # ... other jobs
   }
 }
 ```
@@ -108,18 +112,18 @@ locals {
 
 ## Implementation Priority Matrix
 
-| Optimization | Startup Impact | Performance Impact | Cost Impact | Effort | Priority |
-|--------------|------------------|-------------------|---------------|----------|----------|
-| CPU Boost | High | Low | Low | Low | 1 |
-| Resource Right-Sizing | Low | High | High | Low | 2 |
-| Lazy Imports | Medium | Medium | Low | Low | 3 |
-| Image Splitting | High | Medium | Medium | Medium | 4 |
-| Dynamic Allocation | Low | High | High | Medium | 5 |
+| Optimization | Startup Impact | Performance Impact | Cost Impact | Effort | Priority | Status |
+|--------------|------------------|-------------------|---------------|----------|----------|--------|
+| CPU Boost | N/A | N/A | N/A | Low | 1 | Not Applicable |
+| Resource Right-Sizing | Low | High | High | Low | 2 | Completed |
+| Lazy Imports | Medium | Medium | Low | Low | 3 | Pending |
+| Image Splitting | High | Medium | Medium | Medium | 4 | Pending |
+| Dynamic Allocation | Low | High | High | Medium | 5 | Pending |
 
 ## Expected Outcomes
 
 ### Performance Improvements
-- **Cold Start Time**: 8-15s → 3-6s (60% improvement)
+- **Cold Start Time**: 8-15s → 6-12s (20% improvement, limited by lack of CPU boost)
 - **ML Job Performance**: 50-60% faster execution
 - **Data Processing**: 20-30% faster completion
 - **Overall Pipeline**: 25-35% reduction in total execution time
@@ -138,14 +142,14 @@ locals {
 
 | Risk Category | Low Risk | Medium Risk | High Risk |
 |---------------|------------|--------------|------------|
-| Quick Wins | CPU boost, lazy imports, basic monitoring | Resource right-sizing | |
+| Quick Wins | Lazy imports, basic monitoring | Resource right-sizing | |
 | Architecture | | Image splitting, multi-stage builds | Major architectural changes |
 | Advanced | | | Container reuse, dynamic allocation |
 
 ## Success Metrics
 1. **Startup Performance**
-   - Average cold start time < 6 seconds
-   - 95th percentile cold start time < 8 seconds
+   - Average cold start time < 12 seconds (adjusted from 6s)
+   - 95th percentile cold start time < 15 seconds
 
 2. **Execution Performance**
    - ML job completion time reduced by 50%

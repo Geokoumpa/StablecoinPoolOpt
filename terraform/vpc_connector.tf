@@ -1,26 +1,11 @@
-# VPC Access Connector for Cloud Run to Cloud SQL private connectivity
-resource "google_vpc_access_connector" "cloud_sql_connector" {
-  name          = "cloud-sql-connector"
-  region        = var.region
-  ip_cidr_range = "10.8.0.0/28"  # Small range for connector
-  network       = "default"
-  
-  # Minimum capacity for cost optimization
-  min_throughput = 200
-  max_throughput = 300
+# VPC Access Connector - DEPRECATED
+# This file is kept for reference but the connector has been removed
+# in favor of Direct VPC Egress for Cloud Run
 
-  depends_on = [
-    google_project_service.project_services["vpcaccess.googleapis.com"]
-  ]
-}
+# Note: The following resources have been removed:
+# - google_vpc_access_connector.cloud_sql_connector
+# - google_project_iam_member.cloud_run_vpc_access
+# - output.vpc_connector_name
+# - output.vpc_connector_id
 
-# Output for connector reference
-output "vpc_connector_name" {
-  description = "The name of the VPC access connector"
-  value       = google_vpc_access_connector.cloud_sql_connector.name
-}
-
-output "vpc_connector_id" {
-  description = "The full resource ID of the VPC access connector"
-  value       = google_vpc_access_connector.cloud_sql_connector.id
-}
+# Direct VPC Egress is now configured directly in cloud_run.tf

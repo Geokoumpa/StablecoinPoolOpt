@@ -1,0 +1,42 @@
+# Job to Docker Image Mapping
+# Maps each Cloud Run job to its specialized Docker image type
+
+# Web Scraping Jobs - Need Playwright + browser dependencies
+web_scraping_jobs:
+  - fetch_defillama_pool_addresses
+
+# ML/Forecasting Jobs - Need ML libraries (xgboost, lightgbm, scikit-learn, cvxpy, ortools)
+ml_science_jobs:
+  - forecast_pools
+  - forecast_gas_fees
+  - optimize_allocations
+  - calculate_pool_metrics
+
+# Lightweight Data Processing Jobs - Basic pandas, numpy, database access
+lightweight_jobs:
+  - fetch_ohlcv_coinmarketcap
+  - fetch_gas_ethgastracker
+  - fetch_defillama_pools
+  - fetch_account_transactions
+  - fetch_macroeconomic_data
+  - filter_pools_pre
+  - fetch_filtered_pool_histories
+  - apply_pool_grouping
+  - process_icebox_logic
+  - update_allocation_snapshots
+  - filter_pools_final
+  - process_account_transactions
+
+# Database Operations Jobs - Minimal dependencies, mainly SQL operations
+database_jobs:
+  - apply_migrations
+  - create_allocation_snapshots
+  - manage_ledger
+  - post_slack_notification
+
+# Image type mapping
+image_mapping:
+  web_scraping: "defi-pipeline-web-scraping"
+  ml_science: "defi-pipeline-ml-science"
+  lightweight: "defi-pipeline-lightweight"
+  database: "defi-pipeline-database"
