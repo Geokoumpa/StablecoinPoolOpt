@@ -55,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxtst6 \
     xdg-utils \
     libpq5 \
+    libgbm1 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
