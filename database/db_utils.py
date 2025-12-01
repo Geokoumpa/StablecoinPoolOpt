@@ -41,16 +41,34 @@ def get_db_connection(dbname=DB_NAME):
             max_overflow=20,
             # Add connection timeout and retry logic
             connect_args={
-                "connect_timeout": 10,
-                "application_name": "defi_pipeline"
+                "connect_timeout": 30,
+                "application_name": "defi_pipeline",
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 5
             }
         )
         
-        # Test the connection
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT 1"))
-            if result.fetchone()[0] != 1:
-                raise Exception("Connection test failed")
+        # Test the connection with retries
+        import time
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                with engine.connect() as conn:
+                    result = conn.execute(text("SELECT 1"))
+                    if result.fetchone()[0] != 1:
+                        raise Exception("Connection test failed")
+                break # Connection successful
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"⚠️ Connection attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error(f"❌ All connection attempts failed.")
+                    raise e
         
         _engine_cache[dbname] = engine
         logger.info(f"✅ Database connection to {dbname} established successfully.")
