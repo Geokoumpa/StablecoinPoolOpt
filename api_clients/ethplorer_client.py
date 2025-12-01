@@ -53,7 +53,7 @@ def get_tx_info(tx_hash: str, api_key: Optional[str] = None, timeout: int = 10) 
         return None
 
 
-def get_address_history(address: str, api_key: Optional[str] = None, limit: int = 100, timeout: int = 10) -> Optional[Dict]:
+def get_address_history(address: str, api_key: Optional[str] = None, limit: int = 10000, timeout: int = 10) -> Optional[Dict]:
     """
     Fetch address history via /getAddressHistory/{address}.
     Returns parsed JSON on success or None on failure.

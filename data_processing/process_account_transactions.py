@@ -6,7 +6,13 @@ from sqlalchemy import text
 from api_clients.ethplorer_client import get_tx_info
 from config import MAIN_ASSET_HOLDING_ADDRESS
 
+# Configure module logger
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
 
 def process_account_transactions():
     """

@@ -5,7 +5,13 @@ from psycopg2 import extras
 from config import MAIN_ASSET_HOLDING_ADDRESS
 from api_clients.ethplorer_client import get_address_history
 
+# Configure module logger
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
 
 def fetch_account_transactions():
     if not MAIN_ASSET_HOLDING_ADDRESS:
