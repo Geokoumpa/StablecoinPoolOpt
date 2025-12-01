@@ -35,7 +35,9 @@ def process_account_transactions():
 
                 # Step 1: Insert basic transaction info first
                 for raw_id, raw_json in raw_transactions_result:
-                    for tx in raw_json:
+                    # raw_json is already a list of operations, not a dict with 'operations' key
+                    operations = raw_json if isinstance(raw_json, list) else raw_json.get('operations', [])
+                    for tx in operations:
                         try:
                             tx_hash = tx.get('transactionHash')
                             if not tx_hash:

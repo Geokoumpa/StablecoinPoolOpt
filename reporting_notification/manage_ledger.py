@@ -73,39 +73,55 @@ class LedgerManager:
     def get_allocated_balances(self):
         """
         Identifies assets currently allocated in pools.
-        Returns net allocated balance (deposits - withdrawals) for each pool/token combination.
-        Tracks transactions from warm wallet to pools (since funds flow: cold → warm → pools).
+        Returns current allocated balance by tracking cumulative flows from first transaction.
+        For deposits followed by withdrawals, calculates remaining balance.
         """
         query = """
+        WITH transaction_flows AS (
+            -- Get all transactions with normalized amounts
+            SELECT
+                p.pool_id,
+                at.token_symbol,
+                at.timestamp,
+                CASE
+                    WHEN LOWER(at.from_address) = LOWER(:warm_wallet_address) AND LOWER(at.to_address) = LOWER(p.pool_address) THEN at.value / (10 ^ at.token_decimals)
+                    WHEN LOWER(at.from_address) = LOWER(p.pool_address) AND LOWER(at.to_address) = LOWER(:warm_wallet_address) THEN -at.value / (10 ^ at.token_decimals)
+                    ELSE 0
+                END as flow_amount
+            FROM account_transactions at
+            JOIN pools p ON (LOWER(at.to_address) = LOWER(p.pool_address) OR LOWER(at.from_address) = LOWER(p.pool_address))
+            WHERE (LOWER(at.from_address) = LOWER(:warm_wallet_address) OR LOWER(at.to_address) = LOWER(:warm_wallet_address))
+              AND p.pool_address IS NOT NULL
+              AND at.token_symbol IS NOT NULL
+        ),
+        final_balances AS (
+            -- Calculate final balance for each pool/token combination
+            SELECT
+                pool_id,
+                token_symbol,
+                SUM(flow_amount) as final_balance
+            FROM transaction_flows
+            GROUP BY pool_id, token_symbol
+        )
+        -- Return only positive balances (0 or negative means no current allocation)
         SELECT
-            p.pool_id,
-            at.token_symbol,
-            SUM(CASE 
-                WHEN LOWER(at.from_address) = LOWER(:warm_wallet_address) AND LOWER(at.to_address) = LOWER(p.pool_address) THEN at.value
-                WHEN LOWER(at.from_address) = LOWER(p.pool_address) AND LOWER(at.to_address) = LOWER(:warm_wallet_address) THEN -at.value
-                ELSE 0
-            END) / (10 ^ MAX(at.token_decimals)) as net_allocated
-        FROM account_transactions at
-        JOIN pools p ON (LOWER(at.to_address) = LOWER(p.pool_address) OR LOWER(at.from_address) = LOWER(p.pool_address))
-        WHERE (LOWER(at.from_address) = LOWER(:warm_wallet_address) OR LOWER(at.to_address) = LOWER(:warm_wallet_address))
-          AND p.pool_address IS NOT NULL
-        GROUP BY p.pool_id, at.token_symbol
-        HAVING SUM(CASE 
-            WHEN LOWER(at.from_address) = LOWER(:warm_wallet_address) AND LOWER(at.to_address) = LOWER(p.pool_address) THEN at.value
-            WHEN LOWER(at.from_address) = LOWER(p.pool_address) AND LOWER(at.to_address) = LOWER(:warm_wallet_address) THEN -at.value
-            ELSE 0
-        END) != 0;
+            pool_id,
+            token_symbol,
+            final_balance
+        FROM final_balances
+        WHERE final_balance > 0
+        ORDER BY pool_id, token_symbol;
         """
         result = self.conn.execute(text(query), {"warm_wallet_address": MAIN_ASSET_HOLDING_ADDRESS})
         allocations = []
         for row in result.fetchall():
             pool_id = row[0]
             token_symbol = row[1]
-            net_allocated = row[2]
-            allocations.append((pool_id, token_symbol, net_allocated))
-            logger.debug(f"Allocated balance for pool {pool_id}, token {token_symbol}: {net_allocated}")
-        
-        logger.info(f"Found {len(allocations)} pool/token allocations")
+            final_balance = row[2]
+            allocations.append((pool_id, token_symbol, final_balance))
+            logger.debug(f"Current allocated balance for pool {pool_id}, token {token_symbol}: {final_balance}")
+
+        logger.info(f"Found {len(allocations)} pool/token allocations with positive balances")
         return allocations
 
     def update_filtered_out_pools(self):
