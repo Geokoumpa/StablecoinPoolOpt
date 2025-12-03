@@ -66,13 +66,13 @@ def filter_pools_pre():
 
             # Fetch all active pools for pre-filtering (exclude inactive pools)
             result = conn.execute(text("""
-                SELECT pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses, poolMeta
+                SELECT pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses, poolMeta, pool_address
                 FROM pools p
                 WHERE is_active = TRUE;
             """))
             pools_data = result.fetchall()
 
-            for pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses, poolmeta in pools_data:
+            for pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses, poolmeta, pool_address in pools_data:
                 filter_reason = []
                 is_filtered_out = False
                 approved_token_symbols = []
@@ -126,8 +126,26 @@ def filter_pools_pre():
                                 filter_reason.append(f"Pool contains unapproved token address: {address}")
                                 is_filtered_out = True
                     elif not is_filtered_out:
-                        filter_reason.append("Pool has no underlying token addresses.")
-                        is_filtered_out = True
+                        # Pool has no underlying token addresses, try to use pool address to find frequent tokens
+                        if pool_address:
+                            logger.info(f"Pool {pool_id} has no underlying token addresses, attempting to find frequent tokens from pool address: {pool_address}")
+                            most_frequent_token_address = find_most_frequent_token_address(pool_id, [pool_address])
+                            
+                            if most_frequent_token_address:
+                                # Check if this token address is in our approved tokens
+                                if most_frequent_token_address.lower() in approved_address_to_symbol:
+                                    token_symbol = approved_address_to_symbol[most_frequent_token_address.lower()]
+                                    approved_token_symbols = [token_symbol]
+                                    logger.info(f"Pool {pool_id} matched with approved token from pool address: {token_symbol} (address: {most_frequent_token_address})")
+                                else:
+                                    filter_reason.append(f"Most frequent token address {most_frequent_token_address} from pool address not in approved tokens")
+                                    is_filtered_out = True
+                            else:
+                                filter_reason.append("Could not determine most frequent token address from pool address")
+                                is_filtered_out = True
+                        else:
+                            filter_reason.append("Pool has no underlying token addresses and no pool address available")
+                            is_filtered_out = True
 
                 # Update pools table with approved token symbols for approved pools (including pendle pools that matched)
                 if approved_token_symbols:
@@ -225,17 +243,17 @@ def filter_pools_pre():
 def find_most_frequent_token_address(pool_id, token_addresses):
     """
     For a list of token addresses, uses Ethplorer API to find the most frequent token address
-    based on transaction history.
+    based on transaction history. Can be used for both underlying token addresses and pool addresses.
     
     Args:
         pool_id: The pool ID for logging purposes
-        token_addresses: List of token addresses to analyze
+        token_addresses: List of token addresses to analyze (can be underlying tokens or pool address)
         
     Returns:
         The most frequent token address as a string, or None if no transactions found
     """
     token_address_counts = Counter()
-    logger.info(f"Analyzing {len(token_addresses)} underlying token addresses for pool {pool_id}")
+    logger.info(f"Analyzing {len(token_addresses)} addresses for pool {pool_id}")
     
     for address in token_addresses:
         try:
