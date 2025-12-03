@@ -16,3 +16,4 @@ highspy
 cylp
 lightgbm
 playwright
+optuna

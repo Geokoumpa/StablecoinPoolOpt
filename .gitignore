@@ -50,3 +50,7 @@ models/exports/
 *.csv
 *.png
 *.pdf
+
+/archives
+/mlruns
+/mlflow_artifacts
