@@ -73,40 +73,117 @@ class LedgerManager:
     def get_allocated_balances(self):
         """
         Identifies assets currently allocated in pools.
-        Returns current allocated balance by tracking cumulative flows from first transaction.
-        For deposits followed by withdrawals, calculates remaining balance.
+        
+        This function tracks allocations by detecting receipt tokens (LP tokens, PT tokens,
+        vault shares) that are received from pool addresses. DeFi protocols typically:
+        1. Send underlying tokens through routers/aggregators (not directly to pool)
+        2. Mint or transfer receipt tokens FROM the pool address TO the user
+        
+        The query tracks:
+        - Tokens received FROM pool addresses (Pendle PT tokens, etc.)
+        - Tokens sent TO pool addresses (direct deposits or redemptions)
+        - Minted tokens in transactions involving the pool (Morpho vault shares)
+        
+        Returns allocations valued at the receipt token amount (approximately 1:1 with underlying).
         """
         query = """
-        WITH transaction_flows AS (
-            -- Get all transactions with normalized amounts
-            SELECT
+        WITH valid_pools AS (
+            -- Filter out pools where pool_address is actually a known token contract address
+            -- Also deduplicate by pool_address to avoid double counting when multiple pools share the same address
+            -- When duplicates exist, prefer the pool with higher APY (from pool_daily_metrics)
+            SELECT DISTINCT ON (LOWER(p.pool_address))
                 p.pool_id,
-                at.token_symbol,
+                p.pool_address,
+                p.underlying_tokens
+            FROM pools p
+            LEFT JOIN approved_tokens at ON LOWER(p.pool_address) = LOWER(at.token_address)
+            LEFT JOIN pool_daily_metrics pdm ON p.pool_id = pdm.pool_id AND pdm.date = CURRENT_DATE
+            WHERE p.pool_address IS NOT NULL
+              AND at.token_symbol IS NULL  -- Exclude pools where pool_address matches a known token
+            ORDER BY LOWER(p.pool_address), COALESCE(pdm.forecasted_apy, 0) DESC, p.pool_id
+        ),
+        receipt_token_flows AS (
+            -- Track receipt tokens coming FROM pool addresses TO warm wallet
+            -- This captures: Pendle PT tokens, LP tokens, etc.
+            SELECT
+                vp.pool_id,
+                vp.underlying_tokens,
+                at.token_symbol as receipt_token,
                 at.timestamp,
                 CASE
-                    WHEN LOWER(at.from_address) = LOWER(:warm_wallet_address) AND LOWER(at.to_address) = LOWER(p.pool_address) THEN at.value / (10 ^ at.token_decimals)
-                    WHEN LOWER(at.from_address) = LOWER(p.pool_address) AND LOWER(at.to_address) = LOWER(:warm_wallet_address) THEN -at.value / (10 ^ at.token_decimals)
+                    -- Tokens received FROM pool address (deposit receipts)
+                    WHEN LOWER(at.from_address) = LOWER(vp.pool_address)
+                         AND LOWER(at.to_address) = LOWER(:warm_wallet_address)
+                    THEN at.value / (10 ^ at.token_decimals)
+                    -- Tokens sent TO pool address (redemptions/withdrawals)
+                    WHEN LOWER(at.to_address) = LOWER(vp.pool_address)
+                         AND LOWER(at.from_address) = LOWER(:warm_wallet_address)
+                    THEN -at.value / (10 ^ at.token_decimals)
                     ELSE 0
                 END as flow_amount
             FROM account_transactions at
-            JOIN pools p ON (LOWER(at.to_address) = LOWER(p.pool_address) OR LOWER(at.from_address) = LOWER(p.pool_address))
-            WHERE (LOWER(at.from_address) = LOWER(:warm_wallet_address) OR LOWER(at.to_address) = LOWER(:warm_wallet_address))
-              AND p.pool_address IS NOT NULL
-              AND at.token_symbol IS NOT NULL
+            JOIN valid_pools vp ON (
+                LOWER(at.to_address) = LOWER(vp.pool_address)
+                OR LOWER(at.from_address) = LOWER(vp.pool_address)
+            )
+            WHERE at.token_symbol IS NOT NULL
+              AND at.value > 0
+        ),
+        minted_token_flows AS (
+            -- Track minted tokens (from 0x000...) in transactions that involve pool addresses
+            -- This captures: Morpho vault shares (fUSDf, bbqUSDT, etc.)
+            SELECT
+                vp.pool_id,
+                vp.underlying_tokens,
+                at_mint.token_symbol as receipt_token,
+                at_mint.timestamp,
+                CASE
+                    -- Minted tokens received by warm wallet
+                    WHEN LOWER(at_mint.to_address) = LOWER(:warm_wallet_address)
+                    THEN at_mint.value / (10 ^ at_mint.token_decimals)
+                    -- Burned tokens from warm wallet
+                    WHEN LOWER(at_mint.from_address) = LOWER(:warm_wallet_address)
+                         AND LOWER(at_mint.to_address) = '0x0000000000000000000000000000000000000000'
+                    THEN -at_mint.value / (10 ^ at_mint.token_decimals)
+                    ELSE 0
+                END as flow_amount
+            FROM account_transactions at_mint
+            JOIN valid_pools vp ON (
+                -- Match by token address = pool address (Morpho vaults)
+                LOWER(at_mint.token_address) = LOWER(vp.pool_address)
+            )
+            WHERE (
+                -- Minting (from zero address)
+                LOWER(at_mint.from_address) = '0x0000000000000000000000000000000000000000'
+                -- Or burning (to zero address)
+                OR LOWER(at_mint.to_address) = '0x0000000000000000000000000000000000000000'
+            )
+              AND at_mint.token_symbol IS NOT NULL
+              AND at_mint.value > 0
+        ),
+        all_flows AS (
+            SELECT pool_id, underlying_tokens, receipt_token, timestamp, flow_amount
+            FROM receipt_token_flows
+            WHERE flow_amount != 0
+            UNION ALL
+            SELECT pool_id, underlying_tokens, receipt_token, timestamp, flow_amount
+            FROM minted_token_flows
+            WHERE flow_amount != 0
         ),
         final_balances AS (
-            -- Calculate final balance for each pool/token combination
+            -- Calculate final balance for each pool
+            -- Use the first underlying token as the token symbol for reporting
             SELECT
                 pool_id,
-                token_symbol,
+                underlying_tokens[1] as token_symbol,
                 SUM(flow_amount) as final_balance
-            FROM transaction_flows
-            GROUP BY pool_id, token_symbol
+            FROM all_flows
+            GROUP BY pool_id, underlying_tokens
         )
         -- Return only positive balances (0 or negative means no current allocation)
         SELECT
             pool_id,
-            token_symbol,
+            COALESCE(token_symbol, 'UNKNOWN') as token_symbol,
             final_balance
         FROM final_balances
         WHERE final_balance > 0

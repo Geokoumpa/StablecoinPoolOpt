@@ -30,40 +30,50 @@ main:
           shared: [project_id, location]
           branches:
             - fetch_ohlcv:
-                call: run_cloud_run_job
-                args:
-                  project_id: ${project_id}
-                  location: ${location}
-                  step_key: "fetch_ohlcv_coinmarketcap"
-                  step_number: 3
+                steps:
+                  - run_ohlcv_job:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        location: ${location}
+                        step_key: "fetch_ohlcv_coinmarketcap"
+                        step_number: 3
             - fetch_gas:
-                call: run_cloud_run_job
-                args:
-                  project_id: ${project_id}
-                  location: ${location}
-                  step_key: "fetch_gas_ethgastracker"
-                  step_number: 3
+                steps:
+                  - run_gas_job:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        location: ${location}
+                        step_key: "fetch_gas_ethgastracker"
+                        step_number: 3
             - fetch_pools:
-                call: run_cloud_run_job
-                args:
-                  project_id: ${project_id}
-                  location: ${location}
-                  step_key: "fetch_defillama_pools"
-                  step_number: 3
+                steps:
+                  - run_pools_job:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        location: ${location}
+                        step_key: "fetch_defillama_pools"
+                        step_number: 3
             - fetch_transactions:
-                call: run_cloud_run_job
-                args:
-                  project_id: ${project_id}
-                  location: ${location}
-                  step_key: "fetch_account_transactions"
-                  step_number: 3
+                steps:
+                  - run_transactions_job:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        location: ${location}
+                        step_key: "fetch_account_transactions"
+                        step_number: 3
             - fetch_macro:
-                call: run_cloud_run_job
-                args:
-                  project_id: ${project_id}
-                  location: ${location}
-                  step_key: "fetch_macroeconomic_data"
-                  step_number: 3
+                steps:
+                  - run_macro_job:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        location: ${location}
+                        step_key: "fetch_macroeconomic_data"
+                        step_number: 3
 
     # Step 4: Fetch pool addresses (depends on fetch_defillama_pools)
     - run_fetch_pool_addresses:
