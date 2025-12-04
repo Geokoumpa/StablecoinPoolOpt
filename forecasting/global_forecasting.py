@@ -4,13 +4,15 @@ import numpy as np
 from datetime import timedelta
 from typing import List, Dict, Optional, Tuple
 from lightgbm import LGBMRegressor
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error
+from sklearn.preprocessing import LabelEncoder
 from sqlalchemy import text
 from tqdm.auto import tqdm
 
 from database.db_utils import get_db_connection
-from forecasting.panel_data_utils import fetch_panel_history, build_pool_feature_row
+from forecasting.panel_data_utils import fetch_panel_history, build_pool_feature_row, fetch_all_macro_daily, EXOG_BASE, LAG_SETS
 from forecasting.neighbor_features import add_neighbor_features
 from forecasting.model_utils import fit_global_panel_model, make_tvl_oof
 
@@ -20,14 +22,6 @@ logger = logging.getLogger(__name__)
 HIST_DAYS_PANEL = 150
 MIN_ROWS_PANEL = 400
 GROUP_COL = "pool_group"
-EXOG_BASE = ['eth_open', 'btc_open', 'gas_price_gwei', 'tvl_usd', 'apy_7d']
-LAG_SETS = {
-    'eth_open': [7, 30],
-    'btc_open': [7, 30],
-    'gas_price_gwei': [7, 30],
-    'tvl_usd': [7, 30],
-    'apy_7d': [7, 30],
-}
 
 def get_filtered_pool_ids(limit: Optional[int] = None) -> List[str]:
     """
@@ -71,6 +65,7 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
                           pool_ids: List[str], group_col: str = GROUP_COL,
                           hist_days: int = HIST_DAYS_PANEL) -> pd.DataFrame:
     """
+    Enhanced version with macroeconomic data.
     Build training rows with target = next-day actual_apy.
     Only include pools that have >=3 valid actual_apy values by `asof` (cold-start guard).
     """
@@ -79,7 +74,24 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
     engine = get_db_connection()
 
     logger.info(f"Building global panel dataset from {asof_start.date()} to {asof_end.date()}")
-    
+
+    # Load macroeconomic data with lags
+    macro_daily = fetch_all_macro_daily(engine,
+                                        start_date=asof_start - pd.Timedelta(days=hist_days),
+                                        end_date=asof_end)
+
+    if not macro_daily.empty:
+        macro_daily = macro_daily.sort_values("date")
+        macro_cols = [c for c in macro_daily.columns if c != "date"]
+
+        # Example: 1d, 3d, 7d lags for all macro series
+        for lag in [1, 3, 7]:
+            lagged = macro_daily[macro_cols].shift(lag)
+            lagged.columns = [f"{c}_lag{lag}" for c in macro_cols]
+            macro_daily = pd.concat([macro_daily, lagged], axis=1)
+
+        macro_daily = macro_daily.ffill()
+
     for t in tqdm(days, desc="Building panel dataset"):
         t = pd.Timestamp(t)
         t = t.tz_localize('UTC') if t.tz is None else t.tz_convert('UTC')
@@ -87,6 +99,14 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
         panel = fetch_panel_history(t, pool_ids, days=hist_days, group_col=group_col)
         if panel.empty:
             continue
+
+        # Merge with macroeconomic data
+        if not macro_daily.empty:
+            panel = panel.merge(
+                macro_daily,
+                on="date",
+                how="inner"
+            )
 
         panel = add_neighbor_features(panel, group_col=group_col)
 
@@ -96,7 +116,7 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
                 text("""SELECT pool_id, date, actual_apy,actual_tvl
                         FROM pool_daily_metrics
                         WHERE date = :d"""),
-                conn, 
+                conn,
                 params={"d": (t + pd.Timedelta(days=1)).normalize().to_pydatetime()}
             )
         realized['date'] = pd.to_datetime(realized['date'], utc=True).dt.normalize()
@@ -105,7 +125,7 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
 
         for pid in pools_today:
             n_hist = _count_actual_history(panel, pid, t.normalize())
-            
+
             hist_apys = panel.loc[
                 (panel['pool_id'] == pid) &
                 (panel['apy_7d'].notna()) &
@@ -151,34 +171,38 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
             })
             rows.append(feat_row)
 
-    return pd.DataFrame(rows)
+    panel = pd.DataFrame(rows)
+    panel = panel.sort_values(['pool_id', 'asof']).reset_index(drop=True)
+
+    return panel
 
 def train_global_models(train_start: pd.Timestamp, train_end: pd.Timestamp,
                        pool_ids: List[str], group_col: str = GROUP_COL,
                        hist_days: int = HIST_DAYS_PANEL,
-                       use_tvl_stacking: bool = True) -> Tuple[LGBMRegressor, LGBMRegressor, List[str], List[str]]:
+                       use_tvl_stacking: bool = True,
+                       n_trials: int = 30) -> Tuple[RandomForestRegressor, LGBMRegressor, List[str], List[str], LabelEncoder]:
     """
-    Train global LightGBM models for APY and TVL prediction.
-    Returns trained models and feature lists.
+    Train enhanced global models (RandomForest for APY, LightGBM for TVL) for APY and TVL prediction.
+    Returns trained models and feature lists, plus pool_id encoder.
     """
     logger.info(f"Training global models from {train_start.date()} to {train_end.date()}")
-    
+
     # Build panel training dataset
     panel_train = build_global_panel_dataset(
         train_start, train_end, pool_ids, group_col, hist_days
     )
-    
+
     if panel_train.empty:
         raise ValueError("No training data available")
 
     # Train TVL model first (for stacking)
     tvl_model = None
     tvl_feature_cols = None
-    
+
     if use_tvl_stacking:
         logger.info("Training TVL model with stacking approach")
         panel_with_oof, tvl_model, tvl_oof_mae = make_tvl_oof(panel_train, n_splits=5)
-        
+
         # Get TVL feature columns - must exclude all non-feature columns including tvl_hat_t1_oof
         from forecasting.model_utils import _get_feature_cols_for_training
         tvl_feature_cols = _get_feature_cols_for_training(
@@ -187,52 +211,102 @@ def train_global_models(train_start: pd.Timestamp, train_end: pd.Timestamp,
                        'target_apy_t1', 'target_tvl_t1', 'pred_global_apy',
                        'tvl_hat_t1_oof'}
         )
-        
+
         logger.info(f"TVL model trained with OOF MAE: {tvl_oof_mae}")
     else:
         panel_with_oof = panel_train.copy()
 
-    # Train APY model (optionally with TVL stacking)
-    apy_model, apy_feature_cols = fit_global_panel_model(
-        panel_with_oof, target_col='target_apy_t1'
+    # Train APY model (with TVL stacking if available)
+    apy_model, apy_feature_cols, study, le_pool_encoder, _ = fit_global_panel_model(
+        panel_with_oof, target_col='target_apy_t1', n_trials=n_trials
     )
 
-    logger.info(f"APY model trained with {len(apy_feature_cols)} features")
-    
-    return apy_model, tvl_model, apy_feature_cols, tvl_feature_cols
+    logger.info(f"APY RandomForest model trained with {len(apy_feature_cols)} features")
+
+    return apy_model, tvl_model, apy_feature_cols, tvl_feature_cols, le_pool_encoder
 
 def predict_global_lgbm(asof: pd.Timestamp,
-                      pool_ids: List[str], 
-                      apy_model: LGBMRegressor,
+                      pool_ids: List[str],
+                      apy_model: RandomForestRegressor,
                       apy_feature_cols: List[str],
                       group_col: str = GROUP_COL,
                       hist_days: int = HIST_DAYS_PANEL,
                       tvl_model: Optional[LGBMRegressor] = None,
-                      tvl_feature_cols: Optional[List[str]] = None) -> pd.DataFrame:
+                      tvl_feature_cols: Optional[List[str]] = None,
+                      pool_id_encoder: Optional[LabelEncoder] = None,
+                      lag_pad_days: int = 7) -> pd.DataFrame:
     """
+    Enhanced prediction function with RandomForest and macro features.
     Predict next-day APY per pool for `asof + 1`.
     If tvl_model & tvl_feature_cols are provided, first predict TVL and use as feature.
     """
     logger.info(f"Predicting for {asof.date()} with {len(pool_ids)} pools")
-    
+
     asof = pd.Timestamp(asof)
     asof = asof.tz_localize('UTC') if asof.tz is None else asof.tz_convert('UTC')
 
-    panel = fetch_panel_history(asof, pool_ids, days=hist_days, group_col=group_col)
+    # Build historical panel with macro data
+    effective_days = hist_days + lag_pad_days
+    start = (asof - pd.Timedelta(days=effective_days)).normalize()
+    engine = get_db_connection()
+
+    # 1) Raw per-pool history
+    panel = fetch_panel_history(asof, pool_ids, days=effective_days, group_col=group_col)
     if panel.empty:
         logger.warning("No panel data available for prediction")
         return pd.DataFrame()
+
+    panel["date"] = pd.to_datetime(panel["date"], utc=True).dt.normalize()
+
+    # 2) Macro history + lags
+    macro_daily = fetch_all_macro_daily(
+        engine,
+        start_date=start,
+        end_date=asof.normalize()
+    )
+
+    if not macro_daily.empty:
+        macro_daily = macro_daily.sort_values("date")
+        macro_daily["date"] = pd.to_datetime(macro_daily["date"], utc=True).dt.normalize()
+
+        macro_cols = [c for c in macro_daily.columns if c != "date"]
+
+        for lag in [1, 3, 7, 30]:
+            lagged = macro_daily[macro_cols].shift(lag)
+            lagged.columns = [f"{c}_lag{lag}" for c in macro_cols]
+            macro_daily = pd.concat([macro_daily, lagged], axis=1)
+
+        macro_daily = macro_daily.ffill()
+
+        # 3) Merge macros with pool time-series
+        panel = panel.merge(macro_daily, on="date", how="inner")
+
+    # 4) Encode pool_id using SAME encoder as training
+    if pool_id_encoder is not None:
+        known = panel["pool_id"].astype(str).isin(pool_id_encoder.classes_)
+        panel.loc[known, "pool_id_code"] = pool_id_encoder.transform(
+            panel.loc[known, "pool_id"].astype(str)
+        )
+        panel.loc[~known, "pool_id_code"] = -1  # unknown bucket
+        panel["pool_id_code"] = panel["pool_id_code"].astype(int)
+
+    # 5) Trim to last hist_days (drop the lag_pad_days)
+    cutoff_start = (asof - pd.Timedelta(days=hist_days)).normalize()
+    panel = panel.loc[panel["date"] >= cutoff_start].copy()
+
+    # 6) Drop rows with missing actual_apy (needed for feature building)
+    panel.dropna(subset=["actual_apy"], inplace=True)
 
     panel = add_neighbor_features(panel, group_col=group_col)
 
     rows = []
     target_date = asof.normalize() + pd.Timedelta(days=1)
 
-    pools_today = panel.loc[panel['date'] == asof.normalize(), 'pool_id'].unique().tolist()
+    pools_today = panel.loc[panel["date"] == asof.normalize(), "pool_id"].unique().tolist()
 
     for pid in pools_today:
         n_hist = _count_actual_history(panel, pid, asof.normalize())
-        
+
         hist_apys = panel.loc[
             (panel['pool_id'] == pid) &
             (panel['apy_7d'].notna()) &
@@ -248,12 +322,12 @@ def predict_global_lgbm(asof: pd.Timestamp,
         elif n_valid == 2:
             baseline_apy = float(hist_apys.tail(2).mean())
             baseline_tvl = float(panel.loc[
-                (panel['pool_id'] == pid) & 
-                (panel['date'] == asof.normalize()), 
+                (panel['pool_id'] == pid) &
+                (panel['date'] == asof.normalize()),
                 'tvl_usd'
             ].iloc[0]) if len(panel.loc[
-                (panel['pool_id'] == pid) & 
-                (panel['date'] == asof.normalize()), 
+                (panel['pool_id'] == pid) &
+                (panel['date'] == asof.normalize()),
                 'tvl_usd'
             ]) > 0 else np.nan
 
@@ -273,10 +347,18 @@ def predict_global_lgbm(asof: pd.Timestamp,
 
         fr = pd.DataFrame([feat_row])
 
-        # Ensure needed APY features exist
-        missing_apy = [c for c in apy_feature_cols if c not in fr.columns]
-        for m in missing_apy:
-            fr[m] = 0.0
+        # Encode pool_id if needed
+        if pool_id_encoder is not None:
+            if "pool_id_code" not in fr.columns:
+                if str(pid) in pool_id_encoder.classes_:
+                    fr["pool_id_code"] = pool_id_encoder.transform([str(pid)])[0]
+                else:
+                    fr["pool_id_code"] = -1
+
+        # Encode instability_group if present
+        if "instability_group" in fr.columns:
+            instab_map = {"insufficient": -1, "low": 0, "medium": 1, "high": 2}
+            fr["instability_group_code"] = fr["instability_group"].map(instab_map).astype("Int64")
 
         # TVL stacking at inference
         tvl_hat = np.nan
@@ -286,17 +368,41 @@ def predict_global_lgbm(asof: pd.Timestamp,
             for m in missing_tvl:
                 fr[m] = 0.0
 
-            tvl_hat = float(tvl_model.predict(fr[tvl_feature_cols])[0])
-            # Inject TVL prediction as feature for APY model
-            fr['tvl_hat_t1_oof'] = tvl_hat
+            X_tvl = fr[tvl_feature_cols].fillna(0.0)
+            tvl_hat = float(tvl_model.predict(X_tvl)[0])
+            fr["tvl_hat_t1_oof"] = tvl_hat
+
+        # Ensure needed APY features exist
+        for c in apy_feature_cols:
+            if c not in fr.columns:
+                fr[c] = 0.0
+
+        fr_pred = fr[apy_feature_cols].fillna(0.0)
+
+        # Data cleaning: handle infinities and extreme values
+        # Replace infinities with NaN, then fill with 0
+        fr_pred = fr_pred.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        # Clip extreme values to prevent float32 overflow
+        # RandomForest can handle large values but we'll be conservative
+        for col in fr_pred.columns:
+            if fr_pred[col].dtype in [np.float64, np.float32]:
+                # Calculate reasonable bounds using percentiles
+                if fr_pred[col].std() > 0:
+                    mean_val = fr_pred[col].mean()
+                    std_val = fr_pred[col].std()
+                    # Clip to mean ± 10*std to handle outliers
+                    lower_bound = mean_val - 10 * std_val
+                    upper_bound = mean_val + 10 * std_val
+                    fr_pred[col] = fr_pred[col].clip(lower_bound, upper_bound)
+                else:
+                    # If no variation, clip to reasonable range
+                    fr_pred[col] = fr_pred[col].clip(-1e6, 1e6)
+
+        # Convert to float32 compatible range
+        fr_pred = fr_pred.astype(np.float32)
 
         # Predict APY
-        fr_pred = fr[apy_feature_cols].copy()
-        for c in fr_pred.columns:
-            if not np.issubdtype(fr_pred[c].dtype, np.number):
-                fr_pred[c] = pd.to_numeric(fr_pred[c], errors='coerce')
-        fr_pred = fr_pred.fillna(0.0)
-
         yhat_apy = float(apy_model.predict(fr_pred)[0])
 
         rows.append({
@@ -371,43 +477,47 @@ def persist_global_forecasts(predictions_df: pd.DataFrame):
 def train_and_forecast_global(pool_ids: Optional[List[str]] = None,
                             train_days: int = 60,
                             forecast_ahead: int = 1,
-                            use_tvl_stacking: bool = True) -> Dict:
+                            use_tvl_stacking: bool = True,
+                            n_trials: int = 30) -> Dict:
     """
-    Main function to train global models and generate forecasts.
-    Replaces the original per-pool approach with global LightGBM models.
+    Enhanced main function to train global models and generate forecasts.
+    Uses RandomForest with Optuna for APY and LightGBM for TVL.
     """
     if pool_ids is None:
         pool_ids = get_filtered_pool_ids()
-    
+
     if not pool_ids:
         logger.warning("No pool IDs found for forecasting")
         return {}
 
-    logger.info(f"Processing {len(pool_ids)} pools with global LightGBM approach")
-    
+    logger.info(f"Processing {len(pool_ids)} pools with enhanced global modeling approach")
+
     # Set up training window
     end_date = pd.Timestamp.utcnow().normalize() - pd.Timedelta(days=1)  # Yesterday
     start_date = end_date - pd.Timedelta(days=train_days)
-    
+
     try:
-        # Train global models
-        apy_model, tvl_model, apy_features, tvl_features = train_global_models(
-            start_date, end_date, pool_ids, use_tvl_stacking=use_tvl_stacking
+        # Train enhanced global models
+        apy_model, tvl_model, apy_features, tvl_features, pool_id_encoder = train_global_models(
+            start_date, end_date, pool_ids,
+            use_tvl_stacking=use_tvl_stacking,
+            n_trials=n_trials
         )
-        
+
         # Generate forecasts
         predictions_df = predict_global_lgbm(
             end_date, pool_ids, apy_model, apy_features,
-            tvl_model=tvl_model, tvl_feature_cols=tvl_features
+            tvl_model=tvl_model, tvl_feature_cols=tvl_features,
+            pool_id_encoder=pool_id_encoder
         )
-        
+
         # Persist forecasts
         persist_global_forecasts(predictions_df)
-        
+
         # Return summary statistics
         cold_start_count = predictions_df['cold_start_flag'].sum()
         total_count = len(predictions_df)
-        
+
         result = {
             'total_pools': total_count,
             'cold_start_pools': int(cold_start_count),
@@ -416,35 +526,38 @@ def train_and_forecast_global(pool_ids: Optional[List[str]] = None,
             'forecast_ahead_days': forecast_ahead,
             'use_tvl_stacking': use_tvl_stacking,
             'apy_feature_count': len(apy_features),
-            'tvl_feature_count': len(tvl_features) if tvl_features else 0
+            'tvl_feature_count': len(tvl_features) if tvl_features else 0,
+            'optuna_trials': n_trials,
+            'model_type': 'RandomForest + LightGBM with macro features'
         }
-        
-        logger.info(f"Global forecasting completed: {result}")
+
+        logger.info(f"Enhanced global forecasting completed: {result}")
         return result
-        
+
     except Exception as e:
-        logger.error(f"Error in global forecasting: {e}")
+        logger.error(f"Error in enhanced global forecasting: {e}")
         raise
 
 def main():
     """
-    Main entry point for global LightGBM forecasting.
-    Replaces the original per-pool XGBoost approach.
+    Main entry point for enhanced global forecasting.
+    Uses RandomForest with Optuna for APY and LightGBM for TVL with macroeconomic features.
     """
-    logger.info("Starting global LightGBM forecasting for all pools")
-    
+    logger.info("Starting enhanced global forecasting (RandomForest + LightGBM + Macro features)")
+
     try:
         result = train_and_forecast_global(
             pool_ids=None,  # Use all filtered pools
             train_days=60,
             forecast_ahead=1,
-            use_tvl_stacking=True
+            use_tvl_stacking=True,
+            n_trials=30  # Optuna trials for hyperparameter tuning
         )
-        
+
         # Print comprehensive summary
-        logger.info("\n" + "="*60)
-        logger.info("📊 GLOBAL LIGHTGBM FORECASTING SUMMARY")
-        logger.info("="*60)
+        logger.info("\n" + "="*70)
+        logger.info("📊 ENHANCED GLOBAL FORECASTING SUMMARY")
+        logger.info("="*70)
         logger.info(f"Total pools processed: {result['total_pools']}")
         logger.info(f"✅ Model-based forecasts: {result['model_pools']}")
         logger.info(f"🟡 Cold-start baselines: {result['cold_start_pools']}")
@@ -452,10 +565,12 @@ def main():
         logger.info(f"🔧 TVL stacking: {'Enabled' if result['use_tvl_stacking'] else 'Disabled'}")
         logger.info(f"🧠 APY features: {result['apy_feature_count']}")
         logger.info(f"💰 TVL features: {result['tvl_feature_count']}")
-        logger.info("="*60)
-        
+        logger.info(f"⚡ Optuna trials: {result['optuna_trials']}")
+        logger.info(f"🤖 Model type: {result['model_type']}")
+        logger.info("="*70)
+
     except Exception as e:
-        logger.error(f"Fatal error in global forecasting: {e}")
+        logger.error(f"Fatal error in enhanced global forecasting: {e}")
         raise
 
 if __name__ == "__main__":

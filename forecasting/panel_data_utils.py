@@ -8,18 +8,103 @@ from sqlalchemy import text
 from database.db_utils import get_db_connection
 from forecasting.data_preprocessing import preprocess_data, create_lagged_features
 
-# Import constants from global_forecasting to avoid circular import issues
-# These are used in build_pool_feature_row
-EXOG_BASE = ['eth_open', 'btc_open', 'gas_price_gwei', 'tvl_usd', 'apy_7d']
-LAG_SETS = {
-    'eth_open': [7, 30],
-    'btc_open': [7, 30],
-    'gas_price_gwei': [7, 30],
-    'tvl_usd': [7, 30],
-    'apy_7d': [7, 30],
+logger = logging.getLogger(__name__)
+
+# Extended macroeconomic features from notebook
+EXOG_BASE = ['eth_open',
+        'btc_open',
+        'gas_price_gwei',
+        'tvl_usd',
+        'apy_7d',
+        '1-Month Treasury Yield',
+        '1-Year Treasury Bills Yield',
+        '10-Year Treasury Minus 2-Year Treasury Spread',
+        '10-Year Treasury Minus 3-Month Treasury Spread',
+        '10-Year Treasury Yield', '2-Year Treasury Yield',
+        '3-Month Treasury Yield', '30-Year Treasury Yield',
+        '6-Month Treasury Yield',
+        'Credit Suisse NASDAQ Gold FLOWS103 Price Index',
+        'Federal Funds Effective Rate',
+        'ICE BofA US High Yield Index Effective Yield',
+        'M2 Not Seasonally Adjusted', 'M2 Seasonally Adjusted',
+        'Nasdaq 100 Index', 'Nominal Broad U.S. Dollar Index',
+        'Reverse Repo Yield (Overnight Reverse Repurchase Award Rate)',
+        'S&P 500 Index (Daily Close)', 'SOFR 180-Day Average',
+        'SOFR 30-Day Average', 'SOFR 90-Day Average', 'SOFR Index',
+        'Secured Overnight Financing Rate']
+
+LAG_SETS  = {
+    'eth_open':        [7, 30],
+    'btc_open':        [7, 30],
+    'gas_price_gwei':  [7, 30],
+    'tvl_usd':         [7, 30],
+    'apy_7d':          [7, 30],
+    '1-Month Treasury Yield': [7, 30],
+    '1-Year Treasury Bills Yield': [7, 30],
+    '10-Year Treasury Minus 2-Year Treasury Spread': [7, 30],
+    '10-Year Treasury Minus 3-Month Treasury Spread': [7, 30],
+    '10-Year Treasury Yield': [7, 30],
+    '2-Year Treasury Yield': [7, 30],
+    '3-Month Treasury Yield': [7, 30],
+    '30-Year Treasury Yield': [7, 30],
+    '6-Month Treasury Yield': [7, 30],
+    'Credit Suisse NASDAQ Gold FLOWS103 Price Index': [7, 30],
+    'Federal Funds Effective Rate': [7, 30],
+    'ICE BofA US High Yield Index Effective Yield': [7, 30],
+    'M2 Not Seasonally Adjusted': [7, 30],
+    'M2 Seasonally Adjusted': [7, 30],
+    'Nasdaq 100 Index': [7, 30],
+    'Nominal Broad U.S. Dollar Index': [7, 30],
+    'Reverse Repo Yield (Overnight Reverse Repurchase Award Rate)': [7, 30],
+    'S&P 500 Index (Daily Close)': [7, 30],
+    'SOFR 180-Day Average': [7, 30],
+    'SOFR 30-Day Average': [7, 30],
+    'SOFR 90-Day Average': [7, 30],
+    'SOFR Index': [7, 30],
+    'Secured Overnight Financing Rate': [7, 30]
 }
 
-logger = logging.getLogger(__name__)
+def fetch_all_macro_daily(engine, start_date, end_date):
+    """
+    Loads ALL macro series between start_date and end_date,
+    expands monthly to daily, fills missing days, and pivots to wide format.
+    """
+    # 1) Load raw macro data
+    sql = """
+        SELECT series_name, frequency, date, value
+        FROM macroeconomic_data
+        WHERE date BETWEEN :start AND :end
+        ORDER BY date, series_name
+    """
+    df = pd.read_sql(
+        text(sql),
+        engine,
+        params={"start": start_date, "end": end_date}
+    )
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # 2) Normalize dates (remove timezone!)
+    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize('UTC')
+
+    # 3) Create full daily grid
+    all_days = pd.DataFrame({
+        "date": pd.date_range(start_date, end_date, freq="D")
+    })
+
+    # 4) Pivot to wide format
+    pivot = df.pivot(index="date", columns="series_name", values="value")
+
+    # 5) Merge on full daily grid
+    merged = all_days.merge(pivot, on="date", how="left")
+
+    # 6) Forward fill to convert monthly → daily, fill weekends
+    merged = merged.sort_values("date").ffill()
+    merged = merged.sort_values("date").bfill()
+
+    return merged
+
 
 def fetch_panel_history(asof: pd.Timestamp, pool_ids: List[str], days: int = 150,
                         group_col: str = "pool_group") -> pd.DataFrame:
@@ -50,7 +135,7 @@ def fetch_panel_history(asof: pd.Timestamp, pool_ids: List[str], days: int = 150
           AND date <= :asof_date
         ORDER BY date ASC
     """
-    
+
     with engine.connect() as conn:
         df = pd.read_sql(
             text(q), conn,
@@ -60,7 +145,7 @@ def fetch_panel_history(asof: pd.Timestamp, pool_ids: List[str], days: int = 150
                 "asof_date": t.tz_convert('UTC').to_pydatetime()
             }
         )
-    
+
     if df.empty:
         return df
 
