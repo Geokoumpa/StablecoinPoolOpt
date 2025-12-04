@@ -181,7 +181,7 @@ def train_global_models(train_start: pd.Timestamp, train_end: pd.Timestamp,
                        pool_ids: List[str], group_col: str = GROUP_COL,
                        hist_days: int = HIST_DAYS_PANEL,
                        use_tvl_stacking: bool = True,
-                       n_trials: int = 30) -> Tuple["RandomForestRegressor", "LGBMRegressor", List[str], List[str], "LabelEncoder"]:
+                       n_trials: int = 5) -> Tuple["RandomForestRegressor", "LGBMRegressor", List[str], List[str], "LabelEncoder"]:
     """
     Train enhanced global models (RandomForest for APY, LightGBM for TVL) for APY and TVL prediction.
     Returns trained models and feature lists, plus pool_id encoder.
