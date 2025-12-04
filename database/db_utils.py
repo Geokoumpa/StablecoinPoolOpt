@@ -11,9 +11,23 @@ logger = logging.getLogger(__name__)
 # Memoization cache for database engines
 _engine_cache = {}
 
+# Connection pool settings optimized for Cloud SQL db-custom-2-4096 (~100 max connections)
+# With parallel execution of up to 5 jobs:
+# 5 jobs × 5 pool_size = 25 persistent connections
+# 5 jobs × 10 max_overflow = 50 additional burst connections
+# Total worst case: 75 connections (well within db-custom-2-4096 limits)
+POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+
 def get_db_connection(dbname=DB_NAME):
     """
     Establishes and retrieves a database engine, caching the engine for reuse.
+    
+    Pool settings are optimized for parallel job execution on Cloud SQL db-g1-small:
+    - pool_size: Number of persistent connections (default: 3)
+    - max_overflow: Additional temporary connections allowed (default: 5)
+    
+    These can be overridden via DB_POOL_SIZE and DB_MAX_OVERFLOW env vars.
     """
     if dbname in _engine_cache:
         logger.debug(f"Using cached connection for database: {dbname}")
@@ -31,14 +45,16 @@ def get_db_connection(dbname=DB_NAME):
 
     connection_string = f'postgresql+psycopg2://{DB_USER}:***@{DB_HOST}:{DB_PORT}/{dbname}'
     logger.info(f"🔄 Establishing new database connection to {dbname} at {DB_HOST}:{DB_PORT}")
+    logger.info(f"   Pool settings: pool_size={POOL_SIZE}, max_overflow={MAX_OVERFLOW}")
     
     try:
         engine = create_engine(
             f'postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{dbname}',
             pool_pre_ping=True,
             pool_recycle=3600,
-            pool_size=10,
-            max_overflow=20,
+            pool_size=POOL_SIZE,
+            max_overflow=MAX_OVERFLOW,
+            pool_timeout=60,  # Wait up to 60 seconds for a connection from the pool
             # Add connection timeout and retry logic
             connect_args={
                 "connect_timeout": 30,

@@ -18,9 +18,9 @@ variable "database_version" {
 }
 
 variable "instance_tier" {
-  description = "The machine type for the Cloud SQL instance."
+  description = "The machine type for the Cloud SQL instance. db-custom-2-4096 provides 2 vCPU, 4GB RAM, ~100 max connections."
   type        = string
-  default     = "db-g1-small"
+  default     = "db-custom-2-4096"
 }
 
 variable "disk_size" {

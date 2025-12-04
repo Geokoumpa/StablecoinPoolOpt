@@ -4,94 +4,192 @@ main:
         assign:
           - project_id: ${sys.get_env("PROJECT_ID")}
           - location: ${sys.get_env("REGION")}
-          # The list of steps matches the keys in cloud_run.tf
-          - steps_list:
-              - "apply_migrations"
-              - "create_allocation_snapshots"
-              - "fetch_ohlcv_coinmarketcap"
-              - "fetch_gas_ethgastracker"
-              - "fetch_defillama_pools"
-              - "fetch_defillama_pool_addresses"
-              - "fetch_account_transactions"
-              - "fetch_macroeconomic_data"
-              - "filter_pools_pre"
-              - "fetch_filtered_pool_histories"
-              - "calculate_pool_metrics"
-              - "apply_pool_grouping"
-              - "process_icebox_logic"
-              - "update_allocation_snapshots"
-              - "forecast_pools"
-              - "forecast_gas_fees"
-              - "filter_pools_final"
-              - "process_account_transactions" # Note: order matters if there are dependencies
-              - "manage_ledger"
-              - "optimize_allocations"
-              - "post_slack_notification"
 
-    - run_pipeline_steps:
-        for:
-          value: step_key
-          index: step_index
-          in: ${steps_list}
-          steps:
-            - construct_job_name:
-                assign:
-                  # Replicate Terraform's naming logic: "pipeline-step-" + step_key (with _ replaced by -)
-                  - job_name: ${"pipeline-step-" + text.replace_all(step_key, "_", "-")}
-            
-            - log_current_step:
-                call: sys.log
+    # Step 1: Apply migrations (must run first)
+    - run_apply_migrations:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "apply_migrations"
+          step_number: 1
+
+    # Step 2: Create allocation snapshots (must run after migrations)
+    - run_create_allocation_snapshots:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "create_allocation_snapshots"
+          step_number: 2
+
+    # Step 3: Parallel data ingestion (independent steps)
+    # These steps have no interdependencies and can run in parallel
+    - parallel_data_ingestion:
+        parallel:
+          shared: [project_id, location]
+          branches:
+            - fetch_ohlcv:
+                call: run_cloud_run_job
                 args:
-                  data: '${"=== Starting step " + string(step_index + 1) + " -> " + job_name + " ==="}'
-
-            - log_job_details:
-                call: sys.log
+                  project_id: ${project_id}
+                  location: ${location}
+                  step_key: "fetch_ohlcv_coinmarketcap"
+                  step_number: 3
+            - fetch_gas:
+                call: run_cloud_run_job
                 args:
-                  data: '${"Running job: " + job_name + " in project " + project_id + ", location " + location}'
-
-            - run_job:
-                try:
-                  call: googleapis.run.v1.namespaces.jobs.run
-                  args:
-                    # Construct the full resource name dynamically
-                    name: ${"namespaces/" + project_id + "/jobs/" + job_name}
-                    location: ${location}
-                    body: {}
-                    connector_params:
-                      timeout: 3600  # Increased from default 1800 to 3600 seconds (1 hour)
-                  result: job_execution
-                except:
-                  as: e
-                  steps:
-                    - log_run_error:
-                        call: sys.log
-                        args:
-                          data: '${"Error starting job -> " + text.decode(json.encode(e))}'
-                    - fail_with_details:
-                        raise: '${"Failed to start job " + job_name + " at step " + string(step_index + 1) + ": " + text.decode(json.encode(e))}'
-
-            - log_job_execution_details:
-                call: sys.log
+                  project_id: ${project_id}
+                  location: ${location}
+                  step_key: "fetch_gas_ethgastracker"
+                  step_number: 3
+            - fetch_pools:
+                call: run_cloud_run_job
                 args:
-                  data: '${"Job execution started -> " + job_execution.metadata.name}'
+                  project_id: ${project_id}
+                  location: ${location}
+                  step_key: "fetch_defillama_pools"
+                  step_number: 3
+            - fetch_transactions:
+                call: run_cloud_run_job
+                args:
+                  project_id: ${project_id}
+                  location: ${location}
+                  step_key: "fetch_account_transactions"
+                  step_number: 3
+            - fetch_macro:
+                call: run_cloud_run_job
+                args:
+                  project_id: ${project_id}
+                  location: ${location}
+                  step_key: "fetch_macroeconomic_data"
+                  step_number: 3
 
-            - check_job_success:
-                switch:
-                  - condition: ${job_execution.status.succeededCount == 1}
-                    steps:
-                      - log_success:
-                          call: sys.log
-                          args:
-                            data: '${"✓ Step " + string(step_index + 1) + " completed successfully"}'
-                  - condition: true
-                    steps:
-                      - log_failure:
-                          call: sys.log
-                          args:
-                            data: '${"✗ Step " + string(step_index + 1) + " failed. Status: " + json.encode(job_execution.status)}'
-                      - fail_pipeline:
-                          raise: '${"Pipeline failed at step " + string(step_index + 1) + ". Check logs for details."}'
-        next: final_step
+    # Step 4: Fetch pool addresses (depends on fetch_defillama_pools)
+    - run_fetch_pool_addresses:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "fetch_defillama_pool_addresses"
+          step_number: 4
+
+    # Step 5: Pre-filtering
+    - run_filter_pools_pre:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "filter_pools_pre"
+          step_number: 5
+
+    # Step 6: Fetch filtered pool histories
+    - run_fetch_filtered_pool_histories:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "fetch_filtered_pool_histories"
+          step_number: 6
+
+    # Step 7: Calculate pool metrics
+    - run_calculate_pool_metrics:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "calculate_pool_metrics"
+          step_number: 7
+
+    # Step 8: Apply pool grouping
+    - run_apply_pool_grouping:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "apply_pool_grouping"
+          step_number: 8
+
+    # Step 9: Process icebox logic
+    - run_process_icebox_logic:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "process_icebox_logic"
+          step_number: 9
+
+    # Step 10: Update allocation snapshots
+    - run_update_allocation_snapshots:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "update_allocation_snapshots"
+          step_number: 10
+
+    # Step 11: Forecast pools
+    - run_forecast_pools:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "forecast_pools"
+          step_number: 11
+
+    # Step 12: Forecast gas fees
+    - run_forecast_gas_fees:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "forecast_gas_fees"
+          step_number: 12
+
+    # Step 13: Filter pools final
+    - run_filter_pools_final:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "filter_pools_final"
+          step_number: 13
+
+    # Step 14: Process account transactions
+    - run_process_account_transactions:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "process_account_transactions"
+          step_number: 14
+
+    # Step 15: Manage ledger
+    - run_manage_ledger:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "manage_ledger"
+          step_number: 15
+
+    # Step 16: Optimize allocations
+    - run_optimize_allocations:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "optimize_allocations"
+          step_number: 16
+
+    # Step 17: Post Slack notification
+    - run_post_slack_notification:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          location: ${location}
+          step_key: "post_slack_notification"
+          step_number: 17
 
     - final_step:
         call: sys.log
@@ -101,3 +199,66 @@ main:
 
     - complete:
         return: "Workflow completed successfully"
+
+# Subworkflow to run a Cloud Run job
+run_cloud_run_job:
+  params: [project_id, location, step_key, step_number]
+  steps:
+    - construct_job_name:
+        assign:
+          - job_name: ${"pipeline-step-" + text.replace_all(step_key, "_", "-")}
+
+    - log_current_step:
+        call: sys.log
+        args:
+          data: '${"=== Starting step " + string(step_number) + " -> " + job_name + " ==="}'
+
+    - log_job_details:
+        call: sys.log
+        args:
+          data: '${"Running job: " + job_name + " in project " + project_id + ", location " + location}'
+
+    - run_job:
+        try:
+          call: googleapis.run.v1.namespaces.jobs.run
+          args:
+            name: ${"namespaces/" + project_id + "/jobs/" + job_name}
+            location: ${location}
+            body: {}
+            connector_params:
+              timeout: 3600
+          result: job_execution
+        except:
+          as: e
+          steps:
+            - log_run_error:
+                call: sys.log
+                args:
+                  data: '${"Error starting job -> " + text.decode(json.encode(e))}'
+            - fail_with_details:
+                raise: '${"Failed to start job " + job_name + " at step " + string(step_number) + ": " + text.decode(json.encode(e))}'
+
+    - log_job_execution_details:
+        call: sys.log
+        args:
+          data: '${"Job execution started -> " + job_execution.metadata.name}'
+
+    - check_job_success:
+        switch:
+          - condition: ${job_execution.status.succeededCount == 1}
+            steps:
+              - log_success:
+                  call: sys.log
+                  args:
+                    data: '${"✓ Step " + string(step_number) + " (" + step_key + ") completed successfully"}'
+          - condition: true
+            steps:
+              - log_failure:
+                  call: sys.log
+                  args:
+                    data: '${"✗ Step " + string(step_number) + " (" + step_key + ") failed. Status: " + json.encode(job_execution.status)}'
+              - fail_pipeline:
+                  raise: '${"Pipeline failed at step " + string(step_number) + " (" + step_key + "). Check logs for details."}'
+
+    - return_result:
+        return: ${job_execution}

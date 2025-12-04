@@ -1,13 +1,11 @@
 import pandas as pd
 from datetime import timedelta
-from skforecast.recursive import ForecasterRecursive
-from skforecast.model_selection import bayesian_search_forecaster, TimeSeriesFold
-from xgboost import XGBRegressor
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 from database.db_utils import get_db_connection
 from forecasting.data_preprocessing import preprocess_data
-from optuna.distributions import IntDistribution, FloatDistribution
+
+# Lazy imports for heavy ML libraries - imported inside functions to reduce cold start time
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +88,10 @@ def train_and_forecast_gas_fees() -> dict:
     """
     Trains a forecasting model for gas fees and generates single-step ahead forecast.
     """
+    # Lazy imports for heavy ML libraries
+    from skforecast.recursive import ForecasterRecursive
+    from xgboost import XGBRegressor
+    
     logger.info("Processing gas fee forecasts...")
 
     # Fetch daily data including ETH and BTC prices

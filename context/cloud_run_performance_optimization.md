@@ -1,188 +1,94 @@
-# Cloud Run Performance Optimization Plan
+# Cloud Run Performance Optimization Investigation
 
 ## Overview
-This plan addresses performance bottlenecks in our DeFi pipeline Cloud Run jobs, focusing on reducing cold start times (currently 8-15s), optimizing resource allocation, and improving overall execution performance.
+This document details the investigation into significant performance discrepancies between local pipeline runs (fast) and GCP Production pipeline runs (slow). The investigation identified six key bottlenecks primarily related to Cloud Run architecture and configuration.
 
-## Current State Assessment
-- **Cold Start Time**: 8-15 seconds
-- **Primary Bottlenecks**: Large container image (1GB+), heavy Python imports, Playwright dependencies
-- **Current Resource Allocation**: 1 CPU, 2Gi memory (uniform across jobs)
-- **Network Architecture**: VPC connector for Cloud SQL access
-
-## Performance Analysis
-
-### Resource Allocation Assessment
-Current uniform allocation (1 CPU, 2Gi) is inefficient for diverse workloads:
-
-| Job Category | Examples | Current Allocation | Recommended Allocation | Issue |
-|---------------|-------------|-------------------|-------------------|--------|
-| API Data Fetchers | fetch_ohlcv, fetch_gas | 1 CPU, 2Gi | 1 CPU, 1Gi | Over-provisioned (Memory) |
-| Simple Processing | filter_pools_pre | 1 CPU, 2Gi | 1 CPU, 2Gi | Appropriate |
-| Heavy Processing | calculate_pool_metrics | 1 CPU, 2Gi | 2 CPU, 4Gi | Under-provisioned |
-| ML/Forecasting | forecast_pools, optimize_allocations | 1 CPU, 2Gi | 2 CPU, 4Gi | Under-provisioned |
-| Database Ops | apply_migrations, manage_ledger | 1 CPU, 2Gi | 1 CPU, 1Gi | Over-provisioned (Memory) |
-| Browser Ops | fetch_defillama_pool_addresses | 2 CPU, 4Gi | 2 CPU, 4Gi | Appropriate |
-
-**Note:** Cloud Run Jobs require a minimum of 1 CPU. The initial plan's recommendation for 0.5 CPU has been updated to 1 CPU with reduced memory for "over-provisioned" jobs.
-
-## Optimization Strategy
-
-### Phase 1: Quick Wins (1-2 days implementation)
-
-#### 1.1 Enable CPU Boost for Startup
-- **Status: Not Applicable**
-- **Finding:** The `startup_cpu_boost` feature is only available for Cloud Run Services and Functions, not for Cloud Run Jobs. This optimization cannot be applied to the current pipeline architecture.
-
-#### 1.2 Implement Lazy Import Pattern
-- Refactor Python scripts to import heavy libraries only when needed
-- Move imports like `xgboost`, `lightgbm`, `playwright` inside functions
-- Expected impact: 2-3 seconds faster script initialization
-
-#### 1.3 Right-Size Resources by Job Type
-- **Status: Completed**
-- **Action:** Implemented job-specific resource profiles in Terraform (`terraform/cloud_run.tf`).
-- **Details:**
-    - A `locals` map (`job_profiles`) was created to define specific CPU and memory for each job.
-    - The `google_cloud_run_v2_job` resource now dynamically assigns resources using a `lookup` function.
-- **Expected impact: 30-40% cost reduction, 50% performance improvement for ML jobs
-
-### Phase 2: Container Architecture Improvements (1 week implementation)
-
-#### 2.1 Split Container Images by Function
-Create specialized images for different job types:
-- **Web Scraping Image**: Playwright + browser dependencies
-- **Data Science Image**: ML libraries (xgboost, lightgbm, etc.)
-- **Lightweight Image**: Simple data processing jobs
-- **Database Image**: Minimal dependencies for SQL operations
-
-Expected impact: 40-50% reduction in image size for non-browser jobs
-
-#### 2.2 Implement Multi-Stage Docker Builds
-- Separate build environment from runtime environment
-- Remove build-time dependencies from final image
-- Optimize layer caching for faster builds
-
-#### 2.3 Optimize Base Image Strategy
-- Evaluate `python:3.11-slim` for performance improvements
-- Consider distroless images for security and size reduction
-- Benchmark different base images for startup performance
-
-### Phase 3: Advanced Optimizations (2-3 weeks implementation)
-
-#### 3.1 Dynamic Resource Allocation Framework
-Implement Terraform module for job-specific resources:
-
-```hcl
-# Job resource profiles (already implemented in Phase 1.3)
-locals {
-  job_profiles = {
-    "fetch_ohlcv_coinmarketcap"    = { cpu = "1", memory = "1Gi" }
-    "fetch_defillama_pools"        = { cpu = "1", memory = "2Gi" }
-    "calculate_pool_metrics"        = { cpu = "2", memory = "4Gi" }
-    "forecast_pools"               = { cpu = "2", memory = "4Gi" }
-    "fetch_defillama_pool_addresses" = { cpu = "2", memory = "4Gi" }
-    "apply_migrations"              = { cpu = "1", memory = "1Gi" }
-    # ... other jobs
-  }
-}
-```
-
-#### 3.2 Container Reuse Strategy
-- For frequently run jobs, consider `min_instance_count = 1`
-- Implement container warming for critical path jobs
-- Cost-benefit analysis of always-on instances
-
-#### 3.3 Optimize VPC Connector Configuration
-- Review and tune VPC connector throughput settings
-- Consider direct internet egress for non-sensitive operations
-- Implement connection pooling at the network level
-
-### Phase 4: Monitoring and Continuous Optimization
-
-#### 4.1 Performance Monitoring Setup
-- Implement detailed startup time tracking
-- Set up alerts for performance degradation
-- Create performance dashboards
-- Monitor resource utilization by job type
-
-#### 4.2 A/B Testing Framework
-- Implement gradual rollout of optimizations
-- Measure impact of each optimization
-- Establish performance baselines
-
-## Implementation Priority Matrix
-
-| Optimization | Startup Impact | Performance Impact | Cost Impact | Effort | Priority | Status |
-|--------------|------------------|-------------------|---------------|----------|----------|--------|
-| CPU Boost | N/A | N/A | N/A | Low | 1 | Not Applicable |
-| Resource Right-Sizing | Low | High | High | Low | 2 | Completed |
-| Lazy Imports | Medium | Medium | Low | Low | 3 | Pending |
-| Image Splitting | High | Medium | Medium | Medium | 4 | Pending |
-| Dynamic Allocation | Low | High | High | Medium | 5 | Pending |
-
-## Expected Outcomes
-
-### Performance Improvements
-- **Cold Start Time**: 8-15s → 6-12s (20% improvement, limited by lack of CPU boost)
-- **ML Job Performance**: 50-60% faster execution
-- **Data Processing**: 20-30% faster completion
-- **Overall Pipeline**: 25-35% reduction in total execution time
-
-### Cost Optimization
-- **Compute Costs**: 30-40% reduction through right-sizing
-- **Storage Costs**: 20% reduction through smaller images
-- **Network Costs**: 10-15% reduction through optimized VPC usage
-
-### Resource Efficiency
-- **CPU Utilization**: 40-60% improvement
-- **Memory Utilization**: 50-70% improvement
-- **Job Success Rate**: Improved through better resource matching
-
-## Risk Assessment
-
-| Risk Category | Low Risk | Medium Risk | High Risk |
-|---------------|------------|--------------|------------|
-| Quick Wins | Lazy imports, basic monitoring | Resource right-sizing | |
-| Architecture | | Image splitting, multi-stage builds | Major architectural changes |
-| Advanced | | | Container reuse, dynamic allocation |
-
-## Success Metrics
-1. **Startup Performance**
-   - Average cold start time < 12 seconds (adjusted from 6s)
-   - 95th percentile cold start time < 15 seconds
-
-2. **Execution Performance**
-   - ML job completion time reduced by 50%
-   - Overall pipeline time reduced by 25%
-
-3. **Cost Efficiency**
-   - Compute cost per job reduced by 30%
-   - No increase in job failure rate
-
-4. **Resource Utilization**
-   - Average CPU utilization > 60%
-   - Average memory utilization > 70%
-
-## Implementation Timeline
+## Performance Analysis Summary
 
 ```mermaid
-gantt
-    title Cloud Run Optimization Timeline
-    dateFormat  YYYY-MM-DD
-    section Phase 1
-    Quick Wins           :done, phase1a, 2024-01-01, 2d
-    Resource Right-Sizing   :done, phase1b, 2024-01-03, 1d
+flowchart TB
+    subgraph "Local Execution"
+        L1[main_pipeline.py] --> L2[subprocess.run per script]
+        L2 --> L3[Shared Python environment]
+        L3 --> L4[Local DB connection]
+        L4 --> L5[Single process flow]
+    end
     
-    section Phase 2
-    Container Architecture  :active, phase2, 2024-01-05, 5d
-    Image Splitting       :phase2, 2024-01-05, 3d
-    Multi-Stage Builds    :phase2, 2024-01-08, 2d
+    subgraph "Production Execution (GCP)"
+        P1[Cloud Scheduler] --> P2[GCP Workflows]
+        P2 --> P3[21 Cloud Run Jobs<br/>Sequential Execution]
+        P3 --> P4[Container Cold Start<br/>8-15s per job]
+        P4 --> P5[VPC Network Setup]
+        P5 --> P6[DB Connection via<br/>Private IP]
+        P6 --> P7[Container Teardown]
+    end
     
-    section Phase 3
-    Advanced Optimizations :phase3, 2024-01-10, 10d
-    Dynamic Allocation    :phase3, 2024-01-10, 5d
-    Container Reuse      :phase3, 2024-01-15, 3d
-    
-    section Phase 4
-    Monitoring Setup      :phase4, 2024-01-20, 3d
-    A/B Testing         :phase4, 2024-01-23, 5d
+    style P4 fill:#ff6b6b,stroke:#333
+    style P5 fill:#ff6b6b,stroke:#333
+```
+
+## Key Performance Bottlenecks Identified
+
+### 1. Container Cold Start Overhead (MAJOR)
+Each of the **21 Cloud Run Jobs** incurs a cold start penalty of **8-15 seconds**. With strictly sequential execution in `workflow.yaml`, this creates substantial overhead that doesn't exist locally where the Python environment is reused.
+
+- **Minimum overhead**: 21 jobs × 8s = **168 seconds (2.8 minutes)**
+- **Maximum overhead**: 21 jobs × 15s = **315 seconds (5.25 minutes)**
+
+### 2. Sequential Workflow Execution
+The current `workflow.yaml` executes all 21 steps strictly sequentially, even though Phase 1 data ingestion steps (e.g., fetching OHLCV, Gas data, Pool info) are independent and could run in parallel.
+
+### 3. Heavy ML Image Sizes
+The `defi-pipeline-ml-science` image used for forecasting and optimization jobs is heavy (~1.8GB) due to libraries like pandas, numpy, scikit-learn, xgboost, lightgbm, cvxpy, and ortools. Larger images lead to longer pull times and increased cold start latency.
+
+### 4. Database Connection Setup Per Job
+Each job establishes a new database connection with:
+- 30-second connection timeout
+- Up to 3 retries with 2-second delays
+- No shared connection pooling across jobs (each job is a fresh process)
+
+### 5. VPC Network Egress Setup
+Each Cloud Run job must establish VPC connectivity (`vpc_access` with `PRIVATE_RANGES_ONLY`) to communicate with Cloud SQL, adding setup time to every job execution.
+
+### 6. Small Database Instance
+The production database is running on the `db-g1-small` tier, which provides limited CPU/memory resources, potentially acting as a bottleneck for query execution and handling concurrent connections during pipeline runs.
+
+## Recommendations
+
+### High Impact (Immediate Quick Wins)
+
+#### 1. Implement Parallel Execution for Independent Steps
+Modify `workflow.yaml` to run independent Phase 1 data ingestion steps in parallel using GCP Workflows' `parallel` branches.
+- **Expected Impact**: 40-60% reduction in Phase 1 execution time.
+
+#### 2. Upgrade Database Instance Tier
+Upgrade from `db-g1-small` to at least `db-custom-2-4096` (2 vCPU, 4GB RAM) to improve query performance and connection handling.
+- **Expected Impact**: Faster query execution and better stability.
+
+#### 3. Implement Lazy Import Pattern
+Refactor Python scripts, especially ML-heavy ones, to import large libraries (lightgbm, xgboost, cvxpy) only inside the functions where they are needed, rather than at the top level.
+- **Expected Impact**: 2-3 seconds faster startup per job.
+
+### Medium Impact (Near-term)
+
+#### 4. Consolidate Jobs
+Group related steps into fewer Cloud Run jobs (e.g., one job for all data ingestion, one for data processing) to drastically reduce the number of cold starts.
+- **Goal**: Reduce from 21 jobs to ~8-10 jobs.
+- **Expected Impact**: Reduce cold start overhead from ~5 minutes to ~1.5 minutes.
+
+#### 5. Pre-warm Critical Containers
+Configure a Cloud Scheduler job to trigger a "warmup" (e.g., a lightweight health check) on critical ML containers 5 minutes before the main pipeline runs.
+
+#### 6. Database Connection Pooling
+Deploy a **PgBouncer** sidecar or service to manage connection pooling, reducing the overhead of establishing new connections for every job.
+
+### Lower Impact / Long-term
+
+#### 7. Migrate to Dataproc Serverless for Heavy Processing
+As outlined in the SynapseML plan, migrate `calculate_pool_metrics` and `forecast_pools` to Spark on Dataproc Serverless for distributed processing.
+
+#### 8. Cloud Run Services for Persistent Containers
+Switch frequently used or heavy jobs to Cloud Run Services with `min_instances=1` to keep containers alive, eliminating cold starts at the cost of continuous billing.
+
+## Expected Total Savings
+Implementing these recommendations (especially parallelization and job consolidation) is expected to save **11-19 minutes** of total pipeline execution time.

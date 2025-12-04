@@ -2,12 +2,7 @@ import logging
 import pandas as pd
 import numpy as np
 from datetime import timedelta
-from typing import List, Dict, Optional, Tuple
-from lightgbm import LGBMRegressor
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_absolute_error
-from sklearn.preprocessing import LabelEncoder
+from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 from sqlalchemy import text
 from tqdm.auto import tqdm
 
@@ -15,6 +10,12 @@ from database.db_utils import get_db_connection
 from forecasting.panel_data_utils import fetch_panel_history, build_pool_feature_row, fetch_all_macro_daily, EXOG_BASE, LAG_SETS
 from forecasting.neighbor_features import add_neighbor_features
 from forecasting.model_utils import fit_global_panel_model, make_tvl_oof
+
+# Type hints for lazy-loaded modules (for IDE support without runtime import)
+if TYPE_CHECKING:
+    from lightgbm import LGBMRegressor
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.preprocessing import LabelEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ def train_global_models(train_start: pd.Timestamp, train_end: pd.Timestamp,
                        pool_ids: List[str], group_col: str = GROUP_COL,
                        hist_days: int = HIST_DAYS_PANEL,
                        use_tvl_stacking: bool = True,
-                       n_trials: int = 30) -> Tuple[RandomForestRegressor, LGBMRegressor, List[str], List[str], LabelEncoder]:
+                       n_trials: int = 30) -> Tuple["RandomForestRegressor", "LGBMRegressor", List[str], List[str], "LabelEncoder"]:
     """
     Train enhanced global models (RandomForest for APY, LightGBM for TVL) for APY and TVL prediction.
     Returns trained models and feature lists, plus pool_id encoder.
@@ -227,13 +228,13 @@ def train_global_models(train_start: pd.Timestamp, train_end: pd.Timestamp,
 
 def predict_global_lgbm(asof: pd.Timestamp,
                       pool_ids: List[str],
-                      apy_model: RandomForestRegressor,
+                      apy_model: "RandomForestRegressor",
                       apy_feature_cols: List[str],
                       group_col: str = GROUP_COL,
                       hist_days: int = HIST_DAYS_PANEL,
-                      tvl_model: Optional[LGBMRegressor] = None,
+                      tvl_model: Optional["LGBMRegressor"] = None,
                       tvl_feature_cols: Optional[List[str]] = None,
-                      pool_id_encoder: Optional[LabelEncoder] = None,
+                      pool_id_encoder: Optional["LabelEncoder"] = None,
                       lag_pad_days: int = 7) -> pd.DataFrame:
     """
     Enhanced prediction function with RandomForest and macro features.

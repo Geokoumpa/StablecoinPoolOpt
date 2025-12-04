@@ -1,14 +1,16 @@
 import logging
 import pandas as pd
 import numpy as np
-from typing import List, Tuple, Optional
-from lightgbm import LGBMRegressor
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_absolute_error
-from sklearn.preprocessing import LabelEncoder
+from typing import List, Tuple, Optional, TYPE_CHECKING
 from tqdm.auto import tqdm
-import optuna
+
+# Lazy imports for heavy ML libraries - imported inside functions to reduce cold start time
+# Type hints for lazy-loaded modules (for IDE support without runtime import)
+if TYPE_CHECKING:
+    from lightgbm import LGBMRegressor
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.preprocessing import LabelEncoder
+    import optuna
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,11 @@ def tune_apy_params_with_optuna(train_df: pd.DataFrame,
     """
     Returns best RandomForest params found by Optuna (minimizing blocked-CV MAE).
     """
+    # Lazy imports for heavy ML libraries
+    import optuna
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_absolute_error
+    
     # Time-based train/valid split
     df = train_df.sort_values('asof').reset_index(drop=True).copy()
     n = len(df)
@@ -132,7 +139,7 @@ def fit_global_panel_model(panel_df: pd.DataFrame,
                         target_col: str = 'target_apy_t1',
                         n_trials: int = 30,
                         val_frac: float = 0.3,
-                        random_state: int = 123) -> Tuple[RandomForestRegressor, List[str], optuna.Study, LabelEncoder, pd.DataFrame]:
+                        random_state: int = 123) -> Tuple["RandomForestRegressor", List[str], "optuna.Study", "LabelEncoder", pd.DataFrame]:
     """
     Fit RandomForest global model with Optuna tuning to predict target_col.
     Enhanced version based on notebook implementation.
@@ -144,6 +151,12 @@ def fit_global_panel_model(panel_df: pd.DataFrame,
       - le_pool_encoder: LabelEncoder for pool_id
       - df: processed dataframe with encodings
     """
+    # Lazy imports for heavy ML libraries
+    import optuna
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_absolute_error
+    from sklearn.preprocessing import LabelEncoder
+    
     df = panel_df.copy()
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=[target_col])
@@ -269,7 +282,7 @@ def fit_global_panel_model(panel_df: pd.DataFrame,
 
     return best_model, feat_cols, study, le_pool_encoder, df
 
-def make_tvl_oof(panel_df: pd.DataFrame, n_splits: int = 5) -> Tuple[pd.DataFrame, LGBMRegressor, float]:
+def make_tvl_oof(panel_df: pd.DataFrame, n_splits: int = 5) -> Tuple[pd.DataFrame, "LGBMRegressor", float]:
     """
     Create leakage-free OOF predictions for target_tvl_t1 using time-ordered blocked CV.
     Returns:
@@ -277,6 +290,10 @@ def make_tvl_oof(panel_df: pd.DataFrame, n_splits: int = 5) -> Tuple[pd.DataFram
       - fitted TVL model
       - OOF MAE score
     """
+    # Lazy imports for heavy ML libraries
+    from lightgbm import LGBMRegressor
+    from sklearn.metrics import mean_absolute_error
+    
     df = panel_df.copy()
     df = df.replace([np.inf, -np.inf], np.nan)
     

@@ -14,18 +14,22 @@ Key Features:
 """
 
 import logging
-import cvxpy as cp
 import pandas as pd
 import numpy as np
 import json
 import time
 from datetime import datetime, date, timezone
 from uuid import uuid4
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
 from collections import defaultdict
 
 from database.db_utils import get_db_connection
 from asset_allocation.data_quality_report import generate_data_quality_report
+
+# Lazy import for heavy optimization library - imported inside functions to reduce cold start time
+# Type hints for lazy-loaded modules (for IDE support without runtime import)
+if TYPE_CHECKING:
+    import cvxpy as cp
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -618,13 +622,17 @@ class AllocationOptimizer:
         logger.info(f"Optimizer initialized: {self.n_pools} pools, {self.n_tokens} tokens, AUM=${self.total_aum:,.2f}")
         logger.info(f"Parameters: max_alloc={self.max_alloc_percentage:.1%} (${self.max_alloc_percentage * self.total_aum:,.2f} per pool), tvl_limit={self.tvl_limit_percentage:.1%}, conversion_rate={self.conversion_rate:.4%}")
     
-    def build_model(self) -> cp.Problem:
+    def build_model(self) -> "cp.Problem":
         """
         Constructs the CVXPY optimization model.
         
         Returns:
             CVXPY Problem instance
         """
+        # Lazy import for heavy optimization library
+        import cvxpy as cp
+        self._cp = cp  # Store reference for use in solve() method
+        
         logger.info("Building optimization model...")
         
         # ====================================================================
@@ -888,18 +896,25 @@ class AllocationOptimizer:
         problem = cp.Problem(objective, constraints)
         return problem
     
-    def solve(self, solver=cp.HIGHS, verbose=True) -> bool:
+    def solve(self, solver=None, verbose=True) -> bool:
         """
         Solves the optimization problem.
         
         Args:
-            solver: CVXPY solver to use
+            solver: CVXPY solver to use (defaults to HIGHS if None)
             verbose: Whether to print solver output
             
         Returns:
             True if optimal solution found, False otherwise
         """
         problem = self.build_model()
+        
+        # Use stored cvxpy reference from build_model
+        cp = self._cp
+        
+        # Default to HIGHS solver if none provided
+        if solver is None:
+            solver = cp.HIGHS
         
         logger.info(f"Solving with {solver}...")
         try:

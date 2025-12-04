@@ -124,6 +124,41 @@ class LedgerManager:
         logger.info(f"Found {len(allocations)} pool/token allocations with positive balances")
         return allocations
 
+    def analyze_unmatched_transactions(self):
+        """
+        Diagnostic method to identify transactions from Warm Wallet to addresses NOT in the pools table.
+        Helps identify missing pool definitions.
+        """
+        logger.info("🔍 Analyzing unmatched transactions from Warm Wallet...")
+        query = """
+        SELECT
+            at.to_address,
+            at.token_symbol,
+            SUM(at.value) / (10 ^ MAX(at.token_decimals)) as total_sent,
+            COUNT(*) as tx_count,
+            MAX(at.timestamp) as last_tx_time
+        FROM account_transactions at
+        WHERE LOWER(at.from_address) = LOWER(:warm_wallet_address)
+          AND LOWER(at.to_address) NOT IN (SELECT LOWER(pool_address) FROM pools WHERE pool_address IS NOT NULL)
+          AND LOWER(at.to_address) != LOWER(:cold_wallet_address) -- Exclude returns to cold wallet
+        GROUP BY at.to_address, at.token_symbol
+        HAVING SUM(at.value) > 0
+        ORDER BY total_sent DESC
+        LIMIT 10;
+        """
+        result = self.conn.execute(text(query), {
+            "warm_wallet_address": MAIN_ASSET_HOLDING_ADDRESS,
+            "cold_wallet_address": COLD_WALLET_ADDRESS
+        })
+        
+        unmatched = result.fetchall()
+        if unmatched:
+            logger.warning(f"⚠️ Found {len(unmatched)} addresses receiving funds that are NOT in the 'pools' table:")
+            for row in unmatched:
+                logger.warning(f"   - To: {row[0]} | Token: {row[1]} | Total: {row[2]:,.2f} | Txs: {row[3]} | Last: {row[4]}")
+        else:
+            logger.info("✅ No significant unmatched outflows found.")
+
     def update_filtered_out_pools(self):
         """
         Updates the currently_filtered_out flag for pools that are filtered out during pre-filtering.
@@ -263,6 +298,9 @@ class LedgerManager:
         # Get current balances
         unallocated_balances = self.get_unallocated_balance(cold_wallet_address)
         allocated_balances = self.get_allocated_balances()
+
+        # DIAGNOSTIC: Check for missing pools
+        self.analyze_unmatched_transactions()
 
         # Clear existing records for today to avoid duplicates
         self.clear_daily_records(today, cold_wallet_address)
