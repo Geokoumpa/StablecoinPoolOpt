@@ -68,19 +68,19 @@ def apply_pool_grouping():
                 group_assignment = None # Default to None if no group matches
 
                 # Group 1: ΔAPY ≤ 1% AND Δ7DSTDDEV ≤ 1.5% AND Δ30DSTDDEV ≤ 2%
-                if (apy_delta is not None and apy_delta <= group1_apy_delta_max and
-                    stddev_7d_delta is not None and stddev_7d_delta <= group1_7d_stddev_max and
-                    stddev_30d_delta is not None and stddev_30d_delta <= group1_30d_stddev_max):
+                if (apy_delta is not None and group1_apy_delta_max is not None and apy_delta <= group1_apy_delta_max and
+                    stddev_7d_delta is not None and group1_7d_stddev_max is not None and stddev_7d_delta <= group1_7d_stddev_max and
+                    stddev_30d_delta is not None and group1_30d_stddev_max is not None and stddev_30d_delta <= group1_30d_stddev_max):
                     group_assignment = 1
                 # Group 2: ΔAPY ≤ 3% AND Δ7DSTDDEV ≤ 4% AND Δ30DSTDDEV ≤ 5%
-                elif (apy_delta is not None and apy_delta <= group2_apy_delta_max and
-                      stddev_7d_delta is not None and stddev_7d_delta <= group2_7d_stddev_max and
-                      stddev_30d_delta is not None and stddev_30d_delta <= group2_30d_stddev_max):
+                elif (apy_delta is not None and group2_apy_delta_max is not None and apy_delta <= group2_apy_delta_max and
+                      stddev_7d_delta is not None and group2_7d_stddev_max is not None and stddev_7d_delta <= group2_7d_stddev_max and
+                      stddev_30d_delta is not None and group2_30d_stddev_max is not None and stddev_30d_delta <= group2_30d_stddev_max):
                     group_assignment = 2
                 # Group 3: ΔAPY > 3% AND Δ7DSTDDEV > 4% AND Δ30DSTDDEV > 2%
-                elif (apy_delta is not None and apy_delta > group3_apy_delta_min and
-                      stddev_7d_delta is not None and stddev_7d_delta > group3_7d_stddev_min and
-                      stddev_30d_delta is not None and stddev_30d_delta > group3_30d_stddev_min):
+                elif (apy_delta is not None and group3_apy_delta_min is not None and apy_delta > group3_apy_delta_min and
+                      stddev_7d_delta is not None and group3_7d_stddev_min is not None and stddev_7d_delta > group3_7d_stddev_min and
+                      stddev_30d_delta is not None and group3_30d_stddev_min is not None and stddev_30d_delta > group3_30d_stddev_min):
                     group_assignment = 3
                 else:
                     group_assignment = 4 # Default or other criteria

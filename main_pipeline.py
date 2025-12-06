@@ -44,12 +44,57 @@ def run_script(script_path, description=None):
         logger.error(f"Unexpected error executing {description or script_path}: {e}")
         raise
 
-def run_pipeline(phases=None):
+
+def run_spark_job(job_name):
+    """
+    Run a Spark job using the local PySpark runner.
+    
+    Args:
+        job_name: Name of the Spark job to run (calculate_metrics or forecast_pools)
+    """
+    import os
+    
+    # Set environment for local Spark mode
+    os.environ["ENVIRONMENT"] = "local"
+    
+    try:
+        if job_name == "calculate_metrics":
+            logger.info("🔥 Running calculate_pool_metrics using local PySpark...")
+            from data_processing.calculate_pool_metrics_spark import calculate_pool_metrics_spark
+            result = calculate_pool_metrics_spark()
+            logger.info(f"Spark calculate_pool_metrics completed: {result}")
+            
+        elif job_name == "forecast_pools":
+            logger.info("🔥 Running forecast_pools using local PySpark...")
+            from forecasting.forecast_pools_spark import forecast_pools_spark
+            result = forecast_pools_spark()
+            logger.info(f"Spark forecast_pools completed: {result}")
+            
+        else:
+            raise ValueError(f"Unknown Spark job: {job_name}")
+            
+    except ImportError as e:
+        logger.error(f"Failed to import Spark modules. Ensure PySpark is installed: pip install -r requirements-spark.txt")
+        logger.error(f"Import error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Error running Spark job {job_name}: {e}")
+        raise
+
+
+def run_pipeline(phases=None, use_spark=False):
     """
     Main pipeline orchestrator for local testing.
     Executes data ingestion, processing, forecasting, and asset allocation scripts.
+    
+    Args:
+        phases: List of phases to run (e.g., ["phase1", "phase3"] or ["all"])
+        use_spark: If True, use local PySpark for calculate_pool_metrics and forecast_pools
     """
     logger.info("Starting DefiYieldOpt local pipeline execution...")
+    
+    if use_spark:
+        logger.info("🔥 SPARK MODE ENABLED: Using local PySpark for calculate_pool_metrics and forecast_pools")
 
     # Apply database migrations first
     logger.info("Applying database migrations...")
@@ -94,7 +139,12 @@ def run_pipeline(phases=None):
     if "all" in phases or "phase3" in phases:
         logger.info("--- Phase 3: Pool Analysis & Metrics Calculation ---")
         try:
-            run_script("data_processing.calculate_pool_metrics", "calculate_pool_metrics.py")
+            # Use Spark or standard implementation based on flag
+            if use_spark:
+                run_spark_job("calculate_metrics")
+            else:
+                run_script("data_processing.calculate_pool_metrics", "calculate_pool_metrics.py")
+            
             run_script("data_processing.apply_pool_grouping", "apply_pool_grouping.py")
             run_script("data_processing.process_icebox_logic", "process_icebox_logic.py")
             # Update allocation snapshots after icebox logic
@@ -108,7 +158,12 @@ def run_pipeline(phases=None):
     if "all" in phases or "phase4" in phases:
         logger.info("--- Phase 4: Forecasting ---")
         try:
-            run_script("forecasting.forecast_pools", "forecast_pools.py")
+            # Use Spark or standard implementation based on flag
+            if use_spark:
+                run_spark_job("forecast_pools")
+            else:
+                run_script("forecasting.forecast_pools", "forecast_pools.py")
+            
             run_script("forecasting.forecast_gas_fees", "forecast_gas_fees.py")
             logger.info("Phase 4 completed successfully.")
         except Exception as e:
@@ -158,6 +213,10 @@ def run_pipeline(phases=None):
     logger.info(f"🏁 End time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"⏱️  Total duration: {duration}")
     logger.info(f"📋 Phases executed: {', '.join(phases)}")
+    if use_spark:
+        logger.info(f"🔥 Spark mode: ENABLED (used for calculate_pool_metrics and forecast_pools)")
+    else:
+        logger.info(f"🐍 Spark mode: DISABLED (using standard Python implementation)")
     logger.info("")
     logger.info("📊 PHASE BREAKDOWN:")
     logger.info("  📸 Initial allocation snapshots created (after migrations)")
@@ -174,13 +233,19 @@ def run_pipeline(phases=None):
         logger.info("     • Historical data fetched for filtered pools")
     if "all" in phases or "phase3" in phases:
         logger.info("  ✅ Phase 3: Pool Analysis & Metrics Calculation")
-        logger.info("     • Pool metrics calculated")
+        if use_spark:
+            logger.info("     • Pool metrics calculated (🔥 Spark)")
+        else:
+            logger.info("     • Pool metrics calculated")
         logger.info("     • Pool grouping applied")
         logger.info("     • Icebox logic processed")
         logger.info("     • Allocation snapshots updated (post-icebox)")
     if "all" in phases or "phase4" in phases:
         logger.info("  ✅ Phase 4: Forecasting")
-        logger.info("     • Pool forecasts generated using forecasted values")
+        if use_spark:
+            logger.info("     • Pool forecasts generated (🔥 Spark + SynapseML LightGBM)")
+        else:
+            logger.info("     • Pool forecasts generated using forecasted values")
         logger.info("     • Gas fee forecasts generated")
     if "all" in phases or "phase5" in phases:
         logger.info("  ✅ Phase 5: Final Filtering & Transaction Processing")
@@ -204,9 +269,12 @@ def run_pipeline(phases=None):
 if __name__ == "__main__":
     # Example of how to run specific phases from command line:
     # python main_pipeline.py --phases phase1 phase3
+    # python main_pipeline.py --use-spark
+    # python main_pipeline.py --phases phase3 phase4 --use-spark
     import argparse
     parser = argparse.ArgumentParser(description="Run DefiYieldOpt local pipeline.")
     parser.add_argument("--phases", nargs='*', help="Specify phases to run (e.g., phase1 phase3). Use 'all' to run all phases.", default=["all"])
+    parser.add_argument("--use-spark", action="store_true", help="Use local PySpark for calculate_pool_metrics and forecast_pools instead of standard Python implementation")
     args = parser.parse_args()
     
-    run_pipeline(phases=args.phases)
+    run_pipeline(phases=args.phases, use_spark=args.use_spark)

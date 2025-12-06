@@ -1486,3 +1486,138 @@ SynapseML requires specific configuration for LightGBM on Spark:
    - Uses `featuresCol` instead of passing arrays directly
    - Requires VectorAssembler for feature engineering
    - Model serialization uses Spark MLlib format
+---
+
+## 🎉 Implementation Status (Updated: 2024-12-05)
+
+All phases of this migration plan have been **implemented**. The following files were created or modified:
+
+### ✅ Phase 1: Infrastructure Setup - COMPLETED
+- Created [`terraform/dataproc.tf`](../terraform/dataproc.tf)
+  - Dataproc API enablement
+  - GCS bucket `${project_id}-dataproc` for scripts and temp data
+  - Service account `dataproc-spark-sa` with IAM permissions
+
+### ✅ Phase 2: Database Utilities - COMPLETED
+- Created [`database/db_utils_spark.py`](../database/db_utils_spark.py)
+  - Spark JDBC utilities for Cloud SQL PostgreSQL
+  - `get_spark_session()` - works locally and on Dataproc
+  - `read_table_spark()` - read tables/queries as Spark DataFrames
+  - `write_table_spark()` - write DataFrames to PostgreSQL
+
+### ✅ Phase 3: Migrate calculate_pool_metrics - COMPLETED
+- Created [`data_processing/calculate_pool_metrics_spark.py`](../data_processing/calculate_pool_metrics_spark.py)
+  - Spark Window functions for rolling metrics
+  - Forward-fill logic for exogenous data
+  - Staging table + upsert pattern for writes
+
+### ✅ Phase 4: Migrate forecast_pools - COMPLETED
+- Created [`forecasting/forecast_pools_spark.py`](../forecasting/forecast_pools_spark.py)
+  - SynapseML LightGBMRegressor for distributed training
+  - Panel dataset built with Spark SQL
+  - Neighbor features using Spark aggregations
+
+### ✅ Phase 5: CI/CD Pipeline Updates - COMPLETED
+- Updated [`cloudbuild.yaml`](../cloudbuild.yaml)
+  - Added GCS upload step for PySpark scripts
+  - Scripts uploaded to `gs://${PROJECT_ID}-dataproc/scripts/`
+
+### ✅ Phase 6: Cloud Workflows Integration - COMPLETED
+- Updated [`terraform/workflows.tf`](../terraform/workflows.tf)
+  - Added Dataproc permissions for workflow service account
+- Updated [`workflow.yaml`](../workflow.yaml)
+  - New `run_dataproc_batch_job` subworkflow
+  - Polling logic for batch job completion
+  - Steps 7 and 11 now use Dataproc Serverless
+
+### ✅ Phase 7: Local Development Support - COMPLETED
+- Created [`run_spark_local.py`](../run_spark_local.py) - CLI runner for local Spark
+- Created [`requirements-spark.txt`](../requirements-spark.txt) - PySpark dependencies
+- Updated [`main_pipeline.py`](../main_pipeline.py) - Added `--use-spark` flag
+
+---
+
+## 🚀 Deployment Steps
+
+### Step 1: Deploy Infrastructure (Terraform)
+```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+This will:
+- Enable Dataproc API
+- Create GCS bucket `${project_id}-dataproc`
+- Create service account with required permissions
+
+### Step 2: Deploy Code (Cloud Build)
+Commit and push your changes to trigger Cloud Build:
+```bash
+git add .
+git commit -m "Deploy Dataproc Serverless migration"
+git push origin main
+```
+
+Cloud Build will:
+- Upload PySpark scripts to GCS
+- Build and push Docker images for non-Spark jobs
+
+### Step 3: Test Locally (Optional)
+Before deploying, test locally with PySpark:
+```bash
+# Install Spark dependencies
+pip install -r requirements-spark.txt
+
+# Test individual Spark jobs
+python run_spark_local.py calculate_metrics
+python run_spark_local.py forecast_pools
+
+# Or run full pipeline with Spark
+python main_pipeline.py --phases phase3 phase4 --use-spark
+```
+
+### Step 4: Test Production Workflow
+Trigger a manual workflow execution to test:
+```bash
+gcloud workflows run defi-pipeline-workflow \
+  --location=us-central1 \
+  --data='{"run_mode": "daily_pipeline"}'
+```
+
+Monitor the workflow in Cloud Console:
+- Cloud Workflows → defi-pipeline-workflow → Executions
+- Dataproc → Batches (for Spark job logs)
+
+---
+
+## 📋 Local Development Usage
+
+### Run full pipeline with standard Python (existing behavior):
+```bash
+python main_pipeline.py
+```
+
+### Run full pipeline using local PySpark:
+```bash
+python main_pipeline.py --use-spark
+```
+
+### Run specific phases with Spark:
+```bash
+# Only phases 3 and 4 (where Spark is used)
+python main_pipeline.py --phases phase3 phase4 --use-spark
+
+# All phases, but use Spark for metrics/forecasting
+python main_pipeline.py --phases all --use-spark
+```
+
+### Run individual Spark jobs:
+```bash
+python run_spark_local.py calculate_metrics
+python run_spark_local.py forecast_pools
+python run_spark_local.py all
+```
+
+---

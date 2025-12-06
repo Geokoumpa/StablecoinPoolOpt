@@ -1,4 +1,41 @@
 steps:
+  # ============================================
+  # PYSPARK SCRIPTS UPLOAD TO GCS
+  # ============================================
+  
+  # Upload PySpark scripts to GCS for Dataproc Serverless
+  - name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Uploading PySpark scripts to GCS..."
+        
+        # Create scripts directory structure in GCS
+        gsutil -m cp -r data_processing/calculate_pool_metrics_spark.py \
+          gs://${PROJECT_ID}-dataproc/scripts/
+        
+        gsutil -m cp -r forecasting/forecast_pools_spark.py \
+          gs://${PROJECT_ID}-dataproc/scripts/
+        
+        gsutil -m cp -r database/db_utils_spark.py \
+          gs://${PROJECT_ID}-dataproc/scripts/database/
+        
+        gsutil -m cp -r database/db_utils.py \
+          gs://${PROJECT_ID}-dataproc/scripts/database/
+        
+        gsutil -m cp -r database/__init__.py \
+          gs://${PROJECT_ID}-dataproc/scripts/database/
+        
+        gsutil -m cp -r config.py \
+          gs://${PROJECT_ID}-dataproc/scripts/
+        
+        echo "PySpark scripts uploaded successfully"
+
+  # ============================================
+  # DOCKER IMAGE BUILDS
+  # ============================================
+
   # Build Web Scraping Image
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
@@ -16,7 +53,7 @@ steps:
           --cache-from gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest \
           .
 
-  # Build ML/Science Image
+  # Build ML/Science Image (still needed for optimize_allocations and non-Spark jobs)
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:
@@ -67,6 +104,10 @@ steps:
           --cache-from gcr.io/$PROJECT_ID/defi-pipeline-database:latest \
           .
 
+  # ============================================
+  # PUSH IMAGES
+  # ============================================
+
   # Push Web Scraping Image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest']
@@ -95,19 +136,29 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/defi-pipeline-database:$COMMIT_SHA']
 
-  # Log completion
+  # ============================================
+  # COMPLETION LOG
+  # ============================================
+  
   - name: 'gcr.io/cloud-builders/gcloud'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        echo "Build and push complete for all specialized images:"
-        echo "- Web Scraping: gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:$COMMIT_SHA"
-        echo "- ML/Science: gcr.io/$PROJECT_ID/defi-pipeline-ml-science:$COMMIT_SHA"
-        echo "- Lightweight: gcr.io/$PROJECT_ID/defi-pipeline-lightweight:$COMMIT_SHA"
-        echo "- Database: gcr.io/$PROJECT_ID/defi-pipeline-database:$COMMIT_SHA"
+        echo "Build and push complete:"
+        echo ""
+        echo "📦 Docker Images:"
+        echo "  - Web Scraping: gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:$COMMIT_SHA"
+        echo "  - ML/Science: gcr.io/$PROJECT_ID/defi-pipeline-ml-science:$COMMIT_SHA"
+        echo "  - Lightweight: gcr.io/$PROJECT_ID/defi-pipeline-lightweight:$COMMIT_SHA"
+        echo "  - Database: gcr.io/$PROJECT_ID/defi-pipeline-database:$COMMIT_SHA"
+        echo ""
+        echo "⚡ Spark Scripts (GCS):"
+        echo "  - gs://${PROJECT_ID}-dataproc/scripts/calculate_pool_metrics_spark.py"
+        echo "  - gs://${PROJECT_ID}-dataproc/scripts/forecast_pools_spark.py"
         echo ""
         echo "Cloud Run Jobs using specialized images will pick up new images on next execution."
+        echo "Dataproc Serverless jobs will use latest scripts on next execution."
 
 images:
   - 'gcr.io/$PROJECT_ID/defi-pipeline-web-scraping:latest'

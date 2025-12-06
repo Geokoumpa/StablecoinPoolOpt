@@ -11,6 +11,10 @@ resource "google_workflows_workflow" "main" {
   }
 }
 
+# =============================================================================
+# Cloud Run Permissions for Workflow
+# =============================================================================
+
 resource "google_project_iam_member" "workflow_cloud_run_invoker" {
   project = var.project_id
   role    = "roles/run.invoker"
@@ -28,6 +32,35 @@ resource "google_project_iam_member" "workflow_cloud_run_viewer" {
   role    = "roles/run.viewer"
   member  = "serviceAccount:${google_service_account.workflow_sa.email}"
 }
+
+# =============================================================================
+# Dataproc Serverless Permissions for Workflow
+# =============================================================================
+
+# Grant Dataproc Editor role for creating and managing batch jobs
+resource "google_project_iam_member" "workflow_dataproc_editor" {
+  project = var.project_id
+  role    = "roles/dataproc.editor"
+  member  = "serviceAccount:${google_service_account.workflow_sa.email}"
+}
+
+# Grant Storage Object Viewer for reading Spark scripts from GCS
+resource "google_project_iam_member" "workflow_storage_viewer" {
+  project = var.project_id
+  role    = "roles/storage.objectViewer"
+  member  = "serviceAccount:${google_service_account.workflow_sa.email}"
+}
+
+# Grant Service Account User to allow workflow to act as the Dataproc SA
+resource "google_service_account_iam_member" "workflow_can_use_dataproc_sa" {
+  service_account_id = google_service_account.dataproc_sa.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.workflow_sa.email}"
+}
+
+# =============================================================================
+# Cloud Scheduler Job
+# =============================================================================
 
 resource "google_cloud_scheduler_job" "daily_pipeline_trigger" {
   name        = "daily-defi-pipeline-trigger"
@@ -50,4 +83,18 @@ resource "google_cloud_scheduler_job" "daily_pipeline_trigger" {
       })
     }))
   }
+}
+
+# =============================================================================
+# Outputs for Dataproc Integration
+# =============================================================================
+
+output "dataproc_bucket_name" {
+  description = "GCS bucket for Dataproc (scripts, temp data)"
+  value       = google_storage_bucket.dataproc.name
+}
+
+output "dataproc_service_account_email" {
+  description = "Service account email for Dataproc Serverless"
+  value       = google_service_account.dataproc_sa.email
 }
