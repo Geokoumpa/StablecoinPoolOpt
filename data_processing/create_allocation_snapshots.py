@@ -160,6 +160,49 @@ def create_allocation_snapshots():
                 if base_params[9] is None:  # pool_pair_tvl_ratio_max
                     logger.warning("pool_pair_tvl_ratio_max is None, using default value from default_allocation_parameters")
                     base_params[9] = float(default_params.get('pool_pair_tvl_ratio_max', 0.5))
+                # Handle NULL values for grouping parameters (indices 10-23)
+                if base_params[10] is None:  # group1_max_pct
+                    logger.warning("group1_max_pct is None, using default value from default_allocation_parameters")
+                    base_params[10] = float(default_params.get('group1_max_pct', 0.35))
+                if base_params[11] is None:  # group2_max_pct
+                    logger.warning("group2_max_pct is None, using default value from default_allocation_parameters")
+                    base_params[11] = float(default_params.get('group2_max_pct', 0.35))
+                if base_params[12] is None:  # group3_max_pct
+                    logger.warning("group3_max_pct is None, using default value from default_allocation_parameters")
+                    base_params[12] = float(default_params.get('group3_max_pct', 0.3))
+                if base_params[13] is None:  # position_max_pct_total_assets
+                    logger.warning("position_max_pct_total_assets is None, using default value from default_allocation_parameters")
+                    base_params[13] = float(default_params.get('position_max_pct_total_assets', 0.25))
+                if base_params[14] is None:  # position_max_pct_pool_tvl
+                    logger.warning("position_max_pct_pool_tvl is None, using default value from default_allocation_parameters")
+                    base_params[14] = float(default_params.get('position_max_pct_pool_tvl', 0.05))
+                if base_params[15] is None:  # group1_apy_delta_max
+                    logger.warning("group1_apy_delta_max is None, using default value from default_allocation_parameters")
+                    base_params[15] = float(default_params.get('group1_apy_delta_max', 0.01))
+                if base_params[16] is None:  # group1_7d_stddev_max
+                    logger.warning("group1_7d_stddev_max is None, using default value from default_allocation_parameters")
+                    base_params[16] = float(default_params.get('group1_7d_stddev_max', 0.015))
+                if base_params[17] is None:  # group1_30d_stddev_max
+                    logger.warning("group1_30d_stddev_max is None, using default value from default_allocation_parameters")
+                    base_params[17] = float(default_params.get('group1_30d_stddev_max', 0.02))
+                if base_params[18] is None:  # group2_apy_delta_max
+                    logger.warning("group2_apy_delta_max is None, using default value from default_allocation_parameters")
+                    base_params[18] = float(default_params.get('group2_apy_delta_max', 0.03))
+                if base_params[19] is None:  # group2_7d_stddev_max
+                    logger.warning("group2_7d_stddev_max is None, using default value from default_allocation_parameters")
+                    base_params[19] = float(default_params.get('group2_7d_stddev_max', 0.04))
+                if base_params[20] is None:  # group2_30d_stddev_max
+                    logger.warning("group2_30d_stddev_max is None, using default value from default_allocation_parameters")
+                    base_params[20] = float(default_params.get('group2_30d_stddev_max', 0.05))
+                if base_params[21] is None:  # group3_apy_delta_min
+                    logger.warning("group3_apy_delta_min is None, using default value from default_allocation_parameters")
+                    base_params[21] = float(default_params.get('group3_apy_delta_min', 0.03))
+                if base_params[22] is None:  # group3_7d_stddev_min
+                    logger.warning("group3_7d_stddev_min is None, using default value from default_allocation_parameters")
+                    base_params[22] = float(default_params.get('group3_7d_stddev_min', 0.04))
+                if base_params[23] is None:  # group3_30d_stddev_min
+                    logger.warning("group3_30d_stddev_min is None, using default value from default_allocation_parameters")
+                    base_params[23] = float(default_params.get('group3_30d_stddev_min', 0.02))
 
         # Fetch dynamic lists from individual tables
         dynamic_lists = fetch_dynamic_lists(engine)

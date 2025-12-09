@@ -45,41 +45,41 @@ def run_script(script_path, description=None):
         raise
 
 
-def run_spark_job(job_name):
-    """
-    Run a Spark job using the local PySpark runner.
+# def run_spark_job(job_name):
+#     """
+#     Run a Spark job using the local PySpark runner.
     
-    Args:
-        job_name: Name of the Spark job to run (calculate_metrics or forecast_pools)
-    """
-    import os
+#     Args:
+#         job_name: Name of the Spark job to run (calculate_metrics or forecast_pools)
+#     """
+#     import os
     
-    # Set environment for local Spark mode
-    os.environ["ENVIRONMENT"] = "local"
+#     # Set environment for local Spark mode
+#     os.environ["ENVIRONMENT"] = "local"
     
-    try:
-        if job_name == "calculate_metrics":
-            logger.info("🔥 Running calculate_pool_metrics using local PySpark...")
-            from data_processing.calculate_pool_metrics_spark import calculate_pool_metrics_spark
-            result = calculate_pool_metrics_spark()
-            logger.info(f"Spark calculate_pool_metrics completed: {result}")
+#     try:
+#         if job_name == "calculate_metrics":
+#             logger.info("🔥 Running calculate_pool_metrics using local PySpark...")
+#             from data_processing.calculate_pool_metrics_spark import calculate_pool_metrics_spark
+#             result = calculate_pool_metrics_spark()
+#             logger.info(f"Spark calculate_pool_metrics completed: {result}")
             
-        elif job_name == "forecast_pools":
-            logger.info("🔥 Running forecast_pools using local PySpark...")
-            from forecasting.forecast_pools_spark import forecast_pools_spark
-            result = forecast_pools_spark()
-            logger.info(f"Spark forecast_pools completed: {result}")
+#         elif job_name == "forecast_pools":
+#             logger.info("🔥 Running forecast_pools using local PySpark...")
+#             from forecasting.forecast_pools_spark import forecast_pools_spark
+#             result = forecast_pools_spark()
+#             logger.info(f"Spark forecast_pools completed: {result}")
             
-        else:
-            raise ValueError(f"Unknown Spark job: {job_name}")
+#         else:
+#             raise ValueError(f"Unknown Spark job: {job_name}")
             
-    except ImportError as e:
-        logger.error(f"Failed to import Spark modules. Ensure PySpark is installed: pip install -r requirements-spark.txt")
-        logger.error(f"Import error: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Error running Spark job {job_name}: {e}")
-        raise
+#     except ImportError as e:
+#         logger.error(f"Failed to import Spark modules. Ensure PySpark is installed: pip install -r requirements-spark.txt")
+#         logger.error(f"Import error: {e}")
+#         raise
+#     except Exception as e:
+#         logger.error(f"Error running Spark job {job_name}: {e}")
+#         raise
 
 
 def run_pipeline(phases=None, use_spark=False):
@@ -141,7 +141,8 @@ def run_pipeline(phases=None, use_spark=False):
         try:
             # Use Spark or standard implementation based on flag
             if use_spark:
-                run_spark_job("calculate_metrics")
+                logger.info("Sparl")
+                # run_spark_job("calculate_metrics")
             else:
                 run_script("data_processing.calculate_pool_metrics", "calculate_pool_metrics.py")
             
@@ -160,7 +161,9 @@ def run_pipeline(phases=None, use_spark=False):
         try:
             # Use Spark or standard implementation based on flag
             if use_spark:
-                run_spark_job("forecast_pools")
+                logger.info("Sparl")
+
+                # run_spark_job("forecast_pools")
             else:
                 run_script("forecasting.forecast_pools", "forecast_pools.py")
             
