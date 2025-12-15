@@ -59,6 +59,7 @@ class SlackNotifier:
 def fetch_optimization_results():
     """
     Fetches the latest optimization results from the database.
+    Reconstructs the final portfolio state by applying transactions to the initial state.
     
     Returns:
         Dictionary with optimization results or None if not found
@@ -66,7 +67,8 @@ def fetch_optimization_results():
     try:
         params_repo = ParameterRepository()
         alloc_repo = AllocationRepository()
-        pool_repo = PoolMetricsRepository() # Actually using Metrics repo which has pool details too
+        pool_repo = PoolMetricsRepository()
+        balance_repo = DailyBalanceRepository()
         
         # Get latest parameters
         params = params_repo.get_latest_parameters()
@@ -91,10 +93,10 @@ def fetch_optimization_results():
         except Exception as e:
             logger.warning(f"Error reading transaction_sequence: {e}")
 
-        # Get allocations for this run
+        # Get allocations for this run (The execution log)
         allocations_objs = alloc_repo.get_allocations_by_run_id(run_id)
         
-        # Convert to DataFrame
+        # Convert to DataFrame of Transactions
         transactions_data = []
         for a in allocations_objs:
             transactions_data.append({
@@ -110,59 +112,26 @@ def fetch_optimization_results():
         if transactions_df.empty:
             transactions_df = pd.DataFrame(columns=['step_number', 'operation', 'from_asset', 'to_asset', 'amount', 'pool_id'])
         
-        # Get pool information
-        pool_ids = []
+        # --- RECONSTRUCT FINAL PORTFOLIO STATE ---
+        from config import MAIN_ASSET_HOLDING_ADDRESS
+        
+        # Fetch token prices for USD conversion
+        from database.repositories.raw_data_repository import RawDataRepository
+        price_repo = RawDataRepository()
+        
+        tokens_to_fetch = set()
+        if MAIN_ASSET_HOLDING_ADDRESS:
+             start_balances = balance_repo.get_current_balances(MAIN_ASSET_HOLDING_ADDRESS, date.today())
+             for bal in start_balances:
+                 tokens_to_fetch.add(bal.token_symbol)
+        
         if not transactions_df.empty:
-            pool_ids = transactions_df['pool_id'].dropna().unique().tolist()
-            
-        pools_data = []
-        if pool_ids:
-            pool_rows = pool_repo.get_pool_metrics_batch(pool_ids, date.today())
-            for row in pool_rows:
-                # row: pool_id, symbol, forecasted_apy, forecasted_tvl
-                pools_data.append({
-                    'pool_id': row[0],
-                    'symbol': row[1],
-                    'forecasted_apy': float(row[2]) if row[2] is not None else 0.0,
-                    'forecasted_tvl': float(row[3]) if row[3] is not None else 0.0
-                })
+             tokens_to_fetch.update(transactions_df['to_asset'].dropna().unique())
+             tokens_to_fetch.update(transactions_df['from_asset'].dropna().unique())
+             
+        token_prices = price_repo.get_latest_prices(list(tokens_to_fetch))
         
-        pools_df = pd.DataFrame(pools_data)
-        if pools_df.empty:
-            pools_df = pd.DataFrame(columns=['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl'])
-
-        # Process allocation transactions
-        allocation_transactions = transactions_df[transactions_df['operation'] == 'ALLOCATION']
-        
-        if not allocation_transactions.empty:
-            allocations_with_pools = allocation_transactions.merge(pools_df, on='pool_id', how='left')
-            allocations_with_pools['amount_usd'] = allocations_with_pools['amount']
-            
-            # Pool summary
-            pool_summary = allocations_with_pools.groupby(['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl']).agg({
-                'amount_usd': 'sum'
-            }).reset_index()
-            pool_total_mapping = pool_summary.set_index('pool_id')['amount_usd'].to_dict()
-            pool_summary = pool_summary.sort_values('amount_usd', ascending=False)
-            
-            # Token summary
-            token_summary = allocations_with_pools.groupby('to_asset').agg({
-                'amount_usd': 'sum'
-            }).reset_index().rename(columns={'to_asset': 'token'})
-            token_summary = token_summary.sort_values('amount_usd', ascending=False)
-            
-            total_allocated = allocations_with_pools['amount_usd'].sum()
-        else:
-             pool_summary = pd.DataFrame(columns=['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl', 'amount_usd'])
-             token_summary = pd.DataFrame(columns=['token', 'amount_usd'])
-             total_allocated = 0.0
-             pool_total_mapping = {}
-             allocations_with_pools = pd.DataFrame()
-
-        # Calculate costs from transaction_sequence if possible
-        total_gas_cost = 0.0
-        total_conversion_cost = 0.0
-        
+        # Parse JSON sequence for better fidelity (db table might miss pool_id on withdraw)
         parsed_sequence = []
         if isinstance(transaction_sequence, str):
             try:
@@ -170,7 +139,107 @@ def fetch_optimization_results():
             except: pass
         elif isinstance(transaction_sequence, list):
             parsed_sequence = transaction_sequence
+
+        # Build Portfolio State (Pool -> {token: amount})
+        portfolio_state = {} 
+        if MAIN_ASSET_HOLDING_ADDRESS:
+             start_balances = balance_repo.get_current_balances(MAIN_ASSET_HOLDING_ADDRESS, date.today())
+             for bal in start_balances:
+                 if bal.allocated_balance and bal.allocated_balance > 0 and bal.pool_id:
+                     pid = bal.pool_id
+                     if pid not in portfolio_state: portfolio_state[pid] = {}
+                     t = bal.token_symbol
+                     portfolio_state[pid][t] = portfolio_state[pid].get(t, 0.0) + float(bal.allocated_balance)
+        
+        # Replay transactions
+        for txn in parsed_sequence:
+            t_type = txn.get('type')
+            amt = float(txn.get('amount', 0))
+            token = txn.get('token')
             
+            if t_type == 'WITHDRAWAL':
+                pid = txn.get('from_location')
+                if pid and pid in portfolio_state and token in portfolio_state[pid]:
+                    portfolio_state[pid][token] = max(0.0, portfolio_state[pid][token] - amt)
+                    if portfolio_state[pid][token] <= 1e-9:
+                        del portfolio_state[pid][token]
+                    if not portfolio_state[pid]:
+                        del portfolio_state[pid]
+                        
+            elif t_type == 'ALLOCATION':
+                pid = txn.get('to_location')
+                if pid:
+                    if pid not in portfolio_state: portfolio_state[pid] = {}
+                    portfolio_state[pid][token] = portfolio_state[pid].get(token, 0.0) + amt
+
+        # Flatten for reporting
+        final_allocations_list = []
+        total_allocated_usd = 0.0
+        
+        for pid, tokens in portfolio_state.items():
+            for t, amt in tokens.items():
+                price = token_prices.get(t, 1.0)
+                amt_usd = amt * price
+                final_allocations_list.append({
+                    'pool_id': pid,
+                    'token': t,
+                    'amount': amt,
+                    'amount_usd': amt_usd
+                })
+                total_allocated_usd += amt_usd
+        
+        final_allocations_df = pd.DataFrame(final_allocations_list)
+        if final_allocations_df.empty:
+            final_allocations_df = pd.DataFrame(columns=['pool_id', 'token', 'amount', 'amount_usd'])
+
+        # Get Metadata
+        all_pool_ids = final_allocations_df['pool_id'].unique().tolist()
+        pools_data = []
+        if all_pool_ids:
+            pool_rows = pool_repo.get_pool_metrics_batch(all_pool_ids, date.today())
+            for row in pool_rows:
+                pools_data.append({
+                    'pool_id': row[0],
+                    'symbol': row[1],
+                    'forecasted_apy': float(row[2]) if row[2] is not None else 0.0,
+                    'forecasted_tvl': float(row[3]) if row[3] is not None else 0.0,
+                    'pool_address': row[4]
+                })
+        pools_meta_df = pd.DataFrame(pools_data)
+        if pools_meta_df.empty:
+            pools_meta_df = pd.DataFrame(columns=['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl', 'pool_address'])
+            
+        allocations_with_pools = final_allocations_df.merge(pools_meta_df, on='pool_id', how='left')
+        
+        # Build Address Map
+        pool_address_map = {}
+        if not pools_meta_df.empty:
+             # Ensure pool_address is not None
+             idx = pools_meta_df['pool_address'].notna()
+             pool_address_map = pools_meta_df[idx].set_index('pool_id')['pool_address'].to_dict()
+
+        # Build Summaries
+        if not allocations_with_pools.empty:
+            pool_summary = allocations_with_pools.groupby(['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl']).agg({
+                'amount_usd': 'sum'
+            }).reset_index()
+            # Restore pool_address somehow? It's lost in groupby unless included.
+            # Easier to map back using pool_address_map in formatting.
+            pool_total_mapping = pool_summary.set_index('pool_id')['amount_usd'].to_dict()
+            pool_summary = pool_summary.sort_values('amount_usd', ascending=False)
+            
+            token_summary = allocations_with_pools.groupby('token').agg({
+                'amount_usd': 'sum'
+            }).reset_index()
+            token_summary = token_summary.sort_values('amount_usd', ascending=False)
+        else:
+            pool_summary = pd.DataFrame(columns=['pool_id', 'symbol', 'forecasted_apy', 'forecasted_tvl', 'amount_usd'])
+            token_summary = pd.DataFrame(columns=['token', 'amount_usd'])
+            pool_total_mapping = {}
+
+        # Calculate costs
+        total_gas_cost = 0.0
+        total_conversion_cost = 0.0
         for txn in parsed_sequence:
             if isinstance(txn, dict):
                  total_gas_cost += float(txn.get('gas_cost_usd', 0) or 0)
@@ -179,7 +248,7 @@ def fetch_optimization_results():
         return {
             'run_id': run_id,
             'timestamp': timestamp,
-            'total_allocated': total_allocated,
+            'total_allocated': total_allocated_usd,
             'total_gas_cost': total_gas_cost,
             'total_conversion_cost': total_conversion_cost,
             'total_transaction_cost': float(transaction_costs),
@@ -192,7 +261,8 @@ def fetch_optimization_results():
             'token_allocation': token_summary.to_dict('records'),
             'allocations_df': allocations_with_pools,
             'transactions_df': transactions_df,
-            'pool_total_mapping': pool_total_mapping
+            'pool_total_mapping': pool_total_mapping,
+            'pool_address_map': pool_address_map
         }
 
     except Exception as e:
@@ -254,6 +324,7 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
     """Format results into Slack message."""
     date_str = datetime.now().strftime("%Y-%m-%d")
     pool_total_mapping = results.get('pool_total_mapping', {})
+    pool_address_map = results.get('pool_address_map', {})
     
     # Fetch total AUM
     total_aum = results['total_allocated']
@@ -306,7 +377,15 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
         tvl = pool.get('forecasted_tvl', 0)
         tvl_str = f"${tvl:,.0f}" if tvl > 0 else "N/A"
         apy_str = f"{apy:.2f}%" if apy > 0 else "N/A"
-        message += f"• {pool['symbol']} (ID: {pool_id}): ${pool_total_amount:,.2f} ({percentage:.1f}% of AUM) | APY: {apy_str} | TVL: {tvl_str}\n"
+        
+        # Format pool ID and Address
+        addr = pool_address_map.get(pool_id, "N/A")
+        if addr != "N/A":
+             id_str = f"ID: {pool_id} | Addr: {addr}"
+        else:
+             id_str = f"ID: {pool_id}"
+             
+        message += f"• {pool['symbol']} ({id_str}): ${pool_total_amount:,.2f} ({percentage:.1f}% of AUM) | APY: {apy_str} | TVL: {tvl_str}\n"
 
     message += "\n*💎 Token Allocation:*\n"
     for token in results['token_allocation']:
@@ -318,14 +397,27 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
     if parsed_sequence:
         message += "\n*🔄 Transaction Sequence:*\n"
         for txn in parsed_sequence:
-             # Basic formatting similar to original
              t_type = txn.get('type')
              seq = txn.get('seq')
              amt = txn.get('amount_usd', 0)
              total = txn.get('total_cost_usd', 0)
+             token = txn.get('token')
              
-             if t_type == 'ALLOCATION':
-                 message += f"• Step {seq}: ALLOCATE ${amt:,.2f} {txn.get('token')} | Total Cost: ${total:.4f}\n"
+             # Resolve pool address for context
+             pool_id_ctx = txn.get('to_location') if t_type in ['ALLOCATION', 'HOLD'] else txn.get('from_location')
+             addr_info = ""
+             if pool_id_ctx:
+                  addr = pool_address_map.get(pool_id_ctx)
+                  if addr:
+                      addr_info = f" (Pool: {pool_id_ctx} | {addr})"
+                  else:
+                      addr_info = f" (Pool: {pool_id_ctx})"
+             
+             if t_type == 'HOLD':
+                 # Step 0 or similar
+                 message += f"• Step {seq}: HOLD ${amt:,.2f} {token}{addr_info}\n"
+             elif t_type == 'ALLOCATION':
+                 message += f"• Step {seq}: ALLOCATE ${amt:,.2f} {token}{addr_info} | Cost: ${total:.4f}\n"
              elif t_type == 'WITHDRAWAL':
                  message += f"• Step {seq}: WITHDRAW ${amt:,.2f} {txn.get('token')} | Total Cost: ${total:.4f}\n"
              elif t_type == 'CONVERSION':

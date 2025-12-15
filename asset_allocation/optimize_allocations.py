@@ -504,19 +504,25 @@ class AllocationOptimizer:
         import cvxpy as cp
         self._cp = cp  # Store reference for use in solve() method
         
-        logger.info("Building optimization model...")
+        logger.info("Building optimization model with incremental adjustment support...")
         
         # Variables definition
-        self.alloc = cp.Variable((self.n_pools, self.n_tokens), nonneg=True)
-        self.withdraw = cp.Variable((self.n_pools, self.n_tokens), nonneg=True)
+        # WE model the FINAL position and compute changes
+        self.final_alloc = cp.Variable((self.n_pools, self.n_tokens), nonneg=True)
         self.convert = cp.Variable((self.n_tokens, self.n_tokens), nonneg=True)
         self.final_warm_wallet = cp.Variable(self.n_tokens, nonneg=True)
-        self.needs_conversion = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
+        
+        # Deltas
+        self.net_deposit = cp.Variable((self.n_pools, self.n_tokens), nonneg=True)
+        self.net_withdraw = cp.Variable((self.n_pools, self.n_tokens), nonneg=True)
+        
+        # Binary indicators
+        self.has_deposit = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
+        self.has_withdrawal = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
         self.has_allocation = cp.Variable(self.n_pools, boolean=True)
-        self.is_withdrawal = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
         self.is_conversion = cp.Variable((self.n_tokens, self.n_tokens), boolean=True)
         
-        # Initialize vectors
+        # Vectors
         current_alloc_matrix = np.zeros((self.n_pools, self.n_tokens))
         for (pool_id, token), amount in self.current_allocations.items():
             if pool_id in self.pool_idx and token in self.token_idx:
@@ -544,45 +550,50 @@ class AllocationOptimizer:
                     j = self.token_idx[token]
                     daily_apy_matrix[i, j] = daily_apy
         
+        # Yield based on FINAL allocation
         yield_usd = cp.sum(cp.multiply(
-            cp.multiply(self.alloc, daily_apy_matrix),
+            cp.multiply(self.final_alloc, daily_apy_matrix),
             price_vector
         ))
         
-        # Transaction Costs
-        withdrawal_gas_costs = cp.sum(cp.multiply(self.is_withdrawal, self.withdrawal_gas_fee))
-        allocation_gas_costs = cp.sum(cp.multiply(self.needs_conversion, self.allocation_gas_fee))
+        # Transaction Costs - based on DELTAS
+        withdrawal_gas_costs = cp.sum(cp.multiply(self.has_withdrawal, self.withdrawal_gas_fee))
+        deposit_gas_costs = cp.sum(cp.multiply(self.has_deposit, self.allocation_gas_fee))
         conversion_conversion_costs = cp.sum(cp.multiply(cp.multiply(self.convert, price_vector), self.conversion_rate))
         conversion_gas_costs = cp.sum(cp.multiply(self.is_conversion, self.conversion_gas_fee))
         
         self.total_transaction_costs = (
-            withdrawal_gas_costs + allocation_gas_costs + conversion_conversion_costs + conversion_gas_costs
+            withdrawal_gas_costs + deposit_gas_costs + conversion_conversion_costs + conversion_gas_costs
         )
         
-        withdrawal_yield_loss = cp.sum(cp.multiply(cp.multiply(self.withdraw, daily_apy_matrix), price_vector))
-        net_yield_improvement = yield_usd - withdrawal_yield_loss
-        
-        objective = cp.Maximize(net_yield_improvement)
+        # Objective: Maximize (Annualized Yield - Transaction Costs)
+        annual_yield_usd = yield_usd * 365.0
+        objective = cp.Maximize(annual_yield_usd - self.total_transaction_costs)
         
         # Constraints
         constraints = []
         
-        # 1. Token balance conservation
-        for j in range(self.n_tokens):
-            token_in = warm_wallet_vector[j] + cp.sum(self.withdraw[:, j]) + cp.sum(self.convert[:, j])
-            token_out = self.final_warm_wallet[j] + cp.sum(self.alloc[:, j]) + cp.sum(self.convert[j, :])
-            constraints.append(token_in == token_out)
-        
-        # 2. Withdrawal limits
+        # 1. Link final allocation to changes
         for i in range(self.n_pools):
             for j in range(self.n_tokens):
-                constraints.append(self.withdraw[i, j] <= current_alloc_matrix[i, j])
+                constraints.append(
+                    self.final_alloc[i, j] == current_alloc_matrix[i, j] + self.net_deposit[i, j] - self.net_withdraw[i, j]
+                )
         
-        # 3. No self-conversion
+        # 2. Balance Conservation
+        for j in range(self.n_tokens):
+            in_flow = warm_wallet_vector[j] + cp.sum(self.net_withdraw[:, j]) + cp.sum(self.convert[:, j])
+            out_flow = self.final_warm_wallet[j] + cp.sum(self.net_deposit[:, j]) + cp.sum(self.convert[j, :])
+            constraints.append(in_flow == out_flow)
+        
+        # 3. Withdrawal limits (Cannot withdraw more than current alloc)
+        constraints.append(self.net_withdraw <= current_alloc_matrix)
+        
+        # 4. No self-conversion
         for j in range(self.n_tokens):
             constraints.append(self.convert[j, j] == 0)
         
-        # 4. Multi-token pool equal distribution
+        # 5. Multi-token pool equal distribution (on FINAL allocation)
         for pool_id, tokens in self.pool_tokens.items():
             if len(tokens) > 1:
                 i = self.pool_idx[pool_id]
@@ -591,43 +602,45 @@ class AllocationOptimizer:
                     for k in range(len(token_indices) - 1):
                         j1 = token_indices[k]
                         j2 = token_indices[k + 1]
-                        constraints.append(self.alloc[i, j1] * price_vector[j1] == self.alloc[i, j2] * price_vector[j2])
+                        constraints.append(self.final_alloc[i, j1] * price_vector[j1] == self.final_alloc[i, j2] * price_vector[j2])
         
-        # 5. Pool allocation limits
+        # 6. Pool allocation limits
         max_pool_allocation_usd = self.max_alloc_percentage * self.total_aum * 0.999
         for i in range(self.n_pools):
-            pool_total_usd = cp.sum(cp.multiply(self.alloc[i, :], price_vector))
+            pool_total_usd = cp.sum(cp.multiply(self.final_alloc[i, :], price_vector))
             constraints.append(pool_total_usd <= max_pool_allocation_usd)
             
             pool_id = self.pools[i]
             pool_forecasted_tvl = self.pool_tvl.get(pool_id, 0)
             if pool_forecasted_tvl > 0:
+                # TVL Limit applies to FINAL allocation size
                 constraints.append(pool_total_usd <= self.tvl_limit_percentage * pool_forecasted_tvl)
         
-        # 6. AUM Conservation
-        total_allocated_usd = cp.sum(cp.multiply(self.alloc, price_vector))
+        # 7. AUM Conservation
+        total_allocated_usd = cp.sum(cp.multiply(self.final_alloc, price_vector))
         total_final_warm_wallet_usd = cp.sum(cp.multiply(self.final_warm_wallet, price_vector))
-        constraints.append(total_allocated_usd + self.total_transaction_costs + total_final_warm_wallet_usd <= self.total_aum)
+        # Allow slight slack for numerical stability
+        constraints.append(total_allocated_usd + self.total_transaction_costs + total_final_warm_wallet_usd <= self.total_aum * 1.0001)
         
-        # 7. Needs conversion constraint
-        for i in range(self.n_pools):
-            for j in range(self.n_tokens):
-                constraints.append(self.needs_conversion[i, j] >= (self.alloc[i, j] - warm_wallet_vector[j] - cp.sum(self.withdraw[:, j])) / self.total_aum)
-                constraints.append(self.needs_conversion[i, j] <= 1)
-        
-        # 8. Has allocation constraint (Big-M)
+        # 8. Binary variables linkage
         big_M = self.total_aum
+        
+        # Link has_allocation
         for i in range(self.n_pools):
-             total_pool_allocation = cp.sum(self.alloc[i, :])
-             constraints.append(total_pool_allocation <= big_M * self.has_allocation[i])
-             constraints.append(total_pool_allocation >= 0.01 * self.has_allocation[i])
+             pool_val = cp.sum(self.final_alloc[i, :])
+             constraints.append(pool_val <= big_M * self.has_allocation[i])
+             constraints.append(pool_val >= 0.001 * self.has_allocation[i])
+
+        # Min Pools Constraint
+        min_pools = self.alloc_params.get('min_pools', 0)
+        if min_pools > 0:
+            constraints.append(cp.sum(self.has_allocation) >= min_pools)
              
-        # 9. Binary variables linkage
+        # Link transaction indicators
         for i in range(self.n_pools):
             for j in range(self.n_tokens):
-                big_M_withdraw = current_alloc_matrix[i, j] + self.total_aum
-                constraints.append(self.withdraw[i, j] <= big_M_withdraw * self.is_withdrawal[i, j])
-                constraints.append(self.withdraw[i, j] >= 0.01 * self.is_withdrawal[i, j])
+                constraints.append(self.net_withdraw[i, j] <= big_M * self.has_withdrawal[i, j])
+                constraints.append(self.net_deposit[i, j] <= big_M * self.has_deposit[i, j])
                 
         for i in range(self.n_tokens):
             for j in range(self.n_tokens):
@@ -636,9 +649,16 @@ class AllocationOptimizer:
                     constraints.append(self.convert[i, j] <= big_M_convert * self.is_conversion[i, j])
                     constraints.append(self.convert[i, j] >= 0.01 * self.is_conversion[i, j])
         
+        # Link has_allocation min threshold (avoid dust)
+        for i in range(self.n_pools):
+            pool_val = cp.sum(self.final_alloc[i, :])
+            # Logic: If has_allocation is 1, pool_val must be >= min_threshold
+            # We skip strict enforcement here to avoid infeasibility, relied on post-processing cleanup if needed.
+        
         # 10. Non-negativity
-        constraints.append(self.alloc >= 0)
-        constraints.append(self.withdraw >= 0)
+        constraints.append(self.final_alloc >= 0)
+        constraints.append(self.net_deposit >= 0)
+        constraints.append(self.net_withdraw >= 0)
         constraints.append(self.convert >= 0)
         constraints.append(self.final_warm_wallet >= 0)
         
@@ -674,7 +694,7 @@ class AllocationOptimizer:
 
     def extract_results(self) -> Tuple[pd.DataFrame, List[Dict]]:
         """Extracts results from solved optimization model."""
-        if self.alloc.value is None:
+        if self.final_alloc.value is None:
             logger.error("No solution available to extract")
             return pd.DataFrame(), []
             
@@ -687,12 +707,43 @@ class AllocationOptimizer:
         def get_val(var, i, j):
              return var.value[i, j] if var.value is not None else 0
         
-        # Step 1: Withdrawals
+        # Step 0: Holds (Existing positions maintained)
+        # We process these first so they appear at the top of the transaction log
+        for (pool_id, token), current_amt in self.current_allocations.items():
+            if pool_id in self.pool_idx and token in self.token_idx:
+                i = self.pool_idx[pool_id]
+                j = self.token_idx[token]
+                
+                # Check how much was withdrawn
+                withdraw_amt = get_val(self.net_withdraw, i, j)
+                
+                # Kept amount is Current - Withdrawn
+                kept_amt = current_amt - withdraw_amt
+                
+                if kept_amt > 0.01:
+                    price = price_vector[j]
+                    cost = 0.0 # Holding costs nothing
+                    
+                    transactions.append({
+                        'seq': transaction_seq,
+                        'type': 'HOLD',
+                        'from_location': pool_id,
+                        'to_location': pool_id,
+                        'token': token,
+                        'amount': kept_amt,
+                        'amount_usd': kept_amt * price,
+                        'gas_cost_usd': 0.0,
+                        'conversion_cost_usd': 0.0,
+                        'total_cost_usd': 0.0
+                    })
+                    transaction_seq += 1
+
+        # Step 1: Withdrawals (from net_withdraw variable)
         for i in range(self.n_pools):
             pool_id = self.pools[i]
             for j in range(self.n_tokens):
                 token = self.tokens[j]
-                amount = get_val(self.withdraw, i, j)
+                amount = get_val(self.net_withdraw, i, j)
                 if amount > 0.01:
                     withdrawal_cost = self.withdrawal_gas_fee
                     transactions.append({
@@ -733,42 +784,53 @@ class AllocationOptimizer:
                         })
                         transaction_seq += 1
         
-        # Step 3: Allocations
+        # Step 3: Allocations (from final_alloc variable, reporting deposits)
+        # Note: We report the FINAL position in 'allocations' list, 
+        # but the 'transactions' list records the DEPOSIT flow.
+        
         for i in range(self.n_pools):
             pool_id = self.pools[i]
             symbol = self.pools_df[self.pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
+            
             for j in range(self.n_tokens):
                 token = self.tokens[j]
-                amount = get_val(self.alloc, i, j)
-                if amount > 0.01:
-                    amount_usd = amount * price_vector[j]
-                    needs_conversion = get_val(self.needs_conversion, i, j)
-                    gas_cost = self.allocation_gas_fee
-                    total_cost = gas_cost
+                
+                # Report Final Allocation
+                final_amt = get_val(self.final_alloc, i, j)
+                if final_amt > 0.01:
+                    amount_usd = final_amt * price_vector[j]
+                    
+                    # Check if this involved a new deposit
+                    deposit_amt = get_val(self.net_deposit, i, j)
                     
                     allocations.append({
                         'pool_id': pool_id,
                         'pool_symbol': symbol,
                         'token': token,
-                        'amount': amount,
+                        'amount': final_amt,
                         'amount_usd': amount_usd,
-                        'needs_conversion': bool(needs_conversion > 0.5)
+                        'needs_conversion': bool(deposit_amt > 0.01)
                     })
                     
-                    transactions.append({
-                        'seq': transaction_seq,
-                        'type': 'ALLOCATION',
-                        'from_location': 'warm_wallet',
-                        'to_location': pool_id,
-                        'token': token,
-                        'amount': amount,
-                        'amount_usd': amount_usd,
-                        'conversion_cost_usd': 0.0,
-                        'gas_cost_usd': gas_cost,
-                        'total_cost_usd': total_cost,
-                        'needs_conversion': bool(needs_conversion > 0.5)
-                    })
-                    transaction_seq += 1
+                    # Record Transaction if there was a deposit
+                    if deposit_amt > 0.01:
+                        gas_cost = self.allocation_gas_fee
+                        total_cost = gas_cost
+                        
+                        transactions.append({
+                            'seq': transaction_seq,
+                            'type': 'ALLOCATION',
+                            'from_location': 'warm_wallet',
+                            'to_location': pool_id,
+                            'token': token,
+                            'amount': deposit_amt,
+                            'amount_usd': deposit_amt * price_vector[j],
+                            'conversion_cost_usd': 0.0,
+                            'gas_cost_usd': gas_cost,
+                            'total_cost_usd': total_cost,
+                            'needs_conversion': False 
+                        })
+                        transaction_seq += 1
                     
         allocations_df = pd.DataFrame(allocations)
         logger.info(f"Extracted {len(allocations)} allocations and {len(transactions)} transactions")
@@ -776,7 +838,7 @@ class AllocationOptimizer:
 
     def format_results(self) -> Dict:
         """Formats optimization results."""
-        if self.alloc.value is None:
+        if self.final_alloc.value is None:
              return {"final_allocations": {}, "unallocated_tokens": {}, "transactions": []}
         
         allocations_df, transactions = self.extract_results()

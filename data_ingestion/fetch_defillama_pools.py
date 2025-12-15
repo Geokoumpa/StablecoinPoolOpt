@@ -86,7 +86,7 @@ def update_pools_metadata_bulk(repo: PoolRepository, pools_data):
             'last_updated': datetime.now(timezone.utc),
             'pool_address': None, # Not provided in this feed usually
             'underlying_tokens': underlying_tokens,
-            'underlying_token_addresses': None,
+            'underlying_token_addresses': underlying_tokens, # Map underlying tokens (addresses) to underlying_token_addresses
             'poolMeta': pool_meta,
             'is_active': True,
             'currently_filtered_out': False # Default

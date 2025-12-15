@@ -305,13 +305,13 @@ class PoolMetricsRepository(BaseRepository[PoolMetrics]):
     def get_pool_metrics_batch(self, pool_ids: List[str], target_date: date) -> List[Any]:
         """
         Get info and metrics for a list of pool IDs.
-        Returns: pool_id, symbol, forecasted_apy, forecasted_tvl
+        Returns: pool_id, symbol, forecasted_apy, forecasted_tvl, pool_address
         """
         if not pool_ids:
             return []
             
         sql = text("""
-            SELECT p.pool_id, p.symbol, pdm.forecasted_apy, pdm.forecasted_tvl
+            SELECT p.pool_id, p.symbol, pdm.forecasted_apy, pdm.forecasted_tvl, p.pool_address
             FROM pools p
             LEFT JOIN pool_daily_metrics pdm ON p.pool_id = pdm.pool_id 
                 AND pdm.date = :date
