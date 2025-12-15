@@ -16,17 +16,25 @@ class TokenRepository(BaseRepository[ApprovedToken]):
     def get_approved_tokens(self) -> List[ApprovedToken]:
         """Get all approved tokens."""
         with self.session() as session:
-            return session.execute(select(ApprovedToken).where(ApprovedToken.removed_timestamp.is_(None))).scalars().all()
+            results = session.execute(select(ApprovedToken).where(ApprovedToken.removed_timestamp.is_(None))).scalars().all()
+            session.expunge_all()
+            return results
             
     def get_blacklisted_tokens(self) -> List[BlacklistedToken]:
         """Get all blacklisted tokens."""
         with self.session() as session:
-            return session.execute(select(BlacklistedToken).where(BlacklistedToken.removed_timestamp.is_(None))).scalars().all()
+            results = session.execute(select(BlacklistedToken).where(BlacklistedToken.removed_timestamp.is_(None))).scalars().all()
+            session.expunge_all()
+            return results
             
     def get_icebox_tokens(self) -> List[IceboxToken]:
         """Get all icebox tokens."""
         with self.session() as session:
-            return session.execute(select(IceboxToken).where(IceboxToken.removed_timestamp.is_(None))).scalars().all()
+            results = session.execute(select(IceboxToken).where(IceboxToken.removed_timestamp.is_(None))).scalars().all()
+            session.expunge_all()
+            return results
+
+
 
     def sync_approved_tokens(self, tokens_data: List[Dict[str, Any]]) -> None:
         """
@@ -104,3 +112,11 @@ class TokenRepository(BaseRepository[ApprovedToken]):
         
         values = [(t['token_symbol'], t.get('reason'), now_val) for t in tokens_data]
         self.execute_bulk_values(sql, values)
+
+    def remove_from_icebox(self, token_symbol: str) -> None:
+        """Remove a token from the icebox (soft delete)."""
+        from datetime import datetime
+        with self.session() as session:
+            stmt = text("UPDATE icebox_tokens SET removed_timestamp = :now WHERE token_symbol = :symbol AND removed_timestamp IS NULL")
+            session.execute(stmt, {'now': datetime.now(), 'symbol': token_symbol})
+

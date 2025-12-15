@@ -1,28 +1,26 @@
 import time
 import requests
 import json
-import os
 import logging
-from datetime import datetime, timezone
-from database.db_utils import get_db_connection
-from psycopg2 import extras
-from sqlalchemy import text
+from datetime import datetime
+from database.repositories.raw_data_repository import RawDataRepository
 
 logger = logging.getLogger(__name__)
 
 def fetch_defillama_pool_history(pool_id):
     url = f"https://yields.llama.fi/chart/{pool_id}"
-    conn = None
     retries = 7
     backoff_factor = 2
     delay = 1  # Start with a 1-second delay
     start_time = time.time()
 
+    # Initialize repository
+    repo = RawDataRepository()
+
     logger.info(f"Fetching pool history for: {pool_id}")
     
     for i in range(retries):
         try:
-            conn = get_db_connection()
             response = requests.get(url)
             response.raise_for_status()
             raw_data = response.json()
@@ -54,30 +52,8 @@ def fetch_defillama_pool_history(pool_id):
             # Perform bulk insert
             if records_to_insert:
                 try:
-                    with conn.connect() as connection:
-                        with connection.begin():
-                            # Dynamically determine columns from the first record's keys
-                            columns = records_to_insert[0].keys()
-                            
-                            # Construct the query with named placeholders for all columns
-                            query = text(f"""
-                                INSERT INTO raw_defillama_pool_history ({', '.join(columns)})
-                                VALUES ({', '.join([f':{col}' for col in columns])});
-                            """)
-
-                            # Convert all json-like fields to Json for insertion
-                            processed_records = []
-                            for record in records_to_insert:
-                                processed_record = {}
-                                for key, value in record.items():
-                                    if isinstance(value, (dict, list)):
-                                        processed_record[key] = extras.Json(value)
-                                    else:
-                                        processed_record[key] = value
-                                processed_records.append(processed_record)
-
-                            connection.execute(query, processed_records)
-                            logger.info(f"Successfully bulk inserted {len(records_to_insert)} records into raw_defillama_pool_history.")
+                    repo.insert_raw_pool_history(records_to_insert)
+                    logger.info(f"Successfully bulk inserted {len(records_to_insert)} records into raw_defillama_pool_history.")
                 except Exception as e:
                     logger.error(f"Error during bulk insert into raw_defillama_pool_history: {e}")
             
@@ -124,9 +100,6 @@ def fetch_defillama_pool_history(pool_id):
             logger.error(f"⏱️  Processing time: {processing_time:.2f}s")
             logger.error("="*50)
             break  # Do not retry on JSON decoding errors
-        finally:
-            if conn:
-                conn.dispose()
 
 if __name__ == "__main__":
     # This script would typically be called with a pool_id from the main pipeline

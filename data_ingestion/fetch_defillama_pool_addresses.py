@@ -4,8 +4,7 @@ import re
 from datetime import datetime, timezone
 
 from playwright.async_api import async_playwright
-from sqlalchemy import text
-from database.db_utils import get_db_connection
+from database.repositories.pool_repository import PoolRepository
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
@@ -86,7 +85,7 @@ async def crawl_defillama_ethereum_pools():
                 logger.error(f"Page title unexpected: {title}")
                 return {}
             
-            # Main crawling loop - exactly like original JavaScript
+            # Main crawling loop
             logger.info("Starting pool collection loop...")
             while True:
                 # Find all pool links first
@@ -184,57 +183,12 @@ async def crawl_defillama_ethereum_pools():
     
     return collected_pools
 
-def update_pool_addresses(engine, pool_addresses):
-    """
-    Update pool addresses in the database.
-    """
-    if not pool_addresses:
-        logger.warning("No pool addresses to update")
-        return 0
-    
-    updated_count = 0
-    try:
-        logger.info(f"Updating {len(pool_addresses)} pool addresses in database...")
-        with engine.connect() as conn:
-            with conn.begin():
-                for pool_id, address in pool_addresses.items():
-                    if address:  # Only update if we have a valid address
-                        update_query = text("""
-                            UPDATE pools 
-                            SET pool_address = :address 
-                            WHERE pool_id = :pool_id
-                        """)
-                        result = conn.execute(update_query, {
-                            "address": address,
-                            "pool_id": pool_id
-                        })
-                        
-                        if result.rowcount > 0:
-                            updated_count += 1
-                            logger.debug(f"Updated address for pool {pool_id}: {address}")
-                        else:
-                            logger.warning(f"Pool {pool_id} not found in database")
-                
-                logger.info(f"Successfully updated {updated_count} pool addresses")
-                return updated_count
-                
-    except Exception as e:
-        logger.error(f"Error updating pool addresses: {e}")
-        return 0
-
 async def fetch_defillama_pool_addresses():
     """
     Main function to fetch DeFiLlama pool addresses using web crawling.
     """
-    engine = None
+    repo = PoolRepository()
     try:
-        # Get database connection
-        logger.info("Establishing database connection...")
-        engine = get_db_connection()
-        if not engine:
-            logger.error("Could not establish database connection. Exiting.")
-            return
-        
         logger.info("Starting DeFiLlama pool address crawler...")
         start_time = datetime.now(timezone.utc)
         
@@ -247,7 +201,8 @@ async def fetch_defillama_pool_addresses():
         logger.info(f"Found {len(valid_addresses)} pools with valid addresses out of {len(pool_addresses)} total pools")
         
         # Update database
-        updated_count = update_pool_addresses(engine, valid_addresses)
+        updated_count = repo.bulk_update_addresses(valid_addresses)
+        logger.info(f"Successfully updated {updated_count} pool addresses")
         
         end_time = datetime.now(timezone.utc)
         duration = end_time - start_time
@@ -267,10 +222,6 @@ async def fetch_defillama_pool_addresses():
     except Exception as e:
         logger.error(f"Error in fetch_defillama_pool_addresses: {e}")
         raise
-    finally:
-        if engine:
-            engine.dispose()
-            logger.info("Database connection closed")
 
 def main():
     """

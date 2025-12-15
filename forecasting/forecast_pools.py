@@ -1,8 +1,8 @@
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 import pandas as pd
-from database.db_utils import get_db_connection
 from forecasting.global_forecasting import train_and_forecast_global
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,8 @@ def main():
             pool_ids=None,  # Use all filtered pools
             train_days=60,
             forecast_ahead=1,
-            use_tvl_stacking=True
+            use_tvl_stacking=True,
+            n_trials=5
         )
         
         # Print comprehensive summary

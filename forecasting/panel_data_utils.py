@@ -5,7 +5,9 @@ from datetime import timedelta
 from typing import List, Dict, Optional
 from sqlalchemy import text
 
-from database.db_utils import get_db_connection
+# Import repositories
+from database.repositories.macroeconomic_repository import MacroeconomicRepository
+from database.repositories.pool_metrics_repository import PoolMetricsRepository
 from forecasting.data_preprocessing import preprocess_data, create_lagged_features
 
 logger = logging.getLogger(__name__)
@@ -68,31 +70,33 @@ def fetch_all_macro_daily(engine, start_date, end_date):
     """
     Loads ALL macro series between start_date and end_date,
     expands monthly to daily, fills missing days, and pivots to wide format.
+    Deprecated argument 'engine' is kept for compatibility but ignored in favor of Repository.
     """
-    # 1) Load raw macro data
-    sql = """
-        SELECT series_name, frequency, date, value
-        FROM macroeconomic_data
-        WHERE date BETWEEN :start AND :end
-        ORDER BY date, series_name
-    """
-    df = pd.read_sql(
-        text(sql),
-        engine,
-        params={"start": start_date, "end": end_date}
-    )
-
-    if df.empty:
+    repo = MacroeconomicRepository()
+    
+    # 1) Load raw macro data using repository
+    rows = repo.get_all_series_data(start_date, end_date)
+    
+    if not rows:
         return pd.DataFrame()
+        
+    # Convert to DataFrame
+    df = pd.DataFrame(rows, columns=["series_name", "frequency", "date", "value"])
 
-    # 2) Normalize dates (remove timezone!)
+    # 2) Normalize dates (remove timezone!) and cast value to float
+    # SQLAlchemy might return 'date' objects or 'datetime' objects. 
+    # If they are date objects, pd.to_datetime converts them.
     df["date"] = pd.to_datetime(df["date"]).dt.tz_localize('UTC')
+    df["value"] = df["value"].astype(float)
 
     # 3) Create full daily grid
     all_days = pd.DataFrame({
-        "date": pd.date_range(start_date, end_date, freq="D")
+        "date": pd.date_range(start_date, end_date, freq="D", tz='UTC')
     })
-
+    
+    # Ensure all_days date is normalized/tz-aware matching df['date']
+    # df['date'] is UTC. all_days['date'] is UTC.
+    
     # 4) Pivot to wide format
     pivot = df.pivot(index="date", columns="series_name", values="value")
 
@@ -113,41 +117,37 @@ def fetch_panel_history(asof: pd.Timestamp, pool_ids: List[str], days: int = 150
     Returns tidy df with columns:
       date, pool_id, apy_7d, actual_apy, tvl_usd, eth_open, btc_open, gas_price_gwei, group_col
     """
+    repo = PoolMetricsRepository()
+    
     t = pd.Timestamp(asof)
     t = t.tz_localize('UTC') if t.tz is None else t.tz_convert('UTC')
     start = (t - pd.Timedelta(days=days)).normalize()
+    asof_date = t.normalize()
+    
+    # Use repository
+    # Convert timestamps to date objects for repository (if expected)
+    rows = repo.get_panel_data(pool_ids, start.date(), asof_date.date(), group_col)
 
-    engine = get_db_connection()
-    q = f"""
-        SELECT
-            date,
-            pool_id,
-            rolling_apy_7d AS apy_7d,
-            actual_apy,
-            actual_tvl AS tvl_usd,
-            eth_open,
-            btc_open,
-            gas_price_gwei,
-            {group_col} AS {group_col}
-        FROM pool_daily_metrics
-        WHERE pool_id = ANY(:pool_ids)
-          AND date >= :start_date
-          AND date <= :asof_date
-        ORDER BY date ASC
-    """
-
-    with engine.connect() as conn:
-        df = pd.read_sql(
-            text(q), conn,
-            params={
-                "pool_ids": pool_ids,
-                "start_date": start.tz_convert('UTC').to_pydatetime(),
-                "asof_date": t.tz_convert('UTC').to_pydatetime()
-            }
-        )
+    if not rows:
+        return pd.DataFrame()
+        
+    # Convert to DataFrame
+    # Columns matching repository query: date, pool_id, apy_7d, actual_apy, tvl_usd, eth_open, btc_open, gas_price_gwei, pool_group
+    # Note: repo returns rows which can be accessed by index or keys if Row object. 
+    # SQLAlchemy rows behave like tuples.
+    
+    # Need to be robust about columns, let's explicit them
+    columns = ["date", "pool_id", "apy_7d", "actual_apy", "tvl_usd", "eth_open", "btc_open", "gas_price_gwei", group_col]
+    df = pd.DataFrame(rows, columns=columns)
 
     if df.empty:
         return df
+
+    # Convert Decimal columns to float
+    numeric_cols = ["apy_7d", "actual_apy", "tvl_usd", "eth_open", "btc_open", "gas_price_gwei"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
 
     df['date'] = pd.to_datetime(df['date'], utc=True).dt.normalize()
     return df.sort_values(['date', 'pool_id'])

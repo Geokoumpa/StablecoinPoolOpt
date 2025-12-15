@@ -1,9 +1,12 @@
 import logging
 import json
 from collections import Counter
-from database.db_utils import get_db_connection
-from sqlalchemy import text
+from datetime import datetime, timezone, date
 from api_clients.ethplorer_client import get_address_history
+from database.repositories.pool_repository import PoolRepository
+from database.repositories.pool_metrics_repository import PoolMetricsRepository
+from database.repositories.parameter_repository import ParameterRepository
+from database.repositories.token_repository import TokenRepository
 
 logger = logging.getLogger(__name__)
 
@@ -13,244 +16,201 @@ def filter_pools_pre():
     Does NOT filter based on TVL, APY, or icebox tokens (those come from final filtering).
     """
     logger.info("Starting pre-pool filtering...")
-    engine = get_db_connection()
-    if not engine:
-        logger.error("Could not establish database connection. Exiting.")
-        return
+    
+    # Initialize Repositories
+    pool_repo = PoolRepository()
+    metrics_repo = PoolMetricsRepository()
+    param_repo = ParameterRepository()
+    token_repo = TokenRepository()
 
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            # Reset currently_filtered_out flag for all pools
-            conn.execute(text("UPDATE pools SET currently_filtered_out = FALSE;"))
+    try:
+        # Reset currently_filtered_out flag for all pools
+        pool_repo.reset_all_currently_filtered_out()
 
-            # Fetch basic allocation parameters
-            result = conn.execute(text("""
-                SELECT
-                    token_marketcap_limit,
-                    pool_pair_tvl_ratio_min,
-                    pool_pair_tvl_ratio_max
-                FROM allocation_parameters
-                ORDER BY timestamp DESC LIMIT 1;
-            """))
-            filter_params = result.fetchone()
+        # Fetch basic allocation parameters
+        filter_params = param_repo.get_latest_parameters()
 
-            if not filter_params:
-                logger.warning("No allocation parameters found for filtering. Skipping pre-pool filtering.")
-                trans.rollback()
-                return
+        if not filter_params:
+            logger.warning("No allocation parameters found for filtering. Skipping pre-pool filtering.")
+            return
 
-            (token_marketcap_limit,
-             pool_pair_tvl_ratio_min, pool_pair_tvl_ratio_max) = filter_params
+        token_marketcap_limit = filter_params.token_marketcap_limit
+        pool_pair_tvl_ratio_min = filter_params.pool_pair_tvl_ratio_min
+        pool_pair_tvl_ratio_max = filter_params.pool_pair_tvl_ratio_max
+        pool_tvl_limit = filter_params.pool_tvl_limit if filter_params.pool_tvl_limit else 500000
 
-            # Get approved protocols
-            result = conn.execute(text("SELECT protocol_name FROM approved_protocols;"))
-            approved_protocols = {row[0] for row in result.fetchall()}
+        # Get approved protocols
+        approved_protocols_list = pool_repo.get_approved_protocols()
+        approved_protocols = set(approved_protocols_list)
 
-            # Get approved tokens
-            result = conn.execute(text("SELECT token_symbol FROM approved_tokens;"))
-            approved_tokens = {row[0] for row in result.fetchall()}
+        # Get approved tokens
+        approved_tokens_objs = token_repo.get_approved_tokens()
+        approved_tokens = {t.token_symbol for t in approved_tokens_objs}
+        
+        # Approved token addresses for efficient lookup
+        approved_address_to_symbol = {t.token_address.lower(): t.token_symbol for t in approved_tokens_objs if t.token_address}
 
-            # Get approved token addresses for efficient lookup
-            result = conn.execute(text("SELECT token_address, token_symbol FROM approved_tokens WHERE token_address IS NOT NULL;"))
-            approved_address_to_symbol = {row[0].lower(): row[1] for row in result.fetchall()}
+        logger.info("=== Pre-Pool Filtering Criteria and Thresholds ===")
+        logger.info(f"Token Marketcap Limit: {token_marketcap_limit}")
+        logger.info(f"Pool Pair TVL Ratio Min: {pool_pair_tvl_ratio_min}")
+        logger.info(f"Pool Pair TVL Ratio Max: {pool_pair_tvl_ratio_max}")
+        logger.info(f"Pool TVL Limit (Optimization): {pool_tvl_limit}")
+        logger.info(f"Approved Protocols: {approved_protocols}")
+        logger.info(f"Approved Tokens: {approved_tokens}")
+        logger.info("================================================")
 
-            logger.info("=== Pre-Pool Filtering Criteria and Thresholds ===")
-            logger.info(f"Token Marketcap Limit: {token_marketcap_limit}")
-            logger.info(f"Pool Pair TVL Ratio Min: {pool_pair_tvl_ratio_min}")
-            logger.info(f"Pool Pair TVL Ratio Max: {pool_pair_tvl_ratio_max}")
-            logger.info(f"Approved Protocols: {approved_protocols}")
-            logger.info(f"Approved Tokens: {approved_tokens}")
-            
-            logger.info("================================================")
+        # Fetch all active pools for pre-filtering
+        pools_data = pool_repo.get_active_pools()
 
-            # Fetch all active pools for pre-filtering (exclude inactive pools)
-            result = conn.execute(text("""
-                SELECT pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses, poolMeta, pool_address
-                FROM pools p
-                WHERE is_active = TRUE;
-            """))
-            pools_data = result.fetchall()
+        token_updates = []
+        metrics_updates = []
+        filtered_ids = []
+        
+        approved_count = 0
+        filtered_count = 0
 
-            for pool_id, protocol, symbol, tvl, apy, name, chain, underlying_token_addresses, poolmeta, pool_address in pools_data:
-                filter_reason = []
-                is_filtered_out = False
-                approved_token_symbols = []
+        for pool in pools_data:
+            pool_id = pool.pool_id
+            protocol = pool.protocol
+            symbol = pool.symbol
+            tvl = pool.tvl
+            apy = pool.apy
+            name = pool.name
+            chain = pool.chain
+            underlying_token_addresses = pool.underlying_token_addresses
+            poolmeta = pool.pool_meta
+            pool_address = pool.pool_address
 
-                # Exclude pools not belonging to approved protocols
-                if protocol not in approved_protocols:
-                    filter_reason.append(f"Protocol '{protocol}' not in approved protocols.")
-                    is_filtered_out = True
+            filter_reason = []
+            is_filtered_out = False
+            approved_token_symbols = []
 
-                # Exclude pools not on Ethereum chain
-                if chain != "Ethereum":
-                    filter_reason.append(f"Pool is on chain '{chain}', not Ethereum.")
-                    is_filtered_out = True
+            # Exclude pools not belonging to approved protocols
+            if protocol not in approved_protocols:
+                filter_reason.append(f"Protocol '{protocol}' not in approved protocols.")
+                is_filtered_out = True
 
-                # Enhanced filtering for pendle protocol pools
-                if protocol.lower() == "pendle" and not is_filtered_out:
-                    # First check if poolmeta contains "PT" or "LP"
-                    if poolmeta and ("PT" in poolmeta or "LP" in poolmeta):
-                        logger.info(f"Pendle pool {pool_id} ({name}) contains 'PT' or 'LP' in poolmeta: {poolmeta}")
+            # Exclude pools not on Ethereum chain
+            if chain != "Ethereum":
+                filter_reason.append(f"Pool is on chain '{chain}', not Ethereum.")
+                is_filtered_out = True
+
+            # Enhanced filtering for pendle protocol pools
+            if protocol.lower() == "pendle" and not is_filtered_out:
+                # First check if poolmeta contains "PT" or "LP"
+                if poolmeta and ("PT" in poolmeta or "LP" in poolmeta):
+                    logger.info(f"Pendle pool {pool_id} ({name}) contains 'PT' or 'LP' in poolmeta: {poolmeta}")
+                    
+                    if underlying_token_addresses:
+                        # Use Ethplorer API to find the most frequent token address
+                        most_frequent_token_address = find_most_frequent_token_address(pool_id, underlying_token_addresses)
                         
-                        if underlying_token_addresses:
-                            # Use Ethplorer API to find the most frequent token address
-                            most_frequent_token_address = find_most_frequent_token_address(pool_id, underlying_token_addresses)
-                            
-                            if most_frequent_token_address:
-                                # Check if this token address is in our approved tokens
-                                if most_frequent_token_address.lower() in approved_address_to_symbol:
-                                    token_symbol = approved_address_to_symbol[most_frequent_token_address.lower()]
-                                    approved_token_symbols = [token_symbol]
-                                    logger.info(f"Pendle pool {pool_id} matched with approved token: {token_symbol} (address: {most_frequent_token_address})")
-                                else:
-                                    filter_reason.append(f"Most frequent token address {most_frequent_token_address} not in approved tokens")
-                                    is_filtered_out = True
+                        if most_frequent_token_address:
+                            # Check if this token address is in our approved tokens
+                            if most_frequent_token_address.lower() in approved_address_to_symbol:
+                                token_symbol = approved_address_to_symbol[most_frequent_token_address.lower()]
+                                approved_token_symbols = [token_symbol]
+                                logger.info(f"Pendle pool {pool_id} matched with approved token: {token_symbol} (address: {most_frequent_token_address})")
                             else:
-                                filter_reason.append("Could not determine most frequent token address from Ethplorer API")
+                                filter_reason.append(f"Most frequent token address {most_frequent_token_address} not in approved tokens")
                                 is_filtered_out = True
                         else:
-                            filter_reason.append("Pendle pool has no underlying token addresses")
+                            filter_reason.append("Could not determine most frequent token address from Ethplorer API")
                             is_filtered_out = True
                     else:
-                        filter_reason.append("Pendle pool poolmeta does not contain 'PT' or 'LP'")
+                        filter_reason.append("Pendle pool has no underlying token addresses")
                         is_filtered_out = True
                 else:
-                    # Check token composition using address-based filtering for non-pendle protocols
-                    if underlying_token_addresses and not is_filtered_out:
-                        # Check each underlying token address against approved addresses
-                        for address in underlying_token_addresses:
-                            if address.lower() in approved_address_to_symbol:
-                                approved_token_symbols.append(approved_address_to_symbol[address.lower()])
+                    filter_reason.append("Pendle pool poolmeta does not contain 'PT' or 'LP'")
+                    is_filtered_out = True
+            else:
+                # Check token composition using address-based filtering for non-pendle protocols
+                if underlying_token_addresses and not is_filtered_out:
+                    # Check each underlying token address against approved addresses
+                    for address in underlying_token_addresses:
+                        if address.lower() in approved_address_to_symbol:
+                            approved_token_symbols.append(approved_address_to_symbol[address.lower()])
+                        else:
+                            filter_reason.append(f"Pool contains unapproved token address: {address}")
+                            is_filtered_out = True
+                elif not is_filtered_out:
+                    # Pool has no underlying token addresses
+                    # Check TVL first to avoid expensive API calls for small pools
+                    if tvl and tvl < pool_tvl_limit:
+                         filter_reason.append(f"Pool has no underlying tokens and TVL {tvl} < {pool_tvl_limit}, skipping API lookup")
+                         is_filtered_out = True
+                    # If TVL is high enough, try to use pool address to find frequent tokens
+                    elif pool_address:
+                        logger.info(f"Pool {pool_id} has no underlying token addresses, attempting to find frequent tokens from pool address: {pool_address}")
+                        most_frequent_token_address = find_most_frequent_token_address(pool_id, [pool_address])
+                        
+                        if most_frequent_token_address:
+                            # Check if this token address is in our approved tokens
+                            if most_frequent_token_address.lower() in approved_address_to_symbol:
+                                token_symbol = approved_address_to_symbol[most_frequent_token_address.lower()]
+                                approved_token_symbols = [token_symbol]
+                                logger.info(f"Pool {pool_id} matched with approved token from pool address: {token_symbol} (address: {most_frequent_token_address})")
                             else:
-                                filter_reason.append(f"Pool contains unapproved token address: {address}")
-                                is_filtered_out = True
-                    elif not is_filtered_out:
-                        # Pool has no underlying token addresses, try to use pool address to find frequent tokens
-                        if pool_address:
-                            logger.info(f"Pool {pool_id} has no underlying token addresses, attempting to find frequent tokens from pool address: {pool_address}")
-                            most_frequent_token_address = find_most_frequent_token_address(pool_id, [pool_address])
-                            
-                            if most_frequent_token_address:
-                                # Check if this token address is in our approved tokens
-                                if most_frequent_token_address.lower() in approved_address_to_symbol:
-                                    token_symbol = approved_address_to_symbol[most_frequent_token_address.lower()]
-                                    approved_token_symbols = [token_symbol]
-                                    logger.info(f"Pool {pool_id} matched with approved token from pool address: {token_symbol} (address: {most_frequent_token_address})")
-                                else:
-                                    filter_reason.append(f"Most frequent token address {most_frequent_token_address} from pool address not in approved tokens")
-                                    is_filtered_out = True
-                            else:
-                                filter_reason.append("Could not determine most frequent token address from pool address")
+                                filter_reason.append(f"Most frequent token address {most_frequent_token_address} from pool address not in approved tokens")
                                 is_filtered_out = True
                         else:
-                            filter_reason.append("Pool has no underlying token addresses and no pool address available")
+                            filter_reason.append("Could not determine most frequent token address from pool address")
                             is_filtered_out = True
+                    else:
+                        filter_reason.append("Pool has no underlying token addresses and no pool address available")
+                        is_filtered_out = True
 
-                # Update pools table with approved token symbols for approved pools (including pendle pools that matched)
-                if approved_token_symbols:
-                    conn.execute(text("""
-                        UPDATE pools
-                        SET underlying_tokens = :approved_tokens
-                        WHERE pool_id = :pool_id;
-                    """), {
-                        "approved_tokens": approved_token_symbols,
-                        "pool_id": pool_id
-                    })
-                
-                # Only create/update pool_daily_metrics for active pools
-                # Check if pool already exists in pool_daily_metrics for today
-                result = conn.execute(
-                    text("""
-                        SELECT id FROM pool_daily_metrics
-                        WHERE pool_id = :pool_id AND date = CURRENT_DATE;
-                    """),
-                    {"pool_id": pool_id}
-                )
-                existing_entry = result.fetchone()
-                
-                if existing_entry:
-                    conn.execute(
-                        text("""
-                            UPDATE pool_daily_metrics
-                            SET is_filtered_out = :is_filtered_out, filter_reason = :filter_reason
-                            WHERE pool_id = :pool_id AND date = CURRENT_DATE;
-                        """),
-                        {
-                            "is_filtered_out": is_filtered_out,
-                            "filter_reason": '; '.join(filter_reason) if filter_reason else None,
-                            "pool_id": pool_id
-                        }
-                    )
-                else:
-                    conn.execute(
-                        text("""
-                            INSERT INTO pool_daily_metrics (
-                                pool_id, date, is_filtered_out, filter_reason
-                            ) VALUES (:pool_id, CURRENT_DATE, :is_filtered_out, :filter_reason);
-                        """),
-                        {
-                            "pool_id": pool_id,
-                            "is_filtered_out": is_filtered_out,
-                            "filter_reason": '; '.join(filter_reason) if filter_reason else None
-                        }
-                    )
-
-                if is_filtered_out:
-                    logger.info(f"Pool {pool_id} pre-filtered out. Reasons: {'; '.join(filter_reason)}.")
-                    conn.execute(
-                        text("UPDATE pools SET currently_filtered_out = TRUE WHERE pool_id = :pool_id;"),
-                        {"pool_id": pool_id}
-                    )
-
-            # Log final statistics
-            result = conn.execute(text("""
-                SELECT COUNT(*) FROM pool_daily_metrics
-                WHERE date = CURRENT_DATE AND is_filtered_out = FALSE;
-            """))
-            approved_count = result.fetchone()[0]
-
-            result = conn.execute(text("""
-                SELECT COUNT(*) FROM pool_daily_metrics
-                WHERE date = CURRENT_DATE AND is_filtered_out = TRUE;
-            """))
-            filtered_count = result.fetchone()[0]
-
-            total_pools = approved_count + filtered_count
-
-            logger.info("Pre-pool filtering completed successfully.")
-
-            # Print detailed summary
-            logger.info("\n" + "="*60)
-            logger.info("🔍 PRE-POOL FILTERING SUMMARY")
-            logger.info("="*60)
-            logger.info(f"📊 Total pools processed: {total_pools}")
-            logger.info(f"📋 Approved protocols: {len(approved_protocols)}")
-            logger.info(f"🪙 Approved tokens: {len(approved_tokens)}")
+            # Update pools table with approved token symbols for approved pools
+            if approved_token_symbols:
+                token_updates.append((pool_id, approved_token_symbols))
             
-            logger.info(f"✅ Pools approved (passed pre-filtering): {approved_count}")
-            logger.info(f"❌ Pools filtered out: {filtered_count}")
-            logger.info(f"📊 Approval rate: {(approved_count/total_pools*100):.1f}%" if total_pools > 0 else "N/A")
-            logger.info("="*60)
+            # Prepare metric update
+            metrics_updates.append({
+                'pool_id': pool_id,
+                'date': datetime.now(timezone.utc).date(),
+                'is_filtered_out': is_filtered_out,
+                'filter_reason': '; '.join(filter_reason) if filter_reason else None
+            })
 
-            trans.commit()
-        except Exception as e:
-            logger.error(f"Error during pre-pool filtering: {e}")
-            trans.rollback()
-            raise
-    engine.dispose()
+            if is_filtered_out:
+                filtered_ids.append(pool_id)
+                filtered_count += 1
+            else:
+                approved_count += 1
+
+        # Perform updates
+        if token_updates:
+            pool_repo.bulk_update_underlying_tokens(token_updates)
+            
+        if metrics_updates:
+            metrics_repo.bulk_upsert_filtering_status(metrics_updates)
+            
+        if filtered_ids:
+            pool_repo.bulk_update_currently_filtered_out(filtered_ids)
+
+        logger.info("Pre-pool filtering completed successfully.")
+        
+        # Summary
+        total_pools = approved_count + filtered_count
+        logger.info("\n" + "="*60)
+        logger.info("🔍 PRE-POOL FILTERING SUMMARY")
+        logger.info("="*60)
+        logger.info(f"📊 Total pools processed: {total_pools}")
+        logger.info(f"📋 Approved protocols: {len(approved_protocols)}")
+        logger.info(f"🪙 Approved tokens: {len(approved_tokens)}")
+        logger.info(f"✅ Pools approved (passed pre-filtering): {approved_count}")
+        logger.info(f"❌ Pools filtered out: {filtered_count}")
+        logger.info(f"📊 Approval rate: {(approved_count/total_pools*100):.1f}%" if total_pools > 0 else "N/A")
+        logger.info("="*60)
+
+    except Exception as e:
+        logger.error(f"Error during pre-pool filtering: {e}")
+        raise
 
 def find_most_frequent_token_address(pool_id, token_addresses):
     """
     For a list of token addresses, uses Ethplorer API to find the most frequent token address
-    based on transaction history. Can be used for both underlying token addresses and pool addresses.
-    
-    Args:
-        pool_id: The pool ID for logging purposes
-        token_addresses: List of token addresses to analyze (can be underlying tokens or pool address)
-        
-    Returns:
-        The most frequent token address as a string, or None if no transactions found
+    based on transaction history.
     """
     token_address_counts = Counter()
     logger.info(f"Analyzing {len(token_addresses)} addresses for pool {pool_id}")

@@ -1,7 +1,7 @@
 
 from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from database.models.allocation_parameters import AllocationParameters, DefaultAllocationParameters
 from database.repositories.base_repository import BaseRepository
@@ -20,6 +20,16 @@ class ParameterRepository(BaseRepository[AllocationParameters]):
     def get_parameters(self, run_id: UUID) -> Optional[AllocationParameters]:
         """Get parameters for a specific run."""
         return self.get_by_id(run_id)
+
+    def get_latest_parameters(self) -> Optional[AllocationParameters]:
+        """Get the latest allocation parameters."""
+        with self.session() as session:
+            stmt = select(AllocationParameters).order_by(AllocationParameters.timestamp.desc()).limit(1)
+            result = session.execute(stmt).scalar()
+            if result:
+                session.expunge(result)
+            return result
+
 
     def get_all_default_parameters(self) -> Dict[str, Any]:
         """Get all default parameters as a dictionary of name -> value."""
@@ -72,3 +82,65 @@ class ParameterRepository(BaseRepository[AllocationParameters]):
         
         with self.session() as session:
             session.execute(stmt)
+
+    def update_run_results(self, run_id: UUID, projected_apy: float, transaction_costs: float, transaction_sequence: str) -> None:
+        """
+        Update allocation parameters with results from an optimization run.
+        """
+        sql = text("""
+            UPDATE allocation_parameters
+            SET 
+                projected_apy = :projected_apy,
+                transaction_costs = :transaction_costs,
+                transaction_sequence = :transaction_sequence
+            WHERE run_id = :run_id
+        """)
+        
+        with self.session() as session:
+            session.execute(sql, {
+                'projected_apy': projected_apy,
+                'transaction_costs': transaction_costs,
+                'transaction_sequence': transaction_sequence,
+                'run_id': run_id
+            })
+
+    def update_snapshots(self, approved_tokens: List[Dict], blacklisted_tokens: List[Dict],
+                         approved_protocols: List[Dict], icebox_tokens: List[Dict]) -> None:
+        """
+        Update snapshots in the latest allocation_parameters entry.
+        """
+        sql = text("""
+            UPDATE allocation_parameters
+            SET
+                approved_tokens_snapshot = :approved_tokens,
+                blacklisted_tokens_snapshot = :blacklisted_tokens,
+                approved_protocols_snapshot = :approved_protocols,
+                icebox_tokens_snapshot = :icebox_tokens,
+                timestamp = :timestamp
+            WHERE run_id = (
+                SELECT run_id FROM allocation_parameters
+                ORDER BY timestamp DESC LIMIT 1
+            )
+        """)
+        
+        # We need to import datetime here or passed in, but using func.now() or python datetime
+        from datetime import datetime
+        
+        # Serialize check: JSON columns in sqlalchemy usually take python dicts/lists and handle serialization if using pg8000/psycopg2 with proper types or explicit json.dumps (if using text() with :param).
+        # Since we use text(), we should pass proper JSON types. 
+        # If the columns are JSONB, sending python list of dicts should work with most drivers, but explicit json.dumps is safer for raw text queries.
+        
+        import json
+        
+        params = {
+            "approved_tokens": json.dumps(approved_tokens),
+            "blacklisted_tokens": json.dumps(blacklisted_tokens),
+            "approved_protocols": json.dumps(approved_protocols),
+            "icebox_tokens": json.dumps(icebox_tokens),
+            "timestamp": datetime.now()
+        }
+        
+        with self.session() as session:
+            session.execute(sql, params)
+
+

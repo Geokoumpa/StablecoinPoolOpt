@@ -20,10 +20,14 @@ import json
 import time
 from datetime import datetime, date, timezone
 from uuid import uuid4
-from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING, Any
 from collections import defaultdict
 
-from database.db_utils import get_db_connection
+from database.repositories.pool_metrics_repository import PoolMetricsRepository
+from database.repositories.daily_balance_repository import DailyBalanceRepository
+from database.repositories.raw_data_repository import RawDataRepository
+from database.repositories.parameter_repository import ParameterRepository
+from database.repositories.allocation_repository import AllocationRepository
 from asset_allocation.data_quality_report import generate_data_quality_report
 
 # Lazy import for heavy optimization library - imported inside functions to reduce cold start time
@@ -39,12 +43,11 @@ if not logger.handlers:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
-
 # ============================================================================
 # DATA LOADING FUNCTIONS
 # ============================================================================
 
-def fetch_pool_data(engine) -> pd.DataFrame:
+def fetch_pool_data() -> pd.DataFrame:
     """
     Fetches approved pools with forecasted APY and metadata.
     Includes pools with current allocations even if they're below the APY limit or inactive.
@@ -55,77 +58,73 @@ def fetch_pool_data(engine) -> pd.DataFrame:
     """
     from config import MAIN_ASSET_HOLDING_ADDRESS
     
-    # First, get pools with current allocations (include them regardless of APY or active status)
-    allocated_pools_query = """
-    SELECT DISTINCT pdm.pool_id
-    FROM daily_balances db
-    JOIN pool_daily_metrics pdm ON db.pool_id = pdm.pool_id
-    WHERE db.date = CURRENT_DATE
-      AND (db.wallet_address = %s OR db.wallet_address IS NULL)
-      AND db.allocated_balance > 0
-      AND pdm.date = CURRENT_DATE
-    """
-    allocated_pools_df = pd.read_sql(allocated_pools_query, engine, params=(MAIN_ASSET_HOLDING_ADDRESS,))
-    allocated_pool_ids = allocated_pools_df['pool_id'].tolist()
+    metrics_repo = PoolMetricsRepository()
+    balance_repo = DailyBalanceRepository()
     
-    # Build query to include both approved active pools AND pools with current allocations
-    if allocated_pool_ids:
-        pool_ids_str = "', '".join(allocated_pool_ids)
-        query = f"""
-        SELECT
-            pdm.pool_id,
-            p.symbol,
-            p.chain,
-            p.protocol,
-            pdm.forecasted_apy,
-            pdm.forecasted_tvl,
-            p.underlying_tokens
-        FROM pool_daily_metrics pdm
-        JOIN pools p ON pdm.pool_id = p.pool_id
-        WHERE (
-            -- Active pools meeting all criteria
-            pdm.date = CURRENT_DATE
-            AND pdm.is_filtered_out = FALSE
-            AND pdm.forecasted_apy IS NOT NULL
-            AND pdm.forecasted_apy > 0
-            AND pdm.forecasted_tvl IS NOT NULL
-            AND pdm.forecasted_tvl > 0
-            AND p.is_active = TRUE
-          )
-          OR (
-            -- Already allocated pools (regardless of active status)
-            pdm.pool_id IN ('{pool_ids_str}')
-            AND pdm.date = CURRENT_DATE
-            AND pdm.forecasted_apy IS NOT NULL
-          )
-        """
-    else:
-        query = """
-        SELECT
-            pdm.pool_id,
-            p.symbol,
-            p.chain,
-            p.protocol,
-            pdm.forecasted_apy,
-            pdm.forecasted_tvl,
-            p.underlying_tokens
-        FROM pool_daily_metrics pdm
-        JOIN pools p ON pdm.pool_id = p.pool_id
-        WHERE pdm.date = CURRENT_DATE
-          AND pdm.is_filtered_out = FALSE
-          AND pdm.forecasted_apy IS NOT NULL
-          AND pdm.forecasted_apy > 0
-          AND pdm.forecasted_tvl IS NOT NULL
-          AND pdm.forecasted_tvl > 0
-          AND p.is_active = TRUE;
-        """
+    # First, get pools with current allocations
+    allocated_pool_ids = []
+    if MAIN_ASSET_HOLDING_ADDRESS:
+        allocated_pool_ids = balance_repo.get_allocated_pool_ids(MAIN_ASSET_HOLDING_ADDRESS, date.today())
     
-    df = pd.read_sql(query, engine)
+    # Fetch pool candidates using repository
+    rows = metrics_repo.get_pool_candidates_for_optimization(date.today(), allocated_pool_ids)
+    
+    if not rows:
+        logger.warning(f"No pools found for optimization (Allocated pools: {len(allocated_pool_ids)})")
+        return pd.DataFrame()
+        
+    df = pd.DataFrame(rows, columns=[
+        'pool_id', 'symbol', 'chain', 'protocol', 'forecasted_apy', 'forecasted_tvl', 'underlying_tokens'
+    ])
+    
     logger.info(f"Loaded {len(df)} pools ({len(allocated_pool_ids)} with current allocations)")
+    
+    # Normalize underlying tokens using approved tokens mapping
+    from database.repositories.token_repository import TokenRepository
+    token_repo = TokenRepository()
+    approved_tokens = token_repo.get_approved_tokens()
+    
+    # Create mapping: address (lowercase) -> symbol
+    addr_to_symbol = {}
+    for t in approved_tokens:
+        if t.token_address:
+            addr_to_symbol[t.token_address.lower()] = t.token_symbol
+            
+    # Normalize tokens in dataframe
+    normalized_tokens_list = []
+    for _, row in df.iterrows():
+        raw_tokens = row.get('underlying_tokens')
+        pool_tokens = []
+        
+        # Parse if string
+        if isinstance(raw_tokens, str):
+            try:
+                pool_tokens = json.loads(raw_tokens)
+            except:
+                pool_tokens = []
+        elif isinstance(raw_tokens, list):
+            pool_tokens = raw_tokens
+            
+        # Normalize
+        normalized_pool_tokens = []
+        if pool_tokens:
+            for t in pool_tokens:
+                t_lower = t.lower() if isinstance(t, str) else str(t).lower()
+                # Check if it's an address in our map
+                if t_lower in addr_to_symbol:
+                    normalized_pool_tokens.append(addr_to_symbol[t_lower])
+                else:
+                    # Keep original if no map found (might already be a symbol)
+                    normalized_pool_tokens.append(t)
+        
+        normalized_tokens_list.append(normalized_pool_tokens)
+        
+    df['underlying_tokens'] = normalized_tokens_list
+    
     return df
 
 
-def fetch_token_prices(engine, tokens: List[str]) -> Dict[str, float]:
+def fetch_token_prices(tokens: List[str]) -> Dict[str, float]:
     """
     Fetches latest closing prices for given tokens.
     
@@ -135,71 +134,24 @@ def fetch_token_prices(engine, tokens: List[str]) -> Dict[str, float]:
     Returns:
         Dictionary mapping token symbol to USD price
     """
-    if not tokens:
-        return {}
-    
-    # Create a mapping from lowercase to original case for proper return values
-    token_mapping = {token.lower(): token for token in tokens}
-    tokens_lower = list(token_mapping.keys())
-    tokens_str = "','".join(tokens_lower)
-    query = f"""
-    WITH ranked_ohlcv AS (
-        SELECT
-            LOWER(symbol) as symbol_lower,
-            CASE 
-                WHEN raw_json_data ? 'USD' THEN (raw_json_data->'USD'->>'close')::float
-                WHEN raw_json_data ? 'USDT' THEN (raw_json_data->'USDT'->>'close')::float
-                WHEN raw_json_data ? 'BTC' THEN (raw_json_data->'BTC'->>'close')::float
-                WHEN raw_json_data ? 'ETH' THEN (raw_json_data->'ETH'->>'close')::float
-                ELSE NULL
-            END as close_price,
-            data_timestamp as ts,
-            ROW_NUMBER() OVER(
-                PARTITION BY LOWER(symbol) 
-                ORDER BY data_timestamp DESC
-            ) as rn
-        FROM raw_coinmarketcap_ohlcv
-        WHERE LOWER(symbol) IN ('{tokens_str}')
-    )
-    SELECT symbol_lower, close_price
-    FROM ranked_ohlcv
-    WHERE rn = 1;
-    """
-    df = pd.read_sql(query, engine)
-    # Filter out NULL prices and create dictionary
-    prices = {}
-    for _, row in df.iterrows():
-        if pd.notna(row['close_price']):
-            # Map back to the original token name using our lowercase mapping
-            original_token = token_mapping.get(row['symbol_lower'])
-            if original_token:
-                prices[original_token] = row['close_price']
+    repo = RawDataRepository()
+    prices = repo.get_latest_prices(tokens)
     logger.info(f"Loaded prices for {len(prices)} tokens")
     return prices
 
 
-def fetch_gas_fee_data(engine) -> Tuple[float, float, float, float, float]:
+def fetch_gas_fee_data() -> Tuple[float, float, float, float, float]:
     """
     Fetches forecasted gas fee components and ETH price.
     
     Returns:
         Tuple of (eth_price_usd, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
     """
+    repo = RawDataRepository()
+    
     # Fetch ETH price
-    eth_price_query = """
-    WITH ranked_eth AS (
-        SELECT
-            (raw_json_data->'USD'->>'close')::float as close_price,
-            ROW_NUMBER() OVER(ORDER BY (raw_json_data->'USD'->>'timestamp')::timestamp DESC) as rn
-        FROM raw_coinmarketcap_ohlcv
-        WHERE symbol = 'ETH'
-    )
-    SELECT close_price
-    FROM ranked_eth
-    WHERE rn = 1;
-    """
-    eth_df = pd.read_sql(eth_price_query, engine)
-    eth_price = eth_df['close_price'].iloc[0] if not eth_df.empty and pd.notna(eth_df['close_price'].iloc[0]) else 3000.0
+    eth_prices = repo.get_latest_prices(['ETH'])
+    eth_price = eth_prices.get('ETH', 3000.0)
     
     # Gas fee components based on requirements
     base_fee_transfer_gwei = 10.0  # Base fee for transfer/deposit
@@ -216,15 +168,6 @@ def fetch_gas_fee_data(engine) -> Tuple[float, float, float, float, float]:
 def calculate_gas_fee_usd(gas_units: float, base_fee_gwei: float, priority_fee_gwei: float, eth_price_usd: float) -> float:
     """
     Calculate gas fee in USD based on the formula: Gas fee = Gas units * (base fee + priority fee)
-    
-    Args:
-        gas_units: Gas units (limit) for the transaction
-        base_fee_gwei: Base fee in Gwei
-        priority_fee_gwei: Priority fee in Gwei
-        eth_price_usd: ETH price in USD
-        
-    Returns:
-        Gas fee in USD
     """
     total_fee_gwei = gas_units * (base_fee_gwei + priority_fee_gwei)
     gas_fee_usd = total_fee_gwei * 1e-9 * eth_price_usd
@@ -236,16 +179,6 @@ def calculate_transaction_gas_fees(eth_price_usd: float, base_fee_transfer_gwei:
                                    min_gas_units: float) -> Dict[str, float]:
     """
     Calculate gas fees for different transaction types.
-    
-    Args:
-        eth_price_usd: ETH price in USD
-        base_fee_transfer_gwei: Base fee for transfer/deposit in Gwei
-        base_fee_swap_gwei: Base fee for swap in Gwei
-        priority_fee_gwei: Priority fee in Gwei
-        min_gas_units: Minimum gas units
-        
-    Returns:
-        Dictionary with gas fees for different transaction types in USD
     """
     # Pool allocation/withdrawal gas fee (using transfer base fee)
     pool_transaction_gas_fee_usd = calculate_gas_fee_usd(
@@ -270,7 +203,7 @@ def calculate_transaction_gas_fees(eth_price_usd: float, base_fee_transfer_gwei:
     return gas_fees
 
 
-def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, str], float]]:
+def fetch_current_balances() -> Tuple[Dict[str, float], Dict[Tuple[str, str], float]]:
     """
     Fetches current token balances from warm wallet and allocated positions.
     Only queries today's data.
@@ -282,6 +215,8 @@ def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, st
     """
     from config import MAIN_ASSET_HOLDING_ADDRESS
     
+    repo = DailyBalanceRepository()
+    
     if not MAIN_ASSET_HOLDING_ADDRESS:
         logger.error("MAIN_ASSET_HOLDING_ADDRESS not configured")
         return {}, {}
@@ -289,22 +224,11 @@ def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, st
     warm_wallet = {}
     allocations = {}
     
-    # Query today's data only
-    # Include records with NULL wallet_address as they may contain the allocated assets
-    query = """
-    SELECT
-        token_symbol,
-        unallocated_balance,
-        allocated_balance,
-        pool_id
-    FROM daily_balances
-    WHERE date = CURRENT_DATE AND (wallet_address = %s OR wallet_address IS NULL);
-    """
-    
     try:
-        df = pd.read_sql(query, engine, params=(MAIN_ASSET_HOLDING_ADDRESS,))
+        # Query today's data only
+        balances = repo.get_current_balances(MAIN_ASSET_HOLDING_ADDRESS, date.today())
         
-        if df.empty:
+        if not balances:
             logger.info(f"No balance data found for wallet {MAIN_ASSET_HOLDING_ADDRESS} today")
             return {}, {}
             
@@ -315,158 +239,129 @@ def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, st
         return {}, {}
     
     # Process the data
-    for _, row in df.iterrows():
-        token = row['token_symbol']
+    for row in balances:
+        token = row.token_symbol
         
-        # Unallocated balance in warm wallet (handle NULL values properly)
-        if pd.notna(row['unallocated_balance']) and row['unallocated_balance'] > 0:
-            warm_wallet[token] = warm_wallet.get(token, 0) + float(row['unallocated_balance'])
+        # Unallocated balance in warm wallet
+        if row.unallocated_balance and row.unallocated_balance > 0:
+            warm_wallet[token] = warm_wallet.get(token, 0) + float(row.unallocated_balance)
         
-        # Allocated balance to pools (handle NULL values properly)
-        if pd.notna(row['allocated_balance']) and row['allocated_balance'] > 0 and pd.notna(row['pool_id']):
-            key = (row['pool_id'], token)
-            allocations[key] = allocations.get(key, 0) + float(row['allocated_balance'])
+        # Allocated balance to pools
+        if row.allocated_balance and row.allocated_balance > 0 and row.pool_id:
+            key = (row.pool_id, token)
+            allocations[key] = allocations.get(key, 0) + float(row.allocated_balance)
     
     logger.info(f"Warm wallet: {len(warm_wallet)} tokens, Total allocated positions: {len(allocations)}")
     return warm_wallet, allocations
 
 
-def fetch_default_parameters(engine) -> Dict:
+def fetch_default_parameters() -> Dict:
     """Fetches default parameters from default_allocation_parameters table."""
-    from sqlalchemy import text
-    
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT parameter_name, parameter_value FROM default_allocation_parameters"))
-        defaults = {}
-        for row in result:
-            defaults[row[0]] = row[1]  # Access by index instead of column name
-        logger.info(f"Loaded {len(defaults)} default parameters from default_allocation_parameters")
-        return defaults
+    repo = ParameterRepository()
+    defaults = repo.get_all_default_parameters()
+    logger.info(f"Loaded {len(defaults)} default parameters from default_allocation_parameters")
+    return defaults
 
 
-def fetch_allocation_parameters(engine, custom_overrides: Dict = None) -> Dict:
+def fetch_allocation_parameters(custom_overrides: Dict = None) -> Dict:
     """
     Fetches the latest allocation parameters with support for custom overrides.
-    
-    Args:
-        engine: Database engine
-        custom_overrides: Optional dictionary of custom parameter overrides
-        
-    Returns:
-        Dictionary of allocation parameters
     """
-    from sqlalchemy import text
+    repo = ParameterRepository()
     
     # First, fetch default parameters
-    default_params = fetch_default_parameters(engine)
+    default_params = fetch_default_parameters()
     
     # Then, fetch the latest allocation parameters
-    query = """
-    SELECT *
-    FROM allocation_parameters
-    ORDER BY timestamp DESC
-    LIMIT 1;
-    """
-    df = pd.read_sql(query, engine)
+    latest_params_obj = repo.get_latest_parameters()
     
-    if df.empty:
+    if not latest_params_obj:
         logger.warning("No allocation parameters found, using defaults from default_allocation_parameters")
-        params = {
-            'run_id': None,
-            'timestamp': None,
-            'max_alloc_percentage': float(default_params.get('max_alloc_percentage', 0.25)),
-            'conversion_rate': float(default_params.get('conversion_rate', 0.0004)),
-            'min_transaction_value': 50.0,
-            'tvl_limit_percentage': float(default_params.get('tvl_limit_percentage', 0.05)),
-            'min_pools': int(default_params.get('min_pools', 5)),
-            
-            'token_marketcap_limit': float(default_params.get('token_marketcap_limit', 1000000000.0)),
-            'pool_tvl_limit': float(default_params.get('pool_tvl_limit', 100000.0)),
-            'pool_apy_limit': float(default_params.get('pool_apy_limit', 0.01)),
-            'pool_pair_tvl_ratio_min': float(default_params.get('pool_pair_tvl_ratio_min', 0.3)),
-            'pool_pair_tvl_ratio_max': float(default_params.get('pool_pair_tvl_ratio_max', 0.5)),
-            'group1_max_pct': float(default_params.get('group1_max_pct', 0.35)),
-            'group2_max_pct': float(default_params.get('group2_max_pct', 0.35)),
-            'group3_max_pct': float(default_params.get('group3_max_pct', 0.3)),
-            'position_max_pct_total_assets': float(default_params.get('position_max_pct_total_assets', 0.25)),
-            'position_max_pct_pool_tvl': float(default_params.get('position_max_pct_pool_tvl', 0.05)),
-            'group1_apy_delta_max': float(default_params.get('group1_apy_delta_max', 0.01)),
-            'group1_7d_stddev_max': float(default_params.get('group1_7d_stddev_max', 0.015)),
-            'group1_30d_stddev_max': float(default_params.get('group1_30d_stddev_max', 0.02)),
-            'group2_apy_delta_max': float(default_params.get('group2_apy_delta_max', 0.03)),
-            'group2_7d_stddev_max': float(default_params.get('group2_7d_stddev_max', 0.04)),
-            'group2_30d_stddev_max': float(default_params.get('group2_30d_stddev_max', 0.05)),
-            'group3_apy_delta_min': float(default_params.get('group3_apy_delta_min', 0.03)),
-            'group3_7d_stddev_min': float(default_params.get('group3_7d_stddev_min', 0.04)),
-            'group3_30d_stddev_min': float(default_params.get('group3_30d_stddev_min', 0.02)),
-            'icebox_ohlc_l_threshold_pct': float(default_params.get('icebox_ohlc_l_threshold_pct', 0.02)),
-            'icebox_ohlc_l_days_threshold': int(default_params.get('icebox_ohlc_l_days_threshold', 2)),
-            'icebox_ohlc_c_threshold_pct': float(default_params.get('icebox_ohlc_c_threshold_pct', 0.01)),
-            'icebox_ohlc_c_days_threshold': int(default_params.get('icebox_ohlc_c_days_threshold', 1)),
-            'icebox_recovery_l_days_threshold': int(default_params.get('icebox_recovery_l_days_threshold', 2)),
-            'icebox_recovery_c_days_threshold': int(default_params.get('icebox_recovery_c_days_threshold', 3))
-        }
-        logger.info("Parameter source: Default values from default_allocation_parameters table")
+        params = {}
     else:
-        params = df.iloc[0].to_dict()
-        
-        # Fill in any NULL values with defaults
-        if params.get('max_alloc_percentage') is None:
-            logger.warning("max_alloc_percentage is NULL, using default value")
-            params['max_alloc_percentage'] = float(default_params.get('max_alloc_percentage', 0.25))
-        if params.get('conversion_rate') is None:
-            logger.warning("conversion_rate is NULL, using default value")
-            params['conversion_rate'] = float(default_params.get('conversion_rate', 0.0004))
-        if params.get('tvl_limit_percentage') is None:
-            logger.warning("tvl_limit_percentage is NULL, using default value")
-            params['tvl_limit_percentage'] = float(default_params.get('tvl_limit_percentage', 0.05))
-        if params.get('min_pools') is None:
-            logger.warning("min_pools is NULL, using default value")
-            params['min_pools'] = int(default_params.get('min_pools', 5))
-        
-        
+        # Convert SQLAlchemy object to dict
+        params = {
+             'run_id': latest_params_obj.run_id,
+             'timestamp': latest_params_obj.timestamp,
+             'max_alloc_percentage': latest_params_obj.max_alloc_percentage,
+             'conversion_rate': latest_params_obj.conversion_rate,
+             'tvl_limit_percentage': latest_params_obj.tvl_limit_percentage,
+             'min_pools': latest_params_obj.min_pools,
+             'token_marketcap_limit': latest_params_obj.token_marketcap_limit,
+             'pool_tvl_limit': latest_params_obj.pool_tvl_limit,
+             'pool_apy_limit': latest_params_obj.pool_apy_limit,
+             'pool_pair_tvl_ratio_min': latest_params_obj.pool_pair_tvl_ratio_min,
+             'pool_pair_tvl_ratio_max': latest_params_obj.pool_pair_tvl_ratio_max,
+             'group1_max_pct': latest_params_obj.group1_max_pct,
+             'group2_max_pct': latest_params_obj.group2_max_pct,
+             'group3_max_pct': latest_params_obj.group3_max_pct,
+             'position_max_pct_total_assets': latest_params_obj.position_max_pct_total_assets,
+             'position_max_pct_pool_tvl': latest_params_obj.position_max_pct_pool_tvl,
+             'group1_apy_delta_max': latest_params_obj.group1_apy_delta_max,
+             'group1_7d_stddev_max': latest_params_obj.group1_7d_stddev_max,
+             'group1_30d_stddev_max': latest_params_obj.group1_30d_stddev_max,
+             'group2_apy_delta_max': latest_params_obj.group2_apy_delta_max,
+             'group2_7d_stddev_max': latest_params_obj.group2_7d_stddev_max,
+             'group2_30d_stddev_max': latest_params_obj.group2_30d_stddev_max,
+             'group3_apy_delta_min': latest_params_obj.group3_apy_delta_min,
+             'group3_7d_stddev_min': latest_params_obj.group3_7d_stddev_min,
+             'group3_30d_stddev_min': latest_params_obj.group3_30d_stddev_min,
+             'icebox_ohlc_l_threshold_pct': latest_params_obj.icebox_ohlc_l_threshold_pct,
+             'icebox_ohlc_l_days_threshold': latest_params_obj.icebox_ohlc_l_days_threshold,
+             'icebox_ohlc_c_threshold_pct': latest_params_obj.icebox_ohlc_c_threshold_pct,
+             'icebox_ohlc_c_days_threshold': latest_params_obj.icebox_ohlc_c_days_threshold,
+             'icebox_recovery_l_days_threshold': latest_params_obj.icebox_recovery_l_days_threshold,
+             'icebox_recovery_c_days_threshold': latest_params_obj.icebox_recovery_c_days_threshold
+        }
         logger.info(f"Parameter source: Latest allocation_parameters with run_id={params.get('run_id')}")
+
+    # Fallbacks for critical parameters if missing from DB or object
+    # Using defaults logic similar to original script
+    defaults_map = {
+        'max_alloc_percentage': 0.25,
+        'conversion_rate': 0.0004,
+        'tvl_limit_percentage': 0.05,
+        'min_pools': 5,
+        'min_transaction_value': 50.0,
+        # ... others ...
+    }
     
+    # Merge logic: params from DB (if any) -> defaults from DB -> hardcoded defaults
+    final_params = defaults_map.copy()
+    
+    # Update with DB defaults
+    for k, v in default_params.items():
+        if v is not None:
+             final_params[k] = v
+             
+    # Update with latest params from table
+    for k, v in params.items():
+        if v is not None:
+            final_params[k] = v
+            
     # Apply custom overrides if provided
     if custom_overrides:
         logger.info(f"Applying {len(custom_overrides)} custom parameter overrides")
         for key, value in custom_overrides.items():
-            if key in params:
-                original_value = params[key]
-                params[key] = value
+            if key in final_params:
+                original_value = final_params[key]
+                final_params[key] = value
                 logger.info(f"Override applied: {key} changed from {original_value} to {value}")
             else:
                 logger.warning(f"Override parameter '{key}' not found in parameters, skipping")
-        logger.info("Custom overrides applied successfully")
     
-    logger.info(f"Final parameters: max_alloc={params.get('max_alloc_percentage')}, tvl_limit={params.get('tvl_limit_percentage')}")
-    return params
+    logger.info(f"Final parameters: max_alloc={final_params.get('max_alloc_percentage')}, tvl_limit={final_params.get('tvl_limit_percentage')}")
+    return final_params
 
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
-
-
-
-
-
-
 def calculate_aum(warm_wallet: Dict[str, float], 
                   current_allocations: Dict[Tuple[str, str], float],
                   token_prices: Dict[str, float]) -> float:
-    """
-    Calculates total Assets Under Management in USD.
-    
-    Args:
-        warm_wallet: Unallocated token balances
-        current_allocations: Allocated positions
-        token_prices: Token prices in USD
-        
-    Returns:
-        Total AUM in USD
-    """
+    """Calculates total Assets Under Management in USD."""
     total_usd = 0.0
     
     # Warm wallet value
@@ -486,34 +381,23 @@ def calculate_aum(warm_wallet: Dict[str, float],
 def build_token_universe(pools_df: pd.DataFrame, 
                          warm_wallet: Dict[str, float],
                          current_allocations: Dict[Tuple[str, str], float]) -> List[str]:
-    """
-    Builds the complete set of tokens needed for optimization.
-    
-    Returns:
-        Sorted list of unique token symbols
-    """
+    """Builds the complete set of tokens needed for optimization."""
     tokens = set()
     
-    # Tokens from pools using underlying_tokens (populated by filter_pools_pre)
+    # Tokens from pools using underlying_tokens
     for _, row in pools_df.iterrows():
         underlying_tokens = row.get('underlying_tokens')
         
-        # Check if underlying_tokens is valid (not None, not NaN, not empty)
-        # Handle both string JSON and already-parsed list types
         has_valid_tokens = False
         if isinstance(underlying_tokens, list):
-            # Already a list from database
             has_valid_tokens = len(underlying_tokens) > 0
         elif isinstance(underlying_tokens, str):
-            # String JSON that needs parsing
             has_valid_tokens = True
         elif underlying_tokens is not None:
-            # Some other type - check if it's not NaN
             has_valid_tokens = pd.notna(underlying_tokens)
         
         if has_valid_tokens:
             try:
-                # Parse JSON array of token symbols
                 if isinstance(underlying_tokens, str):
                     pool_tokens = json.loads(underlying_tokens)
                 elif isinstance(underlying_tokens, list):
@@ -543,7 +427,7 @@ def build_token_universe(pools_df: pd.DataFrame,
 
 
 # ============================================================================
-# OPTIMIZATION MODEL
+# OPTIMIZATION MODEL (AllocationOptimizer Class)
 # ============================================================================
 
 class AllocationOptimizer:
@@ -554,17 +438,12 @@ class AllocationOptimizer:
     def __init__(self, pools_df: pd.DataFrame, token_prices: Dict[str, float],
                  warm_wallet: Dict[str, float], current_allocations: Dict[Tuple[str, str], float],
                  gas_fees: Dict[str, float], alloc_params: Dict):
-        """
-        Initialize the optimizer.
-        
-        Args:
-            pools_df: DataFrame of approved pools
-            token_prices: Token price dictionary
-            warm_wallet: Current warm wallet balances
-            current_allocations: Current pool allocations
-            gas_fees: Dictionary of gas fees for different transaction types in USD
-            alloc_params: Allocation parameters
-        """
+        """Initialize the optimizer."""
+        # Cast numeric columns to float to avoid Decimal issues
+        if not pools_df.empty:
+            pools_df['forecasted_apy'] = pools_df['forecasted_apy'].astype(float)
+            pools_df['forecasted_tvl'] = pools_df['forecasted_tvl'].astype(float)
+            
         self.pools_df = pools_df
         self.token_prices = token_prices
         self.warm_wallet = warm_wallet
@@ -614,58 +493,32 @@ class AllocationOptimizer:
         self.total_aum = calculate_aum(warm_wallet, current_allocations, token_prices)
         
         # Constants
-        self.conversion_rate = alloc_params.get('conversion_rate', 0.0004)
-        self.min_transaction_value = alloc_params.get('min_transaction_value', 50.0)
-        self.max_alloc_percentage = alloc_params.get('max_alloc_percentage', 0.25)
-        self.tvl_limit_percentage = alloc_params.get('tvl_limit_percentage', 0.05) or 0.05
+        self.conversion_rate = float(alloc_params.get('conversion_rate', 0.0004))
+        self.min_transaction_value = float(alloc_params.get('min_transaction_value', 50.0))
+        self.max_alloc_percentage = float(alloc_params.get('max_alloc_percentage', 0.25))
+        self.tvl_limit_percentage = float(alloc_params.get('tvl_limit_percentage', 0.05) or 0.05)
         
         logger.info(f"Optimizer initialized: {self.n_pools} pools, {self.n_tokens} tokens, AUM=${self.total_aum:,.2f}")
         logger.info(f"Parameters: max_alloc={self.max_alloc_percentage:.1%} (${self.max_alloc_percentage * self.total_aum:,.2f} per pool), tvl_limit={self.tvl_limit_percentage:.1%}, conversion_rate={self.conversion_rate:.4%}")
     
     def build_model(self) -> "cp.Problem":
-        """
-        Constructs the CVXPY optimization model.
-        
-        Returns:
-            CVXPY Problem instance
-        """
-        # Lazy import for heavy optimization library
+        """Constructs the CVXPY optimization model."""
         import cvxpy as cp
         self._cp = cp  # Store reference for use in solve() method
         
         logger.info("Building optimization model...")
         
-        # ====================================================================
-        # DECISION VARIABLES
-        # ====================================================================
-        
-        # Final allocation to each (pool, token) - the target state
-        # Shape: (n_pools, n_tokens)
+        # Variables definition
         self.alloc = cp.Variable((self.n_pools, self.n_tokens), nonneg=True)
-        
-        # Withdrawal from each (pool, token)
         self.withdraw = cp.Variable((self.n_pools, self.n_tokens), nonneg=True)
-        
-        # Conversion between tokens: convert[i,j] = amount of token i converted to token j
-        # Shape: (n_tokens, n_tokens)
         self.convert = cp.Variable((self.n_tokens, self.n_tokens), nonneg=True)
-        
-        # Final warm wallet balance for each token
         self.final_warm_wallet = cp.Variable(self.n_tokens, nonneg=True)
-        
-        # Binary variables to track whether conversion is needed for each allocation
-        # needs_conversion[i,j] = 1 if we need to convert token j for allocation to pool i
         self.needs_conversion = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
-        
-        # Binary variables to track if there's an allocation to each pool
-        # has_allocation[i] = 1 if we're allocating any amount to pool i
         self.has_allocation = cp.Variable(self.n_pools, boolean=True)
+        self.is_withdrawal = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
+        self.is_conversion = cp.Variable((self.n_tokens, self.n_tokens), boolean=True)
         
-        # ====================================================================
-        # INITIAL STATE VECTORS
-        # ====================================================================
-        
-        # Current allocation matrix
+        # Initialize vectors
         current_alloc_matrix = np.zeros((self.n_pools, self.n_tokens))
         for (pool_id, token), amount in self.current_allocations.items():
             if pool_id in self.pool_idx and token in self.token_idx:
@@ -673,121 +526,56 @@ class AllocationOptimizer:
                 j = self.token_idx[token]
                 current_alloc_matrix[i, j] = amount
         
-        # Current warm wallet vector
         warm_wallet_vector = np.zeros(self.n_tokens)
         for token, amount in self.warm_wallet.items():
             if token in self.token_idx:
                 j = self.token_idx[token]
                 warm_wallet_vector[j] = amount
         
-        # Token prices vector
         price_vector = np.array([self.token_prices.get(t, 1.0) for t in self.tokens])
         
-        # ====================================================================
-        # OBJECTIVE FUNCTION
-        # ====================================================================
-        
-        # Daily yield = sum over all pools of (allocation * daily_apy * price)
-        # daily_apy = forecasted_apy / 365
+        # Objective Function
         daily_apy_matrix = np.zeros((self.n_pools, self.n_tokens))
-        
         for idx, row in self.pools_df.iterrows():
             pool_id = row['pool_id']
             i = self.pool_idx[pool_id]
-            # Daily APY is directly calculated from the stored percentage
-            # Stored APY is already a percentage (e.g., 1.2 means 1.2%), so convert to daily rate
             daily_apy = row['forecasted_apy'] / 100.0 / 365.0
             
-            # Apply APY to all tokens in this pool
             for token in self.pool_tokens[pool_id]:
                 if token in self.token_idx:
                     j = self.token_idx[token]
                     daily_apy_matrix[i, j] = daily_apy
         
-        # Total yield in USD
         yield_usd = cp.sum(cp.multiply(
             cp.multiply(self.alloc, daily_apy_matrix),
             price_vector
         ))
         
-        # Transaction costs with correct formulas
-        # Create binary variables for withdrawals (is_withdrawal[i,j] = 1 if withdraw[i,j] > 0)
-        self.is_withdrawal = cp.Variable((self.n_pools, self.n_tokens), boolean=True)
+        # Transaction Costs
+        withdrawal_gas_costs = cp.sum(cp.multiply(self.is_withdrawal, self.withdrawal_gas_fee))
+        allocation_gas_costs = cp.sum(cp.multiply(self.needs_conversion, self.allocation_gas_fee))
+        conversion_conversion_costs = cp.sum(cp.multiply(cp.multiply(self.convert, price_vector), self.conversion_rate))
+        conversion_gas_costs = cp.sum(cp.multiply(self.is_conversion, self.conversion_gas_fee))
         
-        # Create binary variables for conversions (is_conversion[i,j] = 1 if convert[i,j] > 0)
-        self.is_conversion = cp.Variable((self.n_tokens, self.n_tokens), boolean=True)
-        
-        # 1. Withdrawal costs: ONLY gas_fee (no conversion costs for withdrawals)
-        withdrawal_gas_costs = cp.sum(cp.multiply(
-            self.is_withdrawal,
-            self.withdrawal_gas_fee
-        ))
-        
-        # 2. Allocation costs: ONLY gas_fee (no conversion costs for allocations)
-        # Gas costs for allocations (only allocation gas fee, no conversion involved)
-        allocation_gas_costs = cp.sum(cp.multiply(
-            self.needs_conversion,  # Binary tracking if allocation exists
-            self.allocation_gas_fee
-        ))
-        
-        # 3. Conversion costs: amount * conversion_rate + gas_fee for each actual conversion
-        conversion_conversion_costs = cp.sum(cp.multiply(
-            cp.multiply(self.convert, price_vector),
-            self.conversion_rate
-        ))
-        
-        conversion_gas_costs = cp.sum(cp.multiply(
-            self.is_conversion,
-            self.conversion_gas_fee
-        ))
-        
-        # Total transaction costs
         self.total_transaction_costs = (
-            withdrawal_gas_costs +
-            allocation_gas_costs +
-            conversion_conversion_costs + 
-            conversion_gas_costs
+            withdrawal_gas_costs + allocation_gas_costs + conversion_conversion_costs + conversion_gas_costs
         )
         
-        # IMPROVED OBJECTIVE FUNCTION:
-        # Maximize NET yield improvement: yield from new allocations - yield lost from withdrawals
-        # This incentivizes reallocation from lower-APY to higher-APY pools
-        
-        # Calculate yield lost from withdrawals
-        withdrawal_yield_loss = cp.sum(cp.multiply(
-            cp.multiply(self.withdraw, daily_apy_matrix),
-            price_vector
-        ))
-        
-        # Net yield improvement = new yield - yield lost from withdrawals
+        withdrawal_yield_loss = cp.sum(cp.multiply(cp.multiply(self.withdraw, daily_apy_matrix), price_vector))
         net_yield_improvement = yield_usd - withdrawal_yield_loss
         
-        # Maximize net yield improvement
         objective = cp.Maximize(net_yield_improvement)
         
-        # ====================================================================
-        # CONSTRAINTS
-        # ====================================================================
-        
+        # Constraints
         constraints = []
         
         # 1. Token balance conservation
-        # For each token: initial_warm_wallet + withdrawals + conversions_in 
-        #                 = final_warm_wallet + allocations + conversions_out
         for j in range(self.n_tokens):
-            token_in = (
-                warm_wallet_vector[j] +  # Initial warm wallet
-                cp.sum(self.withdraw[:, j]) +  # Withdrawals from pools
-                cp.sum(self.convert[:, j])  # Conversions into this token
-            )
-            token_out = (
-                self.final_warm_wallet[j] +  # Final warm wallet
-                cp.sum(self.alloc[:, j]) +  # Allocations to pools
-                cp.sum(self.convert[j, :])  # Conversions out of this token
-            )
+            token_in = warm_wallet_vector[j] + cp.sum(self.withdraw[:, j]) + cp.sum(self.convert[:, j])
+            token_out = self.final_warm_wallet[j] + cp.sum(self.alloc[:, j]) + cp.sum(self.convert[j, :])
             constraints.append(token_in == token_out)
         
-        # 2. Withdrawal constraints: can only withdraw what's currently allocated
+        # 2. Withdrawal limits
         for i in range(self.n_pools):
             for j in range(self.n_tokens):
                 constraints.append(self.withdraw[i, j] <= current_alloc_matrix[i, j])
@@ -796,123 +584,73 @@ class AllocationOptimizer:
         for j in range(self.n_tokens):
             constraints.append(self.convert[j, j] == 0)
         
-        # 4. Multi-token pool even distribution
+        # 4. Multi-token pool equal distribution
         for pool_id, tokens in self.pool_tokens.items():
-            if len(tokens) > 1:  # Multi-token pool
+            if len(tokens) > 1:
                 i = self.pool_idx[pool_id]
                 token_indices = [self.token_idx[t] for t in tokens if t in self.token_idx]
-                
                 if len(token_indices) > 1:
-                    # All tokens in this pool must have equal USD value
                     for k in range(len(token_indices) - 1):
                         j1 = token_indices[k]
                         j2 = token_indices[k + 1]
-                        # alloc[i, j1] * price[j1] == alloc[i, j2] * price[j2]
-                        constraints.append(
-                            self.alloc[i, j1] * price_vector[j1] == 
-                            self.alloc[i, j2] * price_vector[j2]
-                        )
+                        constraints.append(self.alloc[i, j1] * price_vector[j1] == self.alloc[i, j2] * price_vector[j2])
         
         # 5. Pool allocation limits
-        # Maximum allocation per pool as percentage of total AUM
-        # Apply constraint with a small buffer to ensure strict compliance
-        max_pool_allocation_usd = self.max_alloc_percentage * self.total_aum * 0.999  # 0.1% buffer for numerical stability
-        
+        max_pool_allocation_usd = self.max_alloc_percentage * self.total_aum * 0.999
         for i in range(self.n_pools):
             pool_total_usd = cp.sum(cp.multiply(self.alloc[i, :], price_vector))
-            # Strict constraint: each pool allocation must be strictly less than max percentage
             constraints.append(pool_total_usd <= max_pool_allocation_usd)
             
-            # TVL limit constraint: allocation cannot exceed tvl_limit_percentage of pool's forecasted TVL
             pool_id = self.pools[i]
             pool_forecasted_tvl = self.pool_tvl.get(pool_id, 0)
             if pool_forecasted_tvl > 0:
                 constraints.append(pool_total_usd <= self.tvl_limit_percentage * pool_forecasted_tvl)
         
-        # 6. AUM CONSERVATION CONSTRAINT (IMPROVED):
-        # Total allocated amount + transaction costs + final warm wallet <= total AUM
-        # This ensures proper accounting where costs are actually deducted from available capital
+        # 6. AUM Conservation
         total_allocated_usd = cp.sum(cp.multiply(self.alloc, price_vector))
         total_final_warm_wallet_usd = cp.sum(cp.multiply(self.final_warm_wallet, price_vector))
+        constraints.append(total_allocated_usd + self.total_transaction_costs + total_final_warm_wallet_usd <= self.total_aum)
         
-        # The sum of allocations, costs, and remaining warm wallet must equal initial AUM
-        constraints.append(
-            total_allocated_usd + self.total_transaction_costs + total_final_warm_wallet_usd <= self.total_aum
-        )
-        
-        # Alternative constraint to minimize unallocated funds (optional - can be enabled/disabled)
-        # This pushes the optimizer to allocate as much as possible after accounting for costs
-        # constraints.append(total_final_warm_wallet_usd <= 0.01 * self.total_aum)  # Allow max 1% unallocated
-        
-        # 7. Link conversion needs to available balances
-        # For each allocation, determine if conversion is needed based on available warm wallet balance
+        # 7. Needs conversion constraint
         for i in range(self.n_pools):
             for j in range(self.n_tokens):
-                # If we need to allocate more than we have in warm wallet, we need conversion
-                # This is a simplified approach - in practice we'd need to track the sequence more carefully
-                # needs_conversion[i,j] should be 1 if alloc[i,j] > warm_wallet[j] after accounting for withdrawals
-                constraints.append(
-                    self.needs_conversion[i, j] >= 
-                    (self.alloc[i, j] - warm_wallet_vector[j] - cp.sum(self.withdraw[:, j])) / self.total_aum
-                )
-                # Ensure needs_conversion is binary (0 or 1)
+                constraints.append(self.needs_conversion[i, j] >= (self.alloc[i, j] - warm_wallet_vector[j] - cp.sum(self.withdraw[:, j])) / self.total_aum)
                 constraints.append(self.needs_conversion[i, j] <= 1)
         
-        # 8. Link has_allocation to actual allocations
+        # 8. Has allocation constraint (Big-M)
+        big_M = self.total_aum
         for i in range(self.n_pools):
-            # has_allocation[i] should be 1 if any token is allocated to pool i
-            total_pool_allocation = cp.sum(self.alloc[i, :])
-            # Big-M formulation - if total allocation > 0, then has_allocation = 1
-            big_M = self.total_aum  # Upper bound on any allocation
-            constraints.append(total_pool_allocation <= big_M * self.has_allocation[i])
-            constraints.append(total_pool_allocation >= 0.01 * self.has_allocation[i])  # Small threshold to avoid numerical issues
-        
-        # 9. Link binary variables to transaction amounts
-        # Withdrawal binary variables
+             total_pool_allocation = cp.sum(self.alloc[i, :])
+             constraints.append(total_pool_allocation <= big_M * self.has_allocation[i])
+             constraints.append(total_pool_allocation >= 0.01 * self.has_allocation[i])
+             
+        # 9. Binary variables linkage
         for i in range(self.n_pools):
             for j in range(self.n_tokens):
-                # Big-M formulation for withdrawal binary variables
-                big_M_withdraw = current_alloc_matrix[i, j] + self.total_aum  # Upper bound
+                big_M_withdraw = current_alloc_matrix[i, j] + self.total_aum
                 constraints.append(self.withdraw[i, j] <= big_M_withdraw * self.is_withdrawal[i, j])
-                constraints.append(self.withdraw[i, j] >= 0.01 * self.is_withdrawal[i, j])  # Small threshold
-        
-        # Conversion binary variables
+                constraints.append(self.withdraw[i, j] >= 0.01 * self.is_withdrawal[i, j])
+                
         for i in range(self.n_tokens):
             for j in range(self.n_tokens):
-                if i != j:  # Skip self-conversions
-                    # Big-M formulation for conversion binary variables
-                    big_M_convert = self.total_aum  # Upper bound
+                if i != j:
+                    big_M_convert = self.total_aum
                     constraints.append(self.convert[i, j] <= big_M_convert * self.is_conversion[i, j])
-                    constraints.append(self.convert[i, j] >= 0.01 * self.is_conversion[i, j])  # Small threshold
+                    constraints.append(self.convert[i, j] >= 0.01 * self.is_conversion[i, j])
         
-        # 10. Non-negativity (already enforced by variable definition, but adding explicitly)
+        # 10. Non-negativity
         constraints.append(self.alloc >= 0)
         constraints.append(self.withdraw >= 0)
         constraints.append(self.convert >= 0)
         constraints.append(self.final_warm_wallet >= 0)
         
         logger.info(f"Model built with {len(constraints)} constraints")
-        
-        problem = cp.Problem(objective, constraints)
-        return problem
+        return cp.Problem(objective, constraints)
     
     def solve(self, solver=None, verbose=True) -> bool:
-        """
-        Solves the optimization problem.
-        
-        Args:
-            solver: CVXPY solver to use (defaults to HIGHS if None)
-            verbose: Whether to print solver output
-            
-        Returns:
-            True if optimal solution found, False otherwise
-        """
+        """Solves the optimization problem."""
         problem = self.build_model()
-        
-        # Use stored cvxpy reference from build_model
         cp = self._cp
-        
-        # Default to HIGHS solver if none provided
         if solver is None:
             solver = cp.HIGHS
         
@@ -935,36 +673,29 @@ class AllocationOptimizer:
         else:
             logger.error(f"✗ Optimization failed: {problem.status}")
             return False
-    
+
     def extract_results(self) -> Tuple[pd.DataFrame, List[Dict]]:
-        """
-        Extracts results from solved optimization model.
-        
-        Returns:
-            Tuple of (allocations_df, transactions_list)
-        """
+        """Extracts results from solved optimization model."""
         if self.alloc.value is None:
             logger.error("No solution available to extract")
             return pd.DataFrame(), []
-        
+            
         allocations = []
         transactions = []
         transaction_seq = 1
-        
         price_vector = np.array([self.token_prices.get(t, 1.0) for t in self.tokens])
         
-        # ====================================================================
-        # STEP 1: WITHDRAWALS
-        # ====================================================================
+        # Helper to get value safe from None
+        def get_val(var, i, j):
+             return var.value[i, j] if var.value is not None else 0
         
+        # Step 1: Withdrawals
         for i in range(self.n_pools):
             pool_id = self.pools[i]
             for j in range(self.n_tokens):
                 token = self.tokens[j]
-                amount = self.withdraw.value[i, j] if self.withdraw.value is not None else 0
-                
-                if amount > 0.01:  # Threshold for meaningful transactions
-                    # Calculate withdrawal cost: ONLY gas_fee (no conversion costs)
+                amount = get_val(self.withdraw, i, j)
+                if amount > 0.01:
                     withdrawal_cost = self.withdrawal_gas_fee
                     transactions.append({
                         'seq': transaction_seq,
@@ -975,24 +706,19 @@ class AllocationOptimizer:
                         'amount': amount,
                         'amount_usd': amount * price_vector[j],
                         'gas_cost_usd': self.withdrawal_gas_fee,
-                        'conversion_cost_usd': 0.0,  # No conversion cost for withdrawals
+                        'conversion_cost_usd': 0.0,
                         'total_cost_usd': withdrawal_cost
                     })
                     transaction_seq += 1
         
-        # ====================================================================
-        # STEP 2: CONVERSIONS
-        # ====================================================================
-        
+        # Step 2: Conversions
         for i in range(self.n_tokens):
             from_token = self.tokens[i]
             for j in range(self.n_tokens):
                 to_token = self.tokens[j]
                 if i != j:
-                    amount = self.convert.value[i, j] if self.convert.value is not None else 0
-                    
+                    amount = get_val(self.convert, i, j)
                     if amount > 0.01:
-                        # Calculate conversion cost: amount * conversion_rate + conversion_gas_fee
                         conversion_cost = amount * price_vector[i] * self.conversion_rate + self.conversion_gas_fee
                         transactions.append({
                             'seq': transaction_seq,
@@ -1009,26 +735,16 @@ class AllocationOptimizer:
                         })
                         transaction_seq += 1
         
-        # ====================================================================
-        # STEP 3: ALLOCATIONS
-        # ====================================================================
-        
+        # Step 3: Allocations
         for i in range(self.n_pools):
             pool_id = self.pools[i]
             symbol = self.pools_df[self.pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
-            
             for j in range(self.n_tokens):
                 token = self.tokens[j]
-                amount = self.alloc.value[i, j] if self.alloc.value is not None else 0
-                
+                amount = get_val(self.alloc, i, j)
                 if amount > 0.01:
                     amount_usd = amount * price_vector[j]
-                    
-                    # Check if conversion is needed for this allocation
-                    needs_conversion = self.needs_conversion.value[i, j] if self.needs_conversion.value is not None else 0
-                    
-                    # Calculate allocation cost: ONLY gas_fee (no conversion costs)
-                    # Allocations don't incur conversion costs - only the separate CONVERSION transactions do
+                    needs_conversion = get_val(self.needs_conversion, i, j)
                     gas_cost = self.allocation_gas_fee
                     total_cost = gas_cost
                     
@@ -1049,306 +765,136 @@ class AllocationOptimizer:
                         'token': token,
                         'amount': amount,
                         'amount_usd': amount_usd,
-                        'conversion_cost_usd': 0.0,  # No conversion cost for allocations
+                        'conversion_cost_usd': 0.0,
                         'gas_cost_usd': gas_cost,
                         'total_cost_usd': total_cost,
                         'needs_conversion': bool(needs_conversion > 0.5)
                     })
                     transaction_seq += 1
-        
+                    
         allocations_df = pd.DataFrame(allocations)
-        
         logger.info(f"Extracted {len(allocations)} allocations and {len(transactions)} transactions")
-        
         return allocations_df, transactions
-    
+
     def format_results(self) -> Dict:
-        """
-        Formats optimization results to match the requirements in optimization.md.
-        
-        Returns:
-            Dictionary with final_allocations, unallocated_tokens, and transactions
-        """
+        """Formats optimization results."""
         if self.alloc.value is None:
-            logger.error("No solution available to format")
-            return {
-                "final_allocations": {},
-                "unallocated_tokens": {},
-                "transactions": []
-            }
+             return {"final_allocations": {}, "unallocated_tokens": {}, "transactions": []}
         
-        # Get allocations and transactions
         allocations_df, transactions = self.extract_results()
-        
-        # Initialize result structure
         final_allocations = {}
         unallocated_tokens = {}
         price_vector = np.array([self.token_prices.get(t, 1.0) for t in self.tokens])
         
-        # ====================================================================
-        # PROCESS FINAL ALLOCATIONS
-        # ====================================================================
-        
-        for _, allocation in allocations_df.iterrows():
-            pool_id = allocation['pool_id']
-            pool_symbol = allocation['pool_symbol']
-            token = allocation['token']
-            amount = allocation['amount']
-            amount_usd = allocation['amount_usd']
-            
-            # Initialize pool if not exists
+        for _, row in allocations_df.iterrows():
+            pool_id = row['pool_id']
             if pool_id not in final_allocations:
-                final_allocations[pool_id] = {
-                    "pool_symbol": pool_symbol,
-                    "tokens": {}
-                }
-            
-            # Add token to pool
-            final_allocations[pool_id]["tokens"][token] = {
-                "amount": amount,
-                "amount_usd": amount_usd
+                final_allocations[pool_id] = {"pool_symbol": row['pool_symbol'], "tokens": {}}
+            final_allocations[pool_id]["tokens"][row['token']] = {
+                "amount": row['amount'], "amount_usd": row['amount_usd']
             }
-        
-        # ====================================================================
-        # PROCESS UNALLOCATED TOKENS (final warm wallet balances)
-        # ====================================================================
-        
-        for j in range(self.n_tokens):
-            token = self.tokens[j]
-            amount = self.final_warm_wallet.value[j] if self.final_warm_wallet.value is not None else 0
             
-            if amount > 0.01:  # Only include meaningful amounts
-                amount_usd = amount * price_vector[j]
-                unallocated_tokens[token] = {
-                    "amount": amount,
-                    "amount_usd": amount_usd
-                }
-        
-        # ====================================================================
-        # FORMAT TRANSACTIONS
-        # ====================================================================
-        
-        # Ensure transactions are properly formatted with all required fields
+        for j in range(self.n_tokens):
+            amount = self.final_warm_wallet.value[j] if self.final_warm_wallet.value is not None else 0
+            if amount > 0.01:
+                 unallocated_tokens[self.tokens[j]] = {
+                     "amount": amount, "amount_usd": amount * price_vector[j]
+                 }
+                 
         formatted_transactions = []
         for txn in transactions:
-            formatted_txn = {
-                "seq": txn["seq"],
-                "type": txn["type"],
-                "from_location": txn["from_location"],
-                "to_location": txn["to_location"],
-                "amount": txn["amount"],
-                "amount_usd": txn["amount_usd"],
+            ftxn = {
+                "seq": txn["seq"], "type": txn["type"], 
+                "from_location": txn["from_location"], "to_location": txn["to_location"],
+                "amount": txn["amount"], "amount_usd": txn["amount_usd"], 
                 "gas_cost_usd": txn["gas_cost_usd"]
             }
-            
-            # Add token field for non-conversion transactions
-            if "token" in txn:
-                formatted_txn["token"] = txn["token"]
-            
-            # Add conversion-specific fields
+            if "token" in txn: ftxn["token"] = txn["token"]
             if txn["type"] == "CONVERSION":
-                formatted_txn["from_token"] = txn["from_token"]
-                formatted_txn["to_token"] = txn["to_token"]
-                formatted_txn["conversion_cost_usd"] = txn.get("conversion_cost_usd", 0)
+                ftxn["from_token"] = txn["from_token"]
+                ftxn["to_token"] = txn["to_token"]
+            if "conversion_cost_usd" in txn: ftxn["conversion_cost_usd"] = txn["conversion_cost_usd"]
+            if "total_cost_usd" in txn: ftxn["total_cost_usd"] = txn["total_cost_usd"]
+            if "needs_conversion" in txn: ftxn["needs_conversion"] = txn["needs_conversion"]
+            formatted_transactions.append(ftxn)
             
-            # Add cost breakdown fields for all transaction types
-            if "conversion_cost_usd" in txn:
-                formatted_txn["conversion_cost_usd"] = txn["conversion_cost_usd"]
-            if "total_cost_usd" in txn:
-                formatted_txn["total_cost_usd"] = txn["total_cost_usd"]
-            if "needs_conversion" in txn:
-                formatted_txn["needs_conversion"] = txn["needs_conversion"]
-            
-            formatted_transactions.append(formatted_txn)
-        
-        result = {
+        return {
             "final_allocations": final_allocations,
             "unallocated_tokens": unallocated_tokens,
             "transactions": formatted_transactions
         }
-        
-        logger.info(f"Formatted results: {len(final_allocations)} pools, "
-                   f"{len(unallocated_tokens)} unallocated tokens, "
-                   f"{len(formatted_transactions)} transactions")
-        
-        return result
-
 
 # ============================================================================
-# RESULT PERSISTENCE
+# RESULTS PERSISTENCE
 # ============================================================================
 
-def delete_todays_allocations(engine):
-    """
-    Deletes all asset allocations for the current date to ensure only one set exists per day.
-    
-    Args:
-        engine: Database engine
-    """
-    conn = engine.raw_connection()
-    cursor = conn.cursor()
-    
+def delete_todays_allocations():
+    """Deletes all asset allocations for the current date."""
+    repo = AllocationRepository()
     try:
-        # Delete all allocations for today's date
-        cursor.execute("""
-            DELETE FROM asset_allocations 
-            WHERE DATE(timestamp) = CURRENT_DATE;
-        """)
-        
-        deleted_rows = cursor.rowcount
-        conn.commit()
-        logger.info(f"Deleted {deleted_rows} existing allocation records for today")
-        
+        deleted = repo.delete_allocations_for_date(date.today())
+        logger.info(f"Deleted {deleted} existing allocation records for today")
     except Exception as e:
-        conn.rollback()
         logger.error(f"Error deleting today's allocations: {e}")
         raise
-    finally:
-        cursor.close()
 
 
-def store_results(engine, run_id: str, allocations_df: pd.DataFrame, 
+def store_results(run_id: str, allocations_df: pd.DataFrame, 
                   transactions: List[Dict], alloc_params: Dict):
-    """
-    Stores optimization results to database.
-    
-    Args:
-        engine: Database engine
-        run_id: Unique run identifier
-        allocations_df: Final allocations DataFrame
-        transactions: List of transaction dictionaries
-        alloc_params: Allocation parameters
-    """
-    conn = engine.raw_connection()
-    cursor = conn.cursor()
+    """Stores optimization results to database."""
+    repo = AllocationRepository()
     
     try:
-        # Allocation parameters will be stored at the end with the actual run_id
-        
-        # Store transaction sequence
+        allocations_data = []
         for txn in transactions:
-            # Convert NumPy types to native Python types to avoid PostgreSQL errors
             amount = float(txn['amount']) if hasattr(txn['amount'], 'dtype') else txn['amount']
+            step_number = int(txn['seq']) if hasattr(txn['seq'], 'dtype') else txn['seq']
             
-            cursor.execute("""
-                INSERT INTO asset_allocations (
-                    run_id, step_number, operation, from_asset, to_asset, 
-                    amount, pool_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s);
-            """, (
-                run_id,
-                int(txn['seq']) if hasattr(txn['seq'], 'dtype') else txn['seq'],
-                txn['type'],
-                txn.get('from_token', txn.get('token')),
-                txn.get('to_token', txn.get('token')),
-                amount,
-                txn.get('to_location') if txn['type'] == 'ALLOCATION' else None
-            ))
-        
-        conn.commit()
+            allocations_data.append({
+                'run_id': run_id,
+                'timestamp': datetime.now(),
+                'step_number': step_number,
+                'operation': txn['type'],
+                'from_asset': txn.get('from_token', txn.get('token')),
+                'to_asset': txn.get('to_token', txn.get('token')),
+                'amount': amount,
+                'pool_id': txn.get('to_location') if txn['type'] == 'ALLOCATION' else None
+            })
+            
+        repo.bulk_insert_allocations(allocations_data)
         logger.info(f"✓ Results stored with run_id: {run_id}")
         
     except Exception as e:
-        conn.rollback()
         logger.error(f"Error storing results: {e}")
         raise
-    finally:
-        cursor.close()
 
 
-def update_allocation_parameters_with_results(engine, run_id: str, transactions: List[Dict], 
-                                       pools_df: pd.DataFrame, allocations_df: pd.DataFrame):
-    """
-    Updates allocation_parameters table with optimization results.
-    
-    Args:
-        engine: Database engine
-        run_id: Unique run identifier
-        transactions: List of transaction dictionaries
-        pools_df: DataFrame with pool information
-        allocations_df: DataFrame with final allocations
-    """
-    conn = engine.raw_connection()
-    cursor = conn.cursor()
+def update_allocation_parameters_with_results(run_id: str, transactions: List[Dict], 
+                                              pools_df: pd.DataFrame, allocations_df: pd.DataFrame):
+    """Updates allocation_parameters table with optimization results."""
+    repo = ParameterRepository()
     
     try:
-        # Calculate total transaction costs
-        total_transaction_costs = 0.0
-        for txn in transactions:
-            total_cost = txn.get('total_cost_usd', 0)
-            if hasattr(total_cost, 'dtype'):
-                total_cost = float(total_cost)
-            total_transaction_costs += total_cost
+        total_costs = sum(float(txn.get('total_cost_usd', 0)) for txn in transactions)
         
-        # Calculate projected APY (weighted average of allocated pools)
         projected_apy = 0.0
         if not allocations_df.empty:
-            # Merge allocations with pool data to get APYs
-            allocations_with_apy = allocations_df.merge(
-                pools_df[['pool_id', 'forecasted_apy']], 
-                on='pool_id', 
-                how='left'
-            )
-            
-            if not allocations_with_apy.empty and 'amount_usd' in allocations_with_apy.columns:
-                # Calculate weighted average APY
-                total_amount = allocations_with_apy['amount_usd'].sum()
-                if total_amount > 0:
-                    weighted_apy_sum = (allocations_with_apy['amount_usd'] * allocations_with_apy['forecasted_apy']).sum()
-                    # DEBUG: Log type information before conversion
-                    logger.info(f"DEBUG: weighted_apy_sum type: {type(weighted_apy_sum)}, value: {weighted_apy_sum}")
-                    logger.info(f"DEBUG: total_amount type: {type(total_amount)}, value: {total_amount}")
-                    projected_apy = weighted_apy_sum / total_amount
-                    logger.info(f"DEBUG: projected_apy type: {type(projected_apy)}, value: {projected_apy}")
-                    # Convert to native Python float to avoid PostgreSQL schema error
-                    if hasattr(projected_apy, 'dtype'):
-                        projected_apy = float(projected_apy)
-                    # Ensure we have a native Python float
-                    if isinstance(projected_apy, (np.floating, np.integer)):
-                        projected_apy = float(projected_apy)
-                        logger.info(f"DEBUG: force converted projected_apy type: {type(projected_apy)}, value: {projected_apy}")
-                        logger.info(f"DEBUG: converted projected_apy type: {type(projected_apy)}, value: {projected_apy}")
-        
-        # Ensure total_transaction_costs is also a native Python float
-        if isinstance(total_transaction_costs, (np.floating, np.integer)):
-            total_transaction_costs = float(total_transaction_costs)
-            logger.info(f"DEBUG: force converted total_transaction_costs type: {type(total_transaction_costs)}, value: {total_transaction_costs}")
-
-        
-        # Prepare transaction sequence as JSON
-        transaction_sequence = json.dumps(transactions, default=str)
-        
-        # DEBUG: Log all SQL parameters before execution
-        logger.info(f"DEBUG: SQL Parameters - projected_apy type: {type(projected_apy)}, value: {projected_apy}")
-        logger.info(f"DEBUG: SQL Parameters - total_transaction_costs type: {type(total_transaction_costs)}, value: {total_transaction_costs}")
-        logger.info(f"DEBUG: SQL Parameters - transaction_sequence type: {type(transaction_sequence)}, length: {len(transaction_sequence)}")
-        logger.info(f"DEBUG: SQL Parameters - run_id type: {type(run_id)}, value: {run_id}")
-        
-        # Update allocation_parameters table
-        # Update allocation_parameters table
-        cursor.execute("""
-            UPDATE allocation_parameters
-            SET 
-                projected_apy = %s,
-                transaction_costs = %s,
-                transaction_sequence = %s
-            WHERE run_id = %s;
-        """, (
-            projected_apy,
-            total_transaction_costs,
-            transaction_sequence,
-            run_id
-        ))
-        
-        conn.commit()
-        logger.info(f"✓ Updated allocation_parameters with results - Projected APY: {projected_apy:.4f}%, Transaction Costs: ${total_transaction_costs:.4f}")
+             merged = allocations_df.merge(pools_df[['pool_id', 'forecasted_apy']], on='pool_id', how='left')
+             total_amt = merged['amount_usd'].sum()
+             if total_amt > 0:
+                 projected_apy = (merged['amount_usd'] * merged['forecasted_apy']).sum() / total_amt
+                 
+        repo.update_run_results(
+            run_id=run_id,
+            projected_apy=float(projected_apy),
+            transaction_costs=float(total_costs),
+            transaction_sequence=json.dumps(transactions, default=str)
+        )
+        logger.info(f"✓ Updated allocation_parameters with results")
         
     except Exception as e:
-        conn.rollback()
-        logger.error(f"Error updating allocation parameters: {e}")
+        logger.error(f"Error updating parameters: {e}")
         raise
-    finally:
-        cursor.close()
 
 
 # ============================================================================
@@ -1356,279 +902,85 @@ def update_allocation_parameters_with_results(engine, run_id: str, transactions:
 # ============================================================================
 
 def optimize_allocations(custom_overrides: Dict = None):
-    """
-    Main orchestration function for asset allocation optimization.
-    
-    Args:
-        custom_overrides: Optional dictionary of custom parameter overrides for this run
-    """
+    """Main orchestration function for asset allocation optimization."""
     logger.info("=" * 80)
     logger.info("STABLECOIN POOL ALLOCATION OPTIMIZATION")
     logger.info("=" * 80)
     
-    engine = None
+    # 0. Data Quality Report (optional, kept light)
     try:
-        # Connect to database
-        engine = get_db_connection()
-        if not engine:
-            logger.error("Failed to establish database connection")
-            return
-        
-        # Generate Data Quality Report
-        logger.info("\n[0/5] Generating data quality report...")
-        try:
-            quality_report = generate_data_quality_report()
-            quality_score = quality_report.get('summary', {}).get('overall_quality_score', 0)
-            quality_assessment = quality_report.get('summary', {}).get('quality_assessment', 'Unknown')
-            logger.info(f"Data quality assessment: {quality_assessment} (Score: {quality_score:.1f}/100)")
-            
-            # Check for critical issues that might prevent optimization
-            critical_issues = []
-            for category, items in quality_report.get('abnormal_values', {}).items():
-                critical_items = [i for i in items if i['severity'] == 'critical']
-                if critical_items:
-                    critical_issues.extend([f"{category}: {i['reason']}" for i in critical_items])
-            
-            if critical_issues:
-                logger.warning(f"Found {len(critical_issues)} critical data quality issues:")
-                for issue in critical_issues[:5]:  # Show first 5
-                    logger.warning(f"  - {issue}")
-                if len(critical_issues) > 5:
-                    logger.warning(f"  ... and {len(critical_issues) - 5} more")
-            
-            # Check model feasibility
-            model_feasibility = quality_report.get('model_feasibility', {})
-            if not model_feasibility.get('constraint_feasible', True):
-                logger.error("Model feasibility check failed - optimization may not succeed")
-                if model_feasibility.get('aum_exceeds_capacity', False):
-                    logger.error("  - Total AUM exceeds pool capacity")
-                if model_feasibility.get('tokens_without_prices', 0) > 5:
-                    logger.error("  - Too many tokens without price data")
-            
-        except Exception as e:
-            logger.error(f"Failed to generate data quality report: {e}")
-            logger.warning("Proceeding with optimization without quality assessment")
-        
-        # Load data
-        logger.info("\n[1/5] Loading data...")
-        pools_df = fetch_pool_data(engine)
-        
-        if pools_df.empty:
-            logger.warning("No approved pools available. Exiting.")
-            return
-        
-        # Build token universe
-        warm_wallet, current_allocations = fetch_current_balances(engine)
-        tokens = build_token_universe(pools_df, warm_wallet, current_allocations)
-        
-        # Fetch prices and gas fees
-        token_prices = fetch_token_prices(engine, tokens + ['ETH'])
-        eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data(engine)
-        gas_fees = calculate_transaction_gas_fees(eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
-        
-        # Fetch parameters
-        alloc_params = fetch_allocation_parameters(engine, custom_overrides)
-        allocation_run_id = alloc_params.get('run_id')
-        
-        # Initialize optimizer
-        logger.info("\n[3/6] Initializing optimizer...")
-        optimizer = AllocationOptimizer(
-            pools_df=pools_df,
-            token_prices=token_prices,
-            warm_wallet=warm_wallet,
-            current_allocations=current_allocations,
-            gas_fees=gas_fees,
-            alloc_params=alloc_params
-        )
-        
-        # Solve optimization
-        logger.info("\n[4/6] Solving optimization problem...")
-        import cvxpy as cp
-        success = False
-        
-        # Try different solvers in order of preference
-        for solver_name in ['HIGHS', 'CBC', 'SCIPY']:
-            try:
-                solver = getattr(cp, solver_name)
-                logger.info(f"\nAttempting to solve with {solver_name}...")
-                start_time = time.time()
-                success = optimizer.solve(solver=solver, verbose=True)
-                solve_time = time.time() - start_time
-                
-                if success:
-                    logger.info(f"✓ Solved with {solver_name} in {solve_time:.3f} seconds")
-                    break
-            except Exception as e:
-                logger.warning(f"{solver_name} solver failed: {e}")
-                continue
-        
-        if not success:
-            logger.error("✗ Could not solve optimization problem with available solvers")
-            logger.error("Optimization failed")
-            return
-        
-        # Extract and format results
-        logger.info("\n[5/6] Extracting and formatting results...")
-        formatted_results = optimizer.format_results()
-        
-        # Calculate yield improvement
-        logger.info("\nYIELD IMPROVEMENT ANALYSIS:")
-        logger.info("-" * 50)
-        
-        # Calculate current daily yield from existing allocations
-        current_daily_yield = 0.0
-        for (pool_id, token), amount in current_allocations.items():
-            # Get APY for this pool
-            pool_data = pools_df[pools_df['pool_id'] == pool_id]
-            if not pool_data.empty:
-                apy = pool_data['forecasted_apy'].iloc[0]
-                token_price = token_prices.get(token, 1.0)
-                usd_value = amount * token_price
-                current_daily_yield += usd_value * apy / 100 / 365
-        
-        # Calculate optimized daily yield from new allocations
-        optimized_daily_yield = 0.0
-        for pool_id, pool_data in formatted_results["final_allocations"].items():
-            pool_info = pools_df[pools_df['pool_id'] == pool_id]
-            if not pool_info.empty:
-                apy = pool_info['forecasted_apy'].iloc[0]
-                for token_data in pool_data["tokens"].values():
-                    optimized_daily_yield += token_data['amount_usd'] * apy / 100 / 365
-        
-        # Calculate improvements
-        daily_improvement = optimized_daily_yield - current_daily_yield
-        annual_improvement = daily_improvement * 365
-        improvement_percentage = (daily_improvement / current_daily_yield * 100) if current_daily_yield > 0 else 0
-        
-        logger.info(f"Current daily yield: ${current_daily_yield:.2f}")
-        logger.info(f"Optimized daily yield: ${optimized_daily_yield:.2f}")
-        logger.info(f"Daily improvement: ${daily_improvement:.2f} ({improvement_percentage:+.1f}%)")
-        logger.info(f"Annualized improvement: ${annual_improvement:,.2f}")
-        
-        # Print results in the required format
-        logger.info("\n" + "=" * 80)
-        logger.info("OPTIMIZATION RESULTS")
-        logger.info("=" * 80)
-        
-        # Validate allocation constraints
-        logger.info("\nALLOCATION CONSTRAINT VALIDATION:")
-        logger.info(f"Total AUM: ${optimizer.total_aum:,.2f}")
-        logger.info(f"Max allocation per pool: {optimizer.max_alloc_percentage:.1%} = ${optimizer.max_alloc_percentage * optimizer.total_aum:,.2f}")
-        
-        constraint_violations = []
-        for pool_id, pool_data in formatted_results["final_allocations"].items():
-            pool_total_usd = sum(token_data['amount_usd'] for token_data in pool_data["tokens"].values())
-            pool_percentage = pool_total_usd / optimizer.total_aum
-            status = "✓" if pool_percentage <= optimizer.max_alloc_percentage else "✗ VIOLATION"
-            logger.info(f"  Pool {pool_id} ({pool_data['pool_symbol']}): ${pool_total_usd:,.2f} ({pool_percentage:.2%}) {status}")
-            
-            if pool_percentage > optimizer.max_alloc_percentage:
-                constraint_violations.append({
-                    'pool_id': pool_id,
-                    'pool_symbol': pool_data['pool_symbol'],
-                    'amount_usd': pool_total_usd,
-                    'percentage': pool_percentage
-                })
-        
-        if constraint_violations:
-            logger.error(f"\n{'='*80}")
-            logger.error(f"CONSTRAINT VIOLATION DETECTED: {len(constraint_violations)} pool(s) exceed max allocation")
-            for v in constraint_violations:
-                logger.error(f"  Pool {v['pool_id']} ({v['pool_symbol']}): ${v['amount_usd']:,.2f} ({v['percentage']:.2%}) exceeds {optimizer.max_alloc_percentage:.1%}")
-            logger.error(f"{'='*80}\n")
-        
-        # Print final allocations
-        logger.info("\nFINAL ALLOCATIONS:")
-        for pool_id, pool_data in formatted_results["final_allocations"].items():
-            pool_total_usd = sum(token_data['amount_usd'] for token_data in pool_data["tokens"].values())
-            pool_percentage = pool_total_usd / optimizer.total_aum
-            logger.info(f"\nPool: {pool_id} ({pool_data['pool_symbol']}) - Total: ${pool_total_usd:,.2f} ({pool_percentage:.2%})")
-            for token, token_data in pool_data["tokens"].items():
-                logger.info(f"  {token}: {token_data['amount']:,.2f} (${token_data['amount_usd']:,.2f})")
-        
-        # Print unallocated tokens
-        logger.info("\nUNALLOCATED TOKENS (in warm wallet):")
-        for token, token_data in formatted_results["unallocated_tokens"].items():
-            logger.info(f"  {token}: {token_data['amount']:,.2f} (${token_data['amount_usd']:,.2f})")
-        
-        # Print transaction sequence
-        logger.info("\nTRANSACTION SEQUENCE:")
-        for txn in formatted_results["transactions"]:
-            if txn["type"] == "CONVERSION":
-                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn['from_token']} → {txn['to_token']} | "
-                           f"${txn['amount_usd']:10,.2f} | Gas: ${txn['gas_cost_usd']:6.4f} | "
-                           f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
-            elif txn["type"] == "ALLOCATION":
-                conv_flag = " (conv)" if txn.get('needs_conversion', False) else ""
-                # Get pool name for allocation
-                pool_id = txn.get('to_location', '')
-                pool_name = ''
-                if pool_id and pool_id in optimizer.pools_df['pool_id'].values:
-                    pool_name = optimizer.pools_df[optimizer.pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
-                    pool_name = f" ({pool_name})"
-                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | {txn.get('token', '')}{conv_flag} → Pool {pool_id}{pool_name} | "
-                           f"${txn['amount_usd']:10,.2f} | Gas: ${txn['gas_cost_usd']:6.4f} | "
-                           f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
-            else:  # WITHDRAWAL
-                # Get pool name for withdrawal
-                pool_id = txn.get('from_location', '')
-                pool_name = ''
-                if pool_id and pool_id in optimizer.pools_df['pool_id'].values:
-                    pool_name = optimizer.pools_df[optimizer.pools_df['pool_id'] == pool_id]['symbol'].iloc[0]
-                    pool_name = f" ({pool_name})"
-                logger.info(f"  {txn['seq']:3d}. {txn['type']:12s} | Pool {pool_id}{pool_name} → {txn.get('token', '')} | "
-                           f"${txn['amount_usd']:10,.2f} | Gas: ${txn['gas_cost_usd']:6.4f} | "
-                           f"Conv: ${txn.get('conversion_cost_usd', 0):.4f} | Total: ${txn.get('total_cost_usd', 0):.4f}")
-        
-        # Store results
-        logger.info("\n[6/6] Storing results...")
-        
-        # First delete any existing allocations for today to ensure only one set exists
-        logger.info("Deleting any existing allocations for today...")
-        delete_todays_allocations(engine)
-        
-        run_id = allocation_run_id
-        
-        # Convert back to original format for storage
-        allocations_df = pd.DataFrame([
-            {
-                'pool_id': pool_id,
-                'pool_symbol': pool_data['pool_symbol'],
-                'token': token,
-                'amount': token_data['amount'],
-                'amount_usd': token_data['amount_usd']
-            }
-            for pool_id, pool_data in formatted_results["final_allocations"].items()
-            for token, token_data in pool_data["tokens"].items()
-        ])
-        
-        store_results(engine, run_id, allocations_df, formatted_results["transactions"], alloc_params)
-        
-        # Update allocation_parameters with optimization results
-        update_allocation_parameters_with_results(
-            engine, run_id, formatted_results["transactions"], 
-            pools_df, allocations_df
-        )
-        
-        # Save results to JSON file (DISABLED)
-        # results_file = f"optimization_results_{run_id}.json"
-        # with open(results_file, 'w') as f:
-        #     json.dump(formatted_results, f, indent=2, default=str)
-        # logger.info(f"Results saved to {results_file}")
-        logger.info("Results JSON file saving is disabled")
-        
-        logger.info("\n" + "=" * 80)
-        logger.info(f"✓ OPTIMIZATION COMPLETE - Run ID: {run_id}")
-        logger.info("=" * 80)
-        
+        quality_report = generate_data_quality_report()
+        score = quality_report.get('summary', {}).get('overall_quality_score', 0)
+        logger.info(f"Data quality score: {score:.1f}/100")
     except Exception as e:
-        logger.error(f"Optimization failed with error: {e}", exc_info=True)
-        raise
-    
-    finally:
-        if engine:
-            engine.dispose()
+        logger.warning(f"Data quality report skipped: {e}")
 
+    # 1. Load Data
+    logger.info("\n[1/5] Loading data...")
+    pools_df = fetch_pool_data()
+    if pools_df.empty:
+        logger.warning("No approved pools available. Exiting.")
+        return
+        
+    warm_wallet, current_allocations = fetch_current_balances()
+    tokens = build_token_universe(pools_df, warm_wallet, current_allocations)
+    token_prices = fetch_token_prices(tokens + ['ETH'])
+    eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data()
+    gas_fees = calculate_transaction_gas_fees(eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
+    
+    # 2. Parameters
+    alloc_params = fetch_allocation_parameters(custom_overrides)
+    run_id = alloc_params.get('run_id') # Usually None unless existing run is updated?? Needs handling.
+    # Note: If fetching latest parameters, run_id might be from previous run or a new draft. 
+    # Usually we generate a new run_id or use one passed in. 
+    # For now, if no run_id, generate one.
+    if not run_id:
+        run_id = str(uuid4())
+        logger.info(f"Generated new run_id: {run_id}")
+    
+    # 3. Initialize Optimizer
+    logger.info("\n[3/6] Initializing optimizer...")
+    optimizer = AllocationOptimizer(pools_df, token_prices, warm_wallet, current_allocations, gas_fees, alloc_params)
+    
+    # 4. Solve
+    logger.info("\n[4/6] Solving optimization problem...")
+    import cvxpy as cp
+    success = False
+    
+    for solver_name in ['HIGHS', 'CBC', 'SCIPY', 'OSQP', 'ECOS', 'CLARABEL']:
+        try:
+             if not hasattr(cp, solver_name):
+                 continue
+                 
+             solver = getattr(cp, solver_name)
+             logger.info(f"Attempting solver: {solver_name}")
+             if optimizer.solve(solver=solver):
+                 success = True
+                 logger.info(f"Solver {solver_name} succeeded")
+                 break
+             else:
+                 logger.warning(f"Solver {solver_name} failed to find optimal solution")
+        except Exception as e:
+             logger.warning(f"Solver {solver_name} raised exception: {e}")
+             continue
+             
+    if not success:
+        logger.error("All solvers failed to find an optimal solution")
+        return
+        
+    # 5. Extract Results
+    logger.info("\n[5/6] Extracting results...")
+    formatted_results = optimizer.format_results()
+    
+    # 6. Store Results
+    logger.info("\n[6/6] Storing results...")
+    delete_todays_allocations()
+    
+    allocations_df, transactions = optimizer.extract_results()
+    store_results(run_id, allocations_df, transactions, alloc_params)
+    update_allocation_parameters_with_results(run_id, transactions, pools_df, allocations_df)
+    
+    logger.info("Optimization completed successfully.")
 
 if __name__ == "__main__":
     optimize_allocations()

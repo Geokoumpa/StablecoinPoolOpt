@@ -1,7 +1,7 @@
 
 from typing import List, Optional, Dict, Any
 from uuid import UUID
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, text
 from database.models.asset_allocation import AssetAllocation
 from database.repositories.base_repository import BaseRepository
 
@@ -41,10 +41,27 @@ class AllocationRepository(BaseRepository[AssetAllocation]):
         """Get all allocations for a specific run ID."""
         with self.session() as session:
             stmt = select(AssetAllocation).where(AssetAllocation.run_id == run_id).order_by(AssetAllocation.step_number)
-            return session.execute(stmt).scalars().all()
+            results = session.execute(stmt).scalars().all()
+            session.expunge_all()
+            return results
 
     def get_latest_run_id(self) -> Optional[UUID]:
         """Get the run_id of the most recent allocation."""
         with self.session() as session:
             stmt = select(AssetAllocation.run_id).order_by(desc(AssetAllocation.timestamp)).limit(1)
             return session.execute(stmt).scalar()
+
+    def delete_allocations_for_date(self, target_date: Any) -> int:
+        """
+        Delete all allocations for a specific date.
+        Returns the number of deleted rows.
+        """
+        sql = text("""
+            DELETE FROM asset_allocations 
+            WHERE DATE(timestamp) = :date
+        """)
+        
+        with self.session() as session:
+            result = session.execute(sql, {'date': target_date})
+            return result.rowcount
+

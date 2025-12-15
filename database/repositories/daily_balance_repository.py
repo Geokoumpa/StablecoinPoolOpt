@@ -1,7 +1,7 @@
 
 from typing import List, Optional, Dict, Any
 from datetime import date
-from sqlalchemy import select, delete, func, text
+from sqlalchemy import select, delete, func, text, or_, and_
 from database.models.daily_balance import DailyBalance
 from database.repositories.base_repository import BaseRepository
 
@@ -31,18 +31,7 @@ class DailyBalanceRepository(BaseRepository[DailyBalance]):
         with self.transaction() as conn:
             if ensure_unique_by_date and dates_to_clear:
                 # Delete existing entries for these dates to avoid duplication
-                # Constructing WHERE IN clause
                 date_list = list(dates_to_clear)
-                # We interpret this as: delete all balances for these dates
-                # Note: This is a heavy operation if many dates are passed.
-                
-                # Using SQLAlchemy delete for clarity/security, or raw SQL
-                # Since we are in raw transaction, better use raw SQL or careful construction
-                # But self.transaction() yields a connection.
-                
-                # We can't easily use ORM session inside 'transaction' context manager which gives raw connection
-                # So we use SQL.
-                
                 dates_sql = ", ".join(f"'{d.isoformat()}'" for d in date_list)
                 delete_sql = f"DELETE FROM daily_balances WHERE date IN ({dates_sql})"
                 conn.execute(text(delete_sql))
@@ -54,9 +43,6 @@ class DailyBalanceRepository(BaseRepository[DailyBalance]):
                 ) VALUES %s
             """
             
-            # If there was a unique constraint, we could use ON CONFLICT. 
-            # Given the ambiguity, the delete-insert strategy is safer for "upsert" on daily granularity.
-            
             values = [
                 (
                     b['date'], b['token_symbol'], b.get('wallet_address'),
@@ -65,8 +51,10 @@ class DailyBalanceRepository(BaseRepository[DailyBalance]):
                 for b in balances_data
             ]
             
-            # execute_values requires a cursor, which we can get from connection
-            with conn.cursor() as cur:
+            # execute_values requires a raw DBAPI cursor
+            # In SQLAlchemy 1.4/2.0, access raw connection via conn.connection.dbapi_connection
+            raw_conn = conn.connection.dbapi_connection
+            with raw_conn.cursor() as cur:
                 import psycopg2.extras
                 psycopg2.extras.execute_values(
                     cur, sql, values, page_size=1000
@@ -76,7 +64,9 @@ class DailyBalanceRepository(BaseRepository[DailyBalance]):
         """Get balances for a specific date."""
         with self.session() as session:
             stmt = select(DailyBalance).where(DailyBalance.date == balance_date)
-            return session.execute(stmt).scalars().all()
+            results = session.execute(stmt).scalars().all()
+            session.expunge_all()
+            return results
             
     def get_latest_date(self) -> Optional[date]:
         """Get the latest date available in balances."""
@@ -90,4 +80,60 @@ class DailyBalanceRepository(BaseRepository[DailyBalance]):
             stmt = select(DailyBalance).where(
                 and_(DailyBalance.wallet_address == wallet_address, DailyBalance.date == date)
             )
-            return session.execute(stmt).scalars().all()
+            results = session.execute(stmt).scalars().all()
+            session.expunge_all()
+            return results
+
+    def get_current_balances(self, wallet_address: str, target_date: date) -> List[DailyBalance]:
+        """
+        Get balances for a wallet on a date, including entries with NULL wallet address.
+        """
+        with self.session() as session:
+            stmt = select(DailyBalance).where(
+                and_(
+                    DailyBalance.date == target_date,
+                    or_(
+                        DailyBalance.wallet_address == wallet_address,
+                        DailyBalance.wallet_address.is_(None)
+                    )
+                )
+            )
+            results = session.execute(stmt).scalars().all()
+            session.expunge_all()
+            return results
+
+    def get_allocated_pool_ids(self, wallet_address: str, target_date: date) -> List[str]:
+        """
+        Get IDs of pools that have allocations on the target date.
+        """
+        # We need to join with pool_daily_metrics to ensure pool is valid/exists in metrics?
+        # The original query joined with pool_daily_metrics ON date AND pool_id.
+        
+        sql = text("""
+            SELECT DISTINCT db.pool_id
+            FROM daily_balances db
+            JOIN pool_daily_metrics pdm ON db.pool_id = pdm.pool_id
+            WHERE db.date = :date
+              AND (db.wallet_address = :wallet_address OR db.wallet_address IS NULL)
+              AND db.allocated_balance > 0
+              AND pdm.date = :date
+        """)
+        
+        with self.session() as session:
+            return session.execute(sql, {'date': target_date, 'wallet_address': wallet_address}).scalars().all()
+
+    def get_total_aum(self, target_date: date) -> float:
+        """
+        Calculates total AUM (allocated + unallocated) for a specific date.
+        """
+        sql = text("""
+            SELECT SUM(COALESCE(allocated_balance, 0) + COALESCE(unallocated_balance, 0))
+            FROM daily_balances
+            WHERE date = :date
+        """)
+        
+        with self.session() as session:
+             result = session.execute(sql, {'date': target_date}).scalar()
+             return float(result) if result else 0.0
+
+

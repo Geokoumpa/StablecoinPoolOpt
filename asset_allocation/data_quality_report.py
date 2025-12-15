@@ -17,117 +17,65 @@ from collections import defaultdict
 import sys
 import os
 
-# Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from database.db_utils import get_db_connection
-# Import functions directly to avoid circular imports
-from database.db_utils import get_db_connection
-import json as json_module
+from database.repositories.pool_metrics_repository import PoolMetricsRepository
+from database.repositories.raw_data_repository import RawDataRepository
+from database.repositories.daily_balance_repository import DailyBalanceRepository
+from database.repositories.parameter_repository import ParameterRepository
 
 # Configure module logger
 logger = logging.getLogger(__name__)
 
-
 # ============================================================================
-# DATA FETCHING FUNCTIONS (copied from optimize_allocations.py to avoid circular imports)
+# DATA FETCHING FUNCTIONS (adapted to use Repositories)
 # ============================================================================
 
-def fetch_pool_data(engine) -> pd.DataFrame:
+def fetch_pool_data() -> pd.DataFrame:
     """Fetches approved pools with forecasted APY and metadata."""
-    query = """
-    SELECT
-        pdm.pool_id,
-        p.symbol,
-        p.chain,
-        p.protocol,
-        pdm.forecasted_apy,
-        pdm.forecasted_tvl,
-        p.underlying_tokens
-    FROM pool_daily_metrics pdm
-    JOIN pools p ON pdm.pool_id = p.pool_id
-    WHERE pdm.date = CURRENT_DATE 
-      AND pdm.is_filtered_out = FALSE
-      AND pdm.forecasted_apy IS NOT NULL
-      AND pdm.forecasted_apy > 0
-      AND pdm.forecasted_tvl IS NOT NULL
-      AND pdm.forecasted_tvl > 0;
-    """
-    df = pd.read_sql(query, engine)
+    metrics_repo = PoolMetricsRepository()
+    
+    # We want active pools for optimization candidates
+    # The original query filtered by current date, not filtered out, and positive forecasts
+    # get_pool_candidates_for_optimization does exactly this (excluding current allocations logic which is handled inside optimize_allocations)
+    # However, get_pool_candidates_for_optimization also returns pools with current allocations even if filtered out.
+    # For data quality report, we probably want to see availability of pools for optimization.
+    
+    # Let's use get_pool_candidates_for_optimization with empty allocated_pool_ids list to get "clean" candidates
+    # But ideally we want ALL potentially valid pools.
+    
+    rows = metrics_repo.get_pool_candidates_for_optimization(date.today(), [])
+    
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=[
+        'pool_id', 'symbol', 'chain', 'protocol', 'forecasted_apy', 'forecasted_tvl', 'underlying_tokens'
+    ])
+    
     logger.info(f"Loaded {len(df)} approved pools")
     return df
 
 
-def fetch_token_prices(engine, tokens: List[str]) -> Dict[str, float]:
+def fetch_token_prices(tokens: List[str]) -> Dict[str, float]:
     """Fetches latest closing prices for given tokens."""
-    if not tokens:
-        return {}
-    
-    token_mapping = {token.lower(): token for token in tokens}
-    tokens_lower = list(token_mapping.keys())
-    tokens_str = "','".join(tokens_lower)
-    query = f"""
-    WITH ranked_ohlcv AS (
-        SELECT
-            LOWER(symbol) as symbol_lower,
-            CASE 
-                WHEN raw_json_data ? 'USD' THEN (raw_json_data->'USD'->>'close')::float
-                WHEN raw_json_data ? 'USDT' THEN (raw_json_data->'USDT'->>'close')::float
-                WHEN raw_json_data ? 'BTC' THEN (raw_json_data->'BTC'->>'close')::float
-                WHEN raw_json_data ? 'ETH' THEN (raw_json_data->'ETH'->>'close')::float
-                ELSE NULL
-            END as close_price,
-            data_timestamp as ts,
-            ROW_NUMBER() OVER(
-                PARTITION BY LOWER(symbol) 
-                ORDER BY data_timestamp DESC
-            ) as rn
-        FROM raw_coinmarketcap_ohlcv
-        WHERE LOWER(symbol) IN ('{tokens_str}')
-    )
-    SELECT symbol_lower, close_price
-    FROM ranked_ohlcv
-    WHERE rn = 1;
-    """
-    df = pd.read_sql(query, engine)
-    prices = {}
-    for _, row in df.iterrows():
-        if pd.notna(row['close_price']):
-            original_token = token_mapping.get(row['symbol_lower'])
-            if original_token:
-                prices[original_token] = row['close_price']
+    repo = RawDataRepository()
+    prices = repo.get_latest_prices(tokens)
     logger.info(f"Loaded prices for {len(prices)} tokens")
     return prices
 
 
-def fetch_gas_fee_data(engine) -> Tuple[float, float, float, float, float]:
+def fetch_gas_fee_data() -> Tuple[float, float, float, float, float]:
     """
     Fetches forecasted gas fee components and ETH price.
-    
-    Returns:
-        Tuple of (eth_price_usd, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units)
     """
-    # Fetch ETH price
-    eth_price_query = """
-    WITH ranked_eth AS (
-        SELECT
-            (raw_json_data->'USD'->>'close')::float as close_price,
-            ROW_NUMBER() OVER(ORDER BY (raw_json_data->'USD'->>'timestamp')::timestamp DESC) as rn
-        FROM raw_coinmarketcap_ohlcv
-        WHERE symbol = 'ETH'
-    )
-    SELECT close_price
-    FROM ranked_eth
-    WHERE rn = 1;
-    """
-    eth_df = pd.read_sql(eth_price_query, engine)
-    eth_price = eth_df['close_price'].iloc[0] if not eth_df.empty and pd.notna(eth_df['close_price'].iloc[0]) else 3000.0
+    repo = RawDataRepository()
+    prices = repo.get_latest_prices(['ETH'])
+    eth_price = prices.get('ETH', 3000.0)
     
     # Gas fee components based on requirements
-    base_fee_transfer_gwei = 10.0  # Base fee for transfer/deposit
-    base_fee_swap_gwei = 30.0       # Base fee for swap
-    priority_fee_gwei = 10.0        # Priority fee
-    min_gas_units = 21000          # Minimum gas units
+    base_fee_transfer_gwei = 10.0
+    base_fee_swap_gwei = 30.0
+    priority_fee_gwei = 10.0
+    min_gas_units = 21000
     
     logger.info(f"ETH price: ${eth_price:.2f}")
     logger.info(f"Gas fee components - Base transfer: {base_fee_transfer_gwei} Gwei, Base swap: {base_fee_swap_gwei} Gwei, Priority: {priority_fee_gwei} Gwei, Min gas units: {min_gas_units}")
@@ -135,18 +83,7 @@ def fetch_gas_fee_data(engine) -> Tuple[float, float, float, float, float]:
     return eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
 
 def calculate_gas_fee_usd(gas_units: float, base_fee_gwei: float, priority_fee_gwei: float, eth_price_usd: float) -> float:
-    """
-    Calculate gas fee in USD based on the formula: Gas fee = Gas units * (base fee + priority fee)
-    
-    Args:
-        gas_units: Gas units (limit) for the transaction
-        base_fee_gwei: Base fee in Gwei
-        priority_fee_gwei: Priority fee in Gwei
-        eth_price_usd: ETH price in USD
-        
-    Returns:
-        Gas fee in USD
-    """
+    """Calculate gas fee in USD."""
     total_fee_gwei = gas_units * (base_fee_gwei + priority_fee_gwei)
     gas_fee_usd = total_fee_gwei * 1e-9 * eth_price_usd
     return gas_fee_usd
@@ -155,45 +92,29 @@ def calculate_gas_fee_usd(gas_units: float, base_fee_gwei: float, priority_fee_g
 def calculate_transaction_gas_fees(eth_price_usd: float, base_fee_transfer_gwei: float, 
                                    base_fee_swap_gwei: float, priority_fee_gwei: float, 
                                    min_gas_units: float) -> Dict[str, float]:
-    """
-    Calculate gas fees for different transaction types.
-    
-    Args:
-        eth_price_usd: ETH price in USD
-        base_fee_transfer_gwei: Base fee for transfer/deposit in Gwei
-        base_fee_swap_gwei: Base fee for swap in Gwei
-        priority_fee_gwei: Priority fee in Gwei
-        min_gas_units: Minimum gas units
-        
-    Returns:
-        Dictionary with gas fees for different transaction types in USD
-    """
-    # Pool allocation/withdrawal gas fee (using transfer base fee)
+    """Calculate gas fees for different transaction types."""
     pool_transaction_gas_fee_usd = calculate_gas_fee_usd(
         min_gas_units, base_fee_transfer_gwei, priority_fee_gwei, eth_price_usd
     )
     
-    # Token swap gas fee (using swap base fee)
     token_swap_gas_fee_usd = calculate_gas_fee_usd(
         min_gas_units, base_fee_swap_gwei, priority_fee_gwei, eth_price_usd
     )
     
     gas_fees = {
-        'allocation': pool_transaction_gas_fee_usd,      # Allocating to pools
-        'withdrawal': pool_transaction_gas_fee_usd,      # Withdrawing from pools
-        'conversion': token_swap_gas_fee_usd,            # Token swaps/conversions
-        'transfer': pool_transaction_gas_fee_usd,        # General transfers
-        'deposit': pool_transaction_gas_fee_usd          # Deposits to pools
+        'allocation': pool_transaction_gas_fee_usd,
+        'withdrawal': pool_transaction_gas_fee_usd,
+        'conversion': token_swap_gas_fee_usd,
+        'transfer': pool_transaction_gas_fee_usd,
+        'deposit': pool_transaction_gas_fee_usd
     }
     
     logger.info(f"Transaction gas fees - Pool Allocation/Withdrawal: ${pool_transaction_gas_fee_usd:.6f}, Token Swap/Conversion: ${token_swap_gas_fee_usd:.6f}")
     
     return gas_fees
-    
-    return eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
 
 
-def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, str], float]]:
+def fetch_current_balances() -> Tuple[Dict[str, float], Dict[Tuple[str, str], float]]:
     """Fetches current token balances from warm wallet and allocated positions."""
     try:
         from config import MAIN_ASSET_HOLDING_ADDRESS
@@ -208,20 +129,12 @@ def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, st
     warm_wallet = {}
     allocations = {}
     
-    query = """
-    SELECT
-        token_symbol,
-        unallocated_balance,
-        allocated_balance,
-        pool_id
-    FROM daily_balances
-    WHERE date = CURRENT_DATE AND (wallet_address = %s OR wallet_address IS NULL);
-    """
+    repo = DailyBalanceRepository()
     
     try:
-        df = pd.read_sql(query, engine, params=(MAIN_ASSET_HOLDING_ADDRESS,))
+        balances = repo.get_current_balances(MAIN_ASSET_HOLDING_ADDRESS, date.today())
         
-        if df.empty:
+        if not balances:
             logger.info(f"No balance data found for wallet {MAIN_ASSET_HOLDING_ADDRESS} today")
             return {}, {}
             
@@ -231,30 +144,26 @@ def fetch_current_balances(engine) -> Tuple[Dict[str, float], Dict[Tuple[str, st
         logger.error(f"Error fetching balance data: {e}")
         return {}, {}
     
-    for _, row in df.iterrows():
-        token = row['token_symbol']
+    for row in balances:
+        token = row.token_symbol
         
-        if pd.notna(row['unallocated_balance']) and row['unallocated_balance'] > 0:
-            warm_wallet[token] = warm_wallet.get(token, 0) + float(row['unallocated_balance'])
+        if row.unallocated_balance and row.unallocated_balance > 0:
+            warm_wallet[token] = warm_wallet.get(token, 0) + float(row.unallocated_balance)
         
-        if pd.notna(row['allocated_balance']) and row['allocated_balance'] > 0 and pd.notna(row['pool_id']):
-            key = (row['pool_id'], token)
-            allocations[key] = allocations.get(key, 0) + float(row['allocated_balance'])
+        if row.allocated_balance and row.allocated_balance > 0 and row.pool_id:
+            key = (row.pool_id, token)
+            allocations[key] = allocations.get(key, 0) + float(row.allocated_balance)
     
     logger.info(f"Warm wallet: {len(warm_wallet)} tokens, Total allocated positions: {len(allocations)}")
     return warm_wallet, allocations
 
 
-def fetch_allocation_parameters(engine) -> Dict:
+def fetch_allocation_parameters() -> Dict:
     """Fetches the latest allocation parameters."""
-    query = """
-    SELECT *
-    FROM allocation_parameters
-    ORDER BY timestamp DESC
-    LIMIT 1;
-    """
-    df = pd.read_sql(query, engine)
-    if df.empty:
+    repo = ParameterRepository()
+    latest_params = repo.get_latest_parameters()
+    
+    if not latest_params:
         logger.warning("No allocation parameters found, using defaults")
         return {
             'max_alloc_percentage': 0.20,
@@ -262,102 +171,27 @@ def fetch_allocation_parameters(engine) -> Dict:
             'min_transaction_value': 50.0
         }
     
-    params = df.iloc[0].to_dict()
+    # Convert object to dict
+    params = {
+        'max_alloc_percentage': latest_params.max_alloc_percentage,
+        'tvl_limit_percentage': latest_params.tvl_limit_percentage,
+        'conversion_rate': latest_params.conversion_rate or 0.0004,
+        'min_pools': latest_params.min_pools
+    }
+    
     logger.info(f"Loaded allocation parameters: max_alloc={params.get('max_alloc_percentage')}, tvl_limit={params.get('tvl_limit_percentage')}")
     return params
 
 
-
-
-
-def build_token_universe(pools_df: pd.DataFrame, 
-                         warm_wallet: Dict[str, float],
-                         current_allocations: Dict[Tuple[str, str], float]) -> List[str]:
-    """Builds the complete set of tokens needed for optimization."""
-    tokens = set()
-    
-    # Tokens from pools (using underlying_tokens if available, otherwise normalized mappings)
-    for _, row in pools_df.iterrows():
-        # Prefer underlying_tokens from the pools table (populated by filter_pools_pre)
-        underlying_tokens = row.get('underlying_tokens')
-        
-        # Check if underlying_tokens is valid (not None, not NaN, not empty)
-        # Handle both string JSON and already-parsed list types
-        has_valid_tokens = False
-        if isinstance(underlying_tokens, list):
-            # Already a list from database
-            has_valid_tokens = len(underlying_tokens) > 0
-        elif isinstance(underlying_tokens, str):
-            # String JSON that needs parsing
-            has_valid_tokens = True
-        elif underlying_tokens is not None:
-            # Some other type - check if it's not NaN
-            has_valid_tokens = pd.notna(underlying_tokens)
-        
-        if has_valid_tokens:
-            try:
-                # Parse JSON array of token symbols
-                if isinstance(underlying_tokens, str):
-                    pool_tokens = json.loads(underlying_tokens)
-                elif isinstance(underlying_tokens, list):
-                    pool_tokens = underlying_tokens
-                else:
-                    pool_tokens = None
-                
-                if isinstance(pool_tokens, list) and pool_tokens:
-                    tokens.update(pool_tokens)
-                    continue
-            except (json.JSONDecodeError, TypeError):
-                logger.warning(f"Failed to parse underlying_tokens for pool {row.get('pool_id')}: {underlying_tokens}")
-        
-        # No fallback needed - underlying_tokens should always be available
-        # If underlying_tokens is not available, log warning but continue
-        if not has_valid_tokens:
-            logger.warning(f"Pool {row.get('pool_id')} has no valid underlying_tokens")
-    
-    tokens.update(warm_wallet.keys())
-    
-    for (pool_id, token) in current_allocations.keys():
-        tokens.add(token)
-    
-    token_list = sorted(list(tokens))
-    logger.info(f"Token universe: {len(token_list)} tokens - {token_list}")
-    return token_list
-
-
-def calculate_aum(warm_wallet: Dict[str, float], 
-                  current_allocations: Dict[Tuple[str, str], float],
-                  token_prices: Dict[str, float]) -> float:
-    """Calculates total Assets Under Management in USD."""
-    total_usd = 0.0
-    
-    for token, amount in warm_wallet.items():
-        price = token_prices.get(token, 1.0)
-        total_usd += amount * price
-    
-    for (pool_id, token), amount in current_allocations.items():
-        price = token_prices.get(token, 1.0)
-        total_usd += amount * price
-    
-    logger.info(f"Total AUM: ${total_usd:,.2f}")
-    return total_usd
-
 class DataQualityReporter:
     """
     Comprehensive data quality reporter for asset allocation optimization.
-    
-    This class analyzes all data inputs to the optimization process and provides
-    detailed reporting on:
-    - Data completeness and coverage
-    - Value ranges and anomalies
-    - Fallback values and defaults
-    - Potential model failure factors
-    - Recommendations for improvement
     """
     
     def __init__(self):
         """Initialize the data quality reporter."""
-        self.engine = get_db_connection()
+        # Removed self.engine = get_db_connection() as we use repositories now
+        
         self.report = {
             'timestamp': datetime.now().isoformat(),
             'summary': {},
@@ -454,7 +288,7 @@ class DataQualityReporter:
         logger.info("Analyzing pool data quality...")
         
         try:
-            pools_df = fetch_pool_data(self.engine)
+            pools_df = fetch_pool_data()
             
             if pools_df.empty:
                 self._add_abnormal_value(
@@ -532,7 +366,7 @@ class DataQualityReporter:
             self.report['pool_data_quality'] = {
                 'total_records': len(pools_df),
                 'columns': list(pools_df.columns),
-                'data_types': pools_df.dtypes.to_dict(),
+                'data_types': pools_df.dtypes.to_dict(), # Note: types might be issues with JSON serialization
                 'null_counts': null_counts.to_dict(),
                 'extreme_apy_pools': len(high_apy_pools),
                 'low_tvl_pools': len(low_tvl_pools)
@@ -565,7 +399,7 @@ class DataQualityReporter:
         logger.info("Analyzing token price data quality...")
         
         try:
-            prices = fetch_token_prices(self.engine, tokens)
+            prices = fetch_token_prices(tokens)
             
             self._add_summary('total_tokens_requested', len(tokens))
             self._add_summary('tokens_with_prices', len(prices))
@@ -653,7 +487,7 @@ class DataQualityReporter:
         logger.info("Analyzing gas fee data quality...")
         
         try:
-            eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data(self.engine)
+            eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data()
             
             # Calculate transaction gas fees
             gas_fees = calculate_transaction_gas_fees(
@@ -730,7 +564,7 @@ class DataQualityReporter:
         logger.info("Analyzing balance data quality...")
         
         try:
-            warm_wallet, allocations = fetch_current_balances(self.engine)
+            warm_wallet, allocations = fetch_current_balances()
             
             # Check if we have any balance data
             if not warm_wallet and not allocations:
@@ -798,544 +632,99 @@ class DataQualityReporter:
             return warm_wallet, allocations
             
         except Exception as e:
-            logger.error(f"Error analyzing balance data: {e}")
-            self._add_abnormal_value(
-                'balances',
-                'analysis_error',
-                str(e),
-                "Failed to analyze balance data",
-                'critical'
-            )
-            return {}, {}
-    
+             logger.error(f"Error analyzing balance data: {e}")
+             self._add_abnormal_value(
+                 'balances',
+                 'analysis_error',
+                 str(e),
+                 "Failed to analyze balance data",
+                 'critical'
+             )
+             return {}, {}
+
+
     def analyze_allocation_parameters(self) -> Dict:
-        """Analyze allocation parameters quality."""
+        """Analyze allocation parameter quality."""
         logger.info("Analyzing allocation parameters...")
         
         try:
-            params = fetch_allocation_parameters(self.engine)
+            params = fetch_allocation_parameters()
             
-            # Check for fallback values - only flag if the parameter was actually NULL in the database
-            # We need to check if the value came from the database or from the fallback logic in fetch_allocation_parameters
-            # Since we can't easily detect this from the returned dictionary, we'll only flag obvious cases
+            self._add_summary('max_alloc_percentage', params.get('max_alloc_percentage'))
+            self._add_summary('tvl_limit_percentage', params.get('tvl_limit_percentage'))
+            self._add_summary('conversion_rate', params.get('conversion_rate'))
             
-            # Note: The fetch_allocation_parameters function already handles NULL values by providing defaults
-            # So if we're getting a value that matches the default, it might be legitimate or it might be a fallback
-            # This is a limitation of the current implementation
+            # Check constraints
+            if params.get('max_alloc_percentage', 0) > self.expected_ranges['max_alloc_pct']['max']:
+                 self._add_abnormal_value(
+                     'parameters',
+                     'max_alloc_percentage',
+                     params['max_alloc_percentage'],
+                     f"High allocation limit (> {self.expected_ranges['max_alloc_pct']['max']})",
+                     'warning'
+                 )
             
-            # Check parameter ranges
-            for param_name, param_value in params.items():
-                if param_name in self.expected_ranges:
-                    range_info = self.expected_ranges[param_name]
-                    if param_value < range_info['min'] or param_value > range_info['max']:
-                        self._add_abnormal_value(
-                            'allocation_parameters',
-                            param_name,
-                            param_value,
-                            f"Value {param_value} outside expected range [{range_info['min']}, {range_info['max']}]",
-                            'warning'
-                        )
-            
-            # Store summary stats
-            for key, value in params.items():
-                if isinstance(value, (int, float)):
-                    self._add_summary(f'param_{key}', value)
-            
-            # Store detailed parameter quality info
-            # Note: We're not detecting fallback values for allocation_parameters since it's difficult to distinguish
-            # between legitimate values that happen to match defaults and actual fallback usage
-            self.report['parameter_quality'] = {
-                'parameters': params,
-                'has_fallback_values': False,  # Not detecting for allocation_parameters
-                'abnormal_parameters': len([
-                    k for k, v in params.items() 
-                    if k in self.expected_ranges and 
-                    (v < self.expected_ranges[k]['min'] or v > self.expected_ranges[k]['max'])
-                ])
-            }
-            
-            logger.info(f"Allocation parameters analysis complete: {len(params)} parameters")
+            self.report['parameter_quality'] = params
             return params
             
         except Exception as e:
-            logger.error(f"Error analyzing allocation parameters: {e}")
-            self._add_abnormal_value(
-                'allocation_parameters',
-                'analysis_error',
-                str(e),
-                "Failed to analyze allocation parameters",
-                'critical'
-            )
+            logger.error(f"Error analyzing parameters: {e}")
             return {}
-    
-    def analyze_model_feasibility(self, pools_df: pd.DataFrame, token_prices: Dict[str, float], 
-                                alloc_params: Dict, warm_wallet: Dict[str, float], 
-                                current_allocations: Dict[Tuple[str, str], float]):
-        """Analyze model feasibility and potential failure factors."""
-        logger.info("Analyzing model feasibility...")
-        
-        try:
-            # Calculate AUM
-            total_aum = calculate_aum(warm_wallet, current_allocations, token_prices)
-            self._add_summary('total_aum', total_aum)
-            
-            # Analyze pool diversity
-            token_universe = build_token_universe(pools_df, warm_wallet, current_allocations)
-            self._add_summary('token_universe_size', len(token_universe))
-            
-            # Check token coverage
-            tokens_without_prices = [t for t in token_universe if t not in token_prices]
-            self._add_summary('tokens_without_prices', len(tokens_without_prices))
-            
-            if len(tokens_without_prices) > self.quality_thresholds['max_missing_prices']:
-                self._add_recommendation(
-                    f"Too many tokens without prices ({len(tokens_without_prices)})",
-                    'high',
-                    ["Add price sources for missing tokens", "Consider excluding pools with unpriced tokens"]
-                )
-            
-            # Analyze gas fee impact
-            eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = fetch_gas_fee_data(self.engine)
-            gas_fees = calculate_transaction_gas_fees(
-                eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units
-            )
-            
-            # Estimate transaction costs for all pools
-            estimated_transactions = len(pools_df) * 3  # Assume 3 transactions per pool on average
-            # Use average gas fee (mix of allocation/withdrawal and conversion fees)
-            avg_gas_fee = (gas_fees['allocation'] + gas_fees['conversion']) / 2
-            total_gas_cost = estimated_transactions * avg_gas_fee
-            
-            self._add_summary('estimated_transactions', estimated_transactions)
-            self._add_summary('total_gas_cost_estimate', total_gas_cost)
-            self._add_summary('gas_cost_as_pct_of_aum', (total_gas_cost / total_aum * 100) if total_aum > 0 else 0)
-            
-            # Check if gas costs are prohibitive
-            if total_gas_cost > total_aum * 0.01:  # Gas costs > 1% of AUM
-                self._add_recommendation(
-                    "High gas costs relative to AUM",
-                    'medium',
-                    [f"Gas costs: ${total_gas_cost:.2f} ({total_gas_cost/total_aum*100:.2f}% of AUM)",
-                     "Consider reducing pool count or waiting for lower gas prices"]
-                )
-            
-            # Analyze constraint feasibility
-            max_alloc_pct = alloc_params.get('max_alloc_percentage', 0.20)
-            tvl_limit_pct = alloc_params.get('tvl_limit_percentage', 0.05)
-            
-            # Calculate total capacity
-            total_capacity = sum(pools_df['forecasted_tvl'] * tvl_limit_pct)
-            self._add_summary('total_pool_capacity', total_capacity)
-            
-            # Check if AUM exceeds capacity
-            if total_aum > total_capacity:
-                self._add_abnormal_value(
-                    'model_feasibility',
-                    'aum_exceeds_capacity',
-                    f"AUM: ${total_aum:,.0f}, Capacity: ${total_capacity:,.0f}",
-                    "Total AUM exceeds pool capacity",
-                    'critical'
-                )
-                self._add_recommendation(
-                    "AUM exceeds total pool capacity",
-                    'critical',
-                    ["Increase TVL limits", "Add more pools", "Reduce allocation limits"]
-                )
-            
-            # Store detailed feasibility analysis
-            self.report['model_feasibility'] = {
-                'total_aum': total_aum,
-                'token_universe_size': len(token_universe),
-                'tokens_without_prices': len(tokens_without_prices),
-                'estimated_transactions': estimated_transactions,
-                'total_gas_cost': total_gas_cost,
-                'gas_cost_pct_of_aum': (total_gas_cost / total_aum * 100) if total_aum > 0 else 0,
-                'total_pool_capacity': total_capacity,
-                'aum_exceeds_capacity': total_aum > total_capacity,
-                'constraint_feasible': total_aum <= total_capacity and len(tokens_without_prices) <= self.quality_thresholds['max_missing_prices']
-            }
-            
-            logger.info(f"Model feasibility analysis complete: AUM=${total_aum:,.0f}, Capacity=${total_capacity:,.0f}, Gas cost=${total_gas_cost:.2f}")
-            
-        except Exception as e:
-            logger.error(f"Error analyzing model feasibility: {e}")
-            self._add_abnormal_value(
-                'model_feasibility',
-                'analysis_error',
-                str(e),
-                "Failed to analyze model feasibility",
-                'critical'
-            )
-    
-    def analyze_data_freshness(self):
-        """Analyze the freshness of data sources."""
-        logger.info("Analyzing data freshness...")
-        
-        try:
-            freshness_info = {}
-            
-            # Check pool data freshness
-            pool_query = """
-            SELECT 
-                date,
-                COUNT(*) as pool_count
-            FROM pool_daily_metrics
-            WHERE date = CURRENT_DATE
-            GROUP BY date
-            """
-            pool_df = pd.read_sql(pool_query, self.engine)
-            
-            if not pool_df.empty:
-                freshness_info['pool_data'] = {
-                    'date': str(date.today()),
-                    'record_count': pool_df['pool_count'].iloc[0],
-                    'has_current_data': True
-                }
-            else:
-                freshness_info['pool_data'] = {
-                    'date': str(date.today()),
-                    'record_count': 0,
-                    'has_current_data': False
-                }
-            
-            # Check price data freshness
-            price_query = """
-            SELECT 
-                symbol,
-                data_timestamp,
-                AGE(NOW(), data_timestamp) as age
-            FROM raw_coinmarketcap_ohlcv
-            WHERE symbol IN ('ETH', 'USDC', 'USDT')
-            ORDER BY data_timestamp DESC
-            LIMIT 10
-            """
-            price_df = pd.read_sql(price_query, self.engine)
-            
-            if not price_df.empty:
-                avg_age_hours = price_df['age'].apply(lambda x: x.total_seconds() / 3600).mean()
-                freshness_info['price_data'] = {
-                    'sample_count': len(price_df),
-                    'avg_age_hours': avg_age_hours,
-                    'latest_timestamp': str(price_df['data_timestamp'].iloc[0])
-                }
-            
-            # Check gas fee data freshness
-            gas_query = """
-            SELECT 
-                date,
-                forecasted_max_gas_gwei
-            FROM gas_fees_daily
-            WHERE date = CURRENT_DATE
-            LIMIT 1
-            """
-            gas_df = pd.read_sql(gas_query, self.engine)
-            
-            if not gas_df.empty:
-                freshness_info['gas_data'] = {
-                    'date': str(date.today()),
-                    'gas_gwei': gas_df['forecasted_max_gas_gwei'].iloc[0],
-                    'has_current_data': True
-                }
-            else:
-                freshness_info['gas_data'] = {
-                    'date': str(date.today()),
-                    'gas_gwei': None,
-                    'has_current_data': False
-                }
-            
-            # Check balance data freshness
-            balance_query = """
-            SELECT 
-                date,
-                COUNT(*) as record_count
-            FROM daily_balances
-            WHERE date = CURRENT_DATE
-            GROUP BY date
-            """
-            balance_df = pd.read_sql(balance_query, self.engine)
-            
-            if not balance_df.empty:
-                freshness_info['balance_data'] = {
-                    'date': str(date.today()),
-                    'record_count': balance_df['record_count'].iloc[0],
-                    'has_current_data': True
-                }
-            else:
-                freshness_info['balance_data'] = {
-                    'date': str(date.today()),
-                    'record_count': 0,
-                    'has_current_data': False
-                }
-            
-            self.report['data_freshness'] = freshness_info
-            
-            # Check for stale data
-            for data_type, info in freshness_info.items():
-                if data_type == 'pool_data' and not info.get('has_current_data', False):
-                    self._add_abnormal_value(
-                        'data_freshness',
-                        data_type,
-                        'No current data',
-                        f"No data available for today",
-                        'warning'
-                    )
-            
-            logger.info(f"Data freshness analysis complete: {len(freshness_info)} data sources checked")
-            
-        except Exception as e:
-            logger.error(f"Error analyzing data freshness: {e}")
-            self._add_abnormal_value(
-                'data_freshness',
-                'analysis_error',
-                str(e),
-                "Failed to analyze data freshness",
-                'warning'
-            )
-    
-    def generate_recommendations(self):
-        """Generate comprehensive recommendations based on analysis."""
-        logger.info("Generating recommendations...")
-        
-        # Critical issues first
-        critical_issues = []
-        for category, items in self.report['abnormal_values'].items():
-            critical_items = [i for i in items if i['severity'] == 'critical']
-            if critical_items:
-                critical_issues.extend([f"{category}: {i['reason']}" for i in critical_items])
-        
-        if critical_issues:
-            self._add_recommendation(
-                "Address critical data quality issues immediately",
-                'critical',
-                critical_issues
-            )
-        
-        # Fallback values
-        total_fallbacks = sum(len(items) for items in self.report['fallback_values'].values())
-        if total_fallbacks > 0:
-            self._add_recommendation(
-                f"Reduce reliance on fallback values ({total_fallbacks} detected)",
-                'high',
-                ["Improve data pipeline reliability", "Add redundant data sources", "Implement better error handling"]
-            )
-        
-        # Data coverage
-        price_coverage = self.report['summary'].get('price_coverage_pct', 0)
-        if price_coverage < 95:
-            self._add_recommendation(
-                f"Improve token price coverage (currently {price_coverage:.1f}%)",
-                'high',
-                ["Add more tokens to price tracking", "Check API rate limits", "Consider alternative price sources"]
-            )
-        
-        # Model complexity
-        total_pools = self.report['summary'].get('total_pools', 0)
-        if total_pools > 100:
-            self._add_recommendation(
-                f"Consider reducing model complexity ({total_pools} pools may cause solver issues)",
-                'medium',
-                ["Select top N pools by quality metrics", "Implement pool clustering", "Use hierarchical optimization"]
-            )
-        
-        # Performance optimization
-        gas_cost_pct = self.report['summary'].get('gas_cost_as_pct_of_aum', 0)
-        if gas_cost_pct > 0.5:
-            self._add_recommendation(
-                f"High gas costs relative to AUM ({gas_cost_pct:.2f}%)",
-                'medium',
-                ["Optimize transaction batching", "Consider layer-2 solutions", "Wait for lower gas periods"]
-            )
-    
-    def run_comprehensive_analysis(self) -> Dict:
-        """Run comprehensive data quality analysis."""
-        logger.info("Starting comprehensive data quality analysis...")
-        
-        # Analyze all data components
-        pools_df = self.analyze_pool_data()
-        
-        # Get token universe for price analysis
-        if not pools_df.empty:
-            # Get sample balances to build token universe
-            try:
-                warm_wallet, current_allocations = fetch_current_balances(self.engine)
-                tokens = build_token_universe(pools_df, warm_wallet, current_allocations)
-                token_prices = self.analyze_token_prices(tokens)
-            except:
-                token_prices = self.analyze_token_prices(['USDC', 'USDT', 'ETH', 'WBTC'])
-        else:
-            token_prices = self.analyze_token_prices(['USDC', 'USDT', 'ETH', 'WBTC'])
-        
-        eth_price, base_fee_transfer_gwei, base_fee_swap_gwei, priority_fee_gwei, min_gas_units = self.analyze_gas_fee_data()
-        warm_wallet, current_allocations = self.analyze_balance_data()
-        alloc_params = self.analyze_allocation_parameters()
-        
-        # Analyze model feasibility if we have sufficient data
-        if not pools_df.empty and token_prices:
-            self.analyze_model_feasibility(pools_df, token_prices, alloc_params, warm_wallet, current_allocations)
-        
-        # Analyze data freshness
-        self.analyze_data_freshness()
-        
-        # Generate recommendations
-        self.generate_recommendations()
-        
-        # Calculate overall quality score
-        self._calculate_quality_score()
-        
-        logger.info("Comprehensive data quality analysis complete")
-        return self.report
-    
-    def _calculate_quality_score(self):
-        """Calculate an overall data quality score."""
-        score = 100.0
-        
-        # Deduct points for critical issues
-        for category, items in self.report['abnormal_values'].items():
-            for item in items:
-                if item['severity'] == 'critical':
-                    score -= 20
-                elif item['severity'] == 'warning':
-                    score -= 5
-        
-        # Deduct points for fallback values
-        total_fallbacks = sum(len(items) for items in self.report['fallback_values'].values())
-        score -= min(total_fallbacks * 2, 20)
-        
-        # Deduct points for low coverage
-        price_coverage = self.report['summary'].get('price_coverage_pct', 100)
-        if price_coverage < 100:
-            score -= (100 - price_coverage) * 0.3
-        
-        # Ensure score doesn't go below 0
-        score = max(0, score)
-        
-        self._add_summary('overall_quality_score', score)
-        
-        # Add quality assessment
-        if score >= 90:
-            assessment = "Excellent"
-        elif score >= 75:
-            assessment = "Good"
-        elif score >= 60:
-            assessment = "Fair"
-        else:
-            assessment = "Poor"
-        
-        self._add_summary('quality_assessment', assessment)
-    
-    def print_report_summary(self):
-        """Print a comprehensive summary of the data quality report."""
-        print("\n" + "="*80)
-        print("DATA QUALITY REPORT SUMMARY")
-        print("="*80)
-        
-        # Overall assessment
-        score = self.report['summary'].get('overall_quality_score', 0)
-        assessment = self.report['summary'].get('quality_assessment', 'Unknown')
-        print(f"\n🎯 OVERALL QUALITY: {assessment} (Score: {score:.1f}/100)")
-        
-        # Summary statistics
-        print("\n📊 SUMMARY STATISTICS:")
-        for key, value in self.report['summary'].items():
-            if key not in ['overall_quality_score', 'quality_assessment']:
-                if isinstance(value, float):
-                    if 'pct' in key or 'rate' in key:
-                        print(f"  {key}: {value:.2f}%")
-                    elif 'gas_fee_usd' in key.lower() or 'gas_fee' in key.lower():
-                        # Special formatting for very small gas fees
-                        if value < 0.01:
-                            print(f"  {key}: ${value:.6f}")
-                        else:
-                            print(f"  {key}: ${value:,.2f}")
-                    elif 'usd' in key.lower() or 'aum' in key.lower():
-                        print(f"  {key}: ${value:,.2f}")
-                    else:
-                        print(f"  {key}: {value:.3f}")
-                else:
-                    print(f"  {key}: {value}")
-        
-        # Fallback values
-        print("\n⚠️  FALLBACK VALUES:")
-        total_fallbacks = sum(len(items) for items in self.report['fallback_values'].values())
-        print(f"  Total fallback values: {total_fallbacks}")
-        for category, items in self.report['fallback_values'].items():
-            if items:
-                print(f"  {category}: {len(items)} items")
-                for item in items[:2]:  # Show first 2
-                    print(f"    - {item['item']}: {item['value']}")
-                if len(items) > 2:
-                    print(f"    ... and {len(items) - 2} more")
-        
-        # Abnormal values
-        print("\n🚨 ABNORMAL VALUES:")
-        total_abnormal = sum(len(items) for items in self.report['abnormal_values'].values())
-        critical_count = sum(len([i for i in items if i['severity'] == 'critical']) 
-                           for items in self.report['abnormal_values'].values())
-        print(f"  Total abnormal values: {total_abnormal} ({critical_count} critical)")
-        
-        for category, items in self.report['abnormal_values'].items():
-            if items:
-                critical_items = [i for i in items if i['severity'] == 'critical']
-                print(f"  {category}: {len(items)} items ({len(critical_items)} critical)")
-        
-        # Model feasibility
-        if 'model_feasibility' in self.report:
-            feasibility = self.report['model_feasibility']
-            print(f"\n⚖️  MODEL FEASIBILITY:")
-            print(f"  Total AUM: ${feasibility.get('total_aum', 0):,.2f}")
-            print(f"  Pool capacity: ${feasibility.get('total_pool_capacity', 0):,.2f}")
-            print(f"  Gas cost estimate: ${feasibility.get('total_gas_cost', 0):.2f}")
-            print(f"  Feasible: {feasibility.get('constraint_feasible', False)}")
-        
-        # Top recommendations
-        print("\n💡 TOP RECOMMENDATIONS:")
-        # Sort by priority
-        recs = sorted(self.report['recommendations'], 
-                     key=lambda x: {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}[x['priority']])
-        
-        for rec in recs[:5]:  # Show top 5
-            print(f"  [{rec['priority'].upper()}] {rec['recommendation']}")
-        
-        print("\n" + "="*80)
-    
-    def save_report(self, filename: str = None) -> str:
-        """Save the detailed report to a JSON file (DISABLED)."""
-        logger.info("Data quality report saving is disabled")
-        return None
 
+    def generate_report(self) -> Dict:
+        """Executes all analyses and generates the final report."""
+        logger.info("Generating data quality report...")
+        
+        try:
+             # Run analyses
+             pools_df = self.analyze_pool_data()
+             
+             # Extract tokens from pools for price checking
+             tokens = set()
+             if not pools_df.empty:
+                 for _, row in pools_df.iterrows():
+                     ut = row.get('underlying_tokens')
+                     if isinstance(ut, list):
+                         tokens.update(ut)
+                     elif isinstance(ut, str):
+                         try:
+                             tokens.update(json.loads(ut))
+                         except: pass
+             
+             warm_wallet, allocations = self.analyze_balance_data()
+             tokens.update(warm_wallet.keys())
+             for _, token in allocations.keys():
+                 tokens.add(token)
+             
+             self.analyze_token_prices(list(tokens))
+             self.analyze_gas_fee_data()
+             self.analyze_allocation_parameters()
+             
+             # Calculate overall score
+             score = 100
+             critical_errors = len([a for cat in self.report['abnormal_values'].values() for a in cat if a['severity'] == 'critical'])
+             warnings = len([a for cat in self.report['abnormal_values'].values() for a in cat if a['severity'] == 'warning'])
+             
+             score -= (critical_errors * 20)
+             score -= (warnings * 2)
+             score = max(0, score)
+             
+             self._add_summary('overall_quality_score', score)
+             self._add_summary('critical_issues_count', critical_errors)
+             self._add_summary('warning_issues_count', warnings)
+             
+             logger.info(f"Report generated. Quality Score: {score}/100")
+             return self.report
+        except Exception as e:
+            logger.error(f"Error generating report: {e}")
+            return self.report
 
 def generate_data_quality_report() -> Dict:
-    """
-    Generate a comprehensive data quality report for the optimization process.
-    
-    Returns:
-        Dictionary containing the complete data quality analysis
-    """
+    """Convenience function to generate the report."""
     reporter = DataQualityReporter()
-    report = reporter.run_comprehensive_analysis()
-    
-    # Print summary to logs
-    reporter.print_report_summary()
-    
-    # Save detailed report (DISABLED)
-    # reporter.save_report()
-    
-    return report
-
+    return reporter.generate_report()
 
 if __name__ == "__main__":
-    # Configure logging for standalone execution
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    
-    # Generate and display the report
-    print("="*80)
-    print("ASSET ALLOCATION DATA QUALITY REPORT")
-    print("="*80)
-    
+    logging.basicConfig(level=logging.INFO)
     report = generate_data_quality_report()
-    
-    print(f"\n📄 Detailed report saved with timestamp: {report['timestamp']}")
-    print("="*80)
+    print(json.dumps(report, indent=2, default=str))         

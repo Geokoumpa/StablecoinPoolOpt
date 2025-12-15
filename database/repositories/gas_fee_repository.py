@@ -88,4 +88,44 @@ class GasFeeRepository(BaseRepository[GasFeesDaily]):
             if end_date:
                 stmt = stmt.where(GasFeesDaily.date <= end_date)
             stmt = stmt.order_by(GasFeesDaily.date)
-            return session.execute(stmt).scalars().all()
+            results = session.execute(stmt).scalars().all()
+            session.expunge_all()
+            return results
+
+    def has_daily_data_for_date(self, check_date: date) -> bool:
+        """Check if daily data exists for a specific date."""
+        with self.session() as session:
+            from sqlalchemy import func
+            stmt = select(func.count()).select_from(GasFeesDaily).where(GasFeesDaily.date == check_date)
+            count = session.execute(stmt).scalar()
+            return count > 0
+
+    def get_all_daily_data(self) -> List[GasFeesDaily]:
+        """Get all daily gas data."""
+        return self.get_historical_data()
+
+    def get_data_for_forecasting(self) -> List[Any]:
+        """
+        Get daily gas data for forecasting models.
+        Returns: date, actual_avg_gas_gwei, actual_max_gas_gwei, eth_open, btc_open
+        """
+        from sqlalchemy import text
+        sql = text("""
+            SELECT
+                date,
+                actual_avg_gas_gwei,
+                actual_max_gas_gwei,
+                eth_open,
+                btc_open
+            FROM
+                gas_fees_daily
+            WHERE actual_avg_gas_gwei IS NOT NULL
+              AND eth_open IS NOT NULL
+              AND btc_open IS NOT NULL
+            ORDER BY
+                date;
+        """)
+        with self.session() as session:
+            return session.execute(sql).fetchall()
+
+

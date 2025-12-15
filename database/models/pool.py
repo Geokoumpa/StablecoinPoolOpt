@@ -17,7 +17,7 @@ class Pool(Base):
     pool_address = Column(String(255))
     underlying_tokens = Column(ARRAY(Text))
     underlying_token_addresses = Column(ARRAY(Text))
-    poolMeta = Column(Text)
+    pool_meta = Column("poolmeta", Text)
     is_active = Column(Boolean, default=True)
     currently_filtered_out = Column(Boolean, default=False)
 

@@ -1,28 +1,13 @@
 import logging
 import pandas as pd
 from tqdm import tqdm
-from database.db_utils import get_db_connection
+from datetime import date
 from data_ingestion.fetch_defillama_pool_history import fetch_defillama_pool_history
+from database.repositories.pool_metrics_repository import PoolMetricsRepository
+from database.repositories.raw_data_repository import RawDataRepository
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
-
-def get_pre_filtered_pool_ids() -> list:
-    """
-    Fetches pool_ids from pool_daily_metrics that passed pre-filtering for the current date
-    and belong to pools that are active (is_active = true).
-    """
-    conn = get_db_connection()
-    query = """
-    SELECT DISTINCT pdm.pool_id
-    FROM pool_daily_metrics pdm
-    JOIN pools p ON pdm.pool_id = p.pool_id
-    WHERE pdm.date = CURRENT_DATE 
-        AND pdm.is_filtered_out = FALSE
-        AND p.is_active = TRUE;
-    """
-    df = pd.read_sql(query, conn)
-    conn.dispose()
-    return df['pool_id'].tolist()
 
 def fetch_filtered_pool_histories():
     """
@@ -31,17 +16,17 @@ def fetch_filtered_pool_histories():
     """
     logger.info("Starting to fetch filtered pool histories...")
     
+    # Initialize repositories
+    metrics_repo = PoolMetricsRepository()
+    raw_repo = RawDataRepository()
+    
     try:
         # Clear the table before fetching new data
-        conn = get_db_connection()
-        with conn.connect() as connection:
-            from sqlalchemy import text
-            connection.execute(text("DELETE FROM raw_defillama_pool_history;"))
-            connection.commit()
-        conn.dispose()
+        logger.info("Clearing raw_defillama_pool_history table...")
+        raw_repo.clear_raw_pool_history()
         
         # Get pools that passed pre-filtering and are active
-        filtered_pool_ids = get_pre_filtered_pool_ids()
+        filtered_pool_ids = metrics_repo.get_active_filtered_pool_ids(date.today(), is_filtered_out=False)
         
         if not filtered_pool_ids:
             logger.warning("No pre-filtered active pools found to fetch historical data for.")
@@ -55,6 +40,9 @@ def fetch_filtered_pool_histories():
         # Fetch historical data for each pre-filtered active pool
         for pool_id in tqdm(filtered_pool_ids, desc="Fetching pre-filtered active pool histories"):
             try:
+                # This function handles its own repository instantiation for RawDataRepository
+                # to insert history. We could potentially refactor it to accept a repo instance,
+                # but currently it works as a standalone unit.
                 fetch_defillama_pool_history(pool_id)
                 success_count += 1
             except Exception as e:

@@ -1,8 +1,10 @@
 import logging
+from datetime import date
+from database.repositories.pool_metrics_repository import PoolMetricsRepository
+from database.repositories.parameter_repository import ParameterRepository
+from database.repositories.token_repository import TokenRepository
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
-
-from database.db_utils import get_db_connection
-
 logger = logging.getLogger(__name__)
 
 def filter_pools_final():
@@ -12,27 +14,23 @@ def filter_pools_final():
     Now uses forecasted values that are available from the forecasting phase.
     """
     logger.info("Starting final pool filtering (icebox)...")
-    engine = None
-    conn = None
-    trans = None
-    try:
-        engine = get_db_connection()
-        conn = engine.raw_connection()
-        cur = conn.cursor()
+    
+    # Initialize repositories
+    metrics_repo = PoolMetricsRepository()
+    param_repo = ParameterRepository()
+    token_repo = TokenRepository()
 
-        # Get icebox tokens from the icebox_tokens table (only active ones)
-        cur.execute("SELECT token_symbol FROM icebox_tokens WHERE removed_timestamp IS NULL;")
-        icebox_tokens = {row[0] for row in cur.fetchall()}
+    try:
+        # Get icebox tokens (only active ones)
+        icebox_tokens_objs = token_repo.get_icebox_tokens()
+        icebox_tokens = {t.token_symbol for t in icebox_tokens_objs}
 
         # Get allocation parameters for TVL and APY limits
-        cur.execute("""
-            SELECT pool_tvl_limit, pool_apy_limit
-            FROM allocation_parameters
-            ORDER BY timestamp DESC LIMIT 1;
-        """)
-        filter_params = cur.fetchone()
+        filter_params = param_repo.get_latest_parameters()
+        
         if filter_params:
-            pool_tvl_limit, pool_apy_limit = filter_params
+            pool_tvl_limit = filter_params.pool_tvl_limit
+            pool_apy_limit = filter_params.pool_apy_limit
         else:
             pool_tvl_limit, pool_apy_limit = None, None
             logger.warning("No allocation parameters found for TVL/APY filtering.")
@@ -45,15 +43,7 @@ def filter_pools_final():
         logger.info("=====================================")
 
         # Fetch pools that passed pre-filtering (not filtered out)
-        # Now forecasted values should be available from the forecasting phase
-        cur.execute("""
-            SELECT pdm.pool_id, p.symbol, pdm.forecasted_tvl, pdm.forecasted_apy, 
-                   pdm.filter_reason
-            FROM pool_daily_metrics pdm
-            JOIN pools p ON pdm.pool_id = p.pool_id
-            WHERE pdm.date = CURRENT_DATE AND pdm.is_filtered_out = FALSE;
-        """)
-        pre_filtered_pools = cur.fetchall()
+        pre_filtered_pools = metrics_repo.get_pre_filtered_pools_with_forecasts(date.today())
 
         logger.info(f"Processing {len(pre_filtered_pools)} pre-filtered pools for final filtering...")
 
@@ -69,6 +59,8 @@ def filter_pools_final():
                 logger.error(f"Pool {pool_id} ({symbol}): TVL={tvl}, APY={apy}")
             if len(pools_missing_forecasts) > 5:
                 logger.error(f"... and {len(pools_missing_forecasts) - 5} more pools")
+
+        updates = []
 
         for pool_id, symbol, forecasted_tvl, forecasted_apy, existing_reason in pre_filtered_pools:
             additional_reasons = []
@@ -106,30 +98,23 @@ def filter_pools_final():
                 if existing_reason:
                     combined_reasons.append(existing_reason)
                 combined_reasons.extend(additional_reasons)
-
-                # Update the pool to be filtered out
-                cur.execute("""
-                    UPDATE pool_daily_metrics
-                    SET is_filtered_out = TRUE, filter_reason = %s
-                    WHERE pool_id = %s AND date = CURRENT_DATE;
-                """, ('; '.join(combined_reasons), pool_id))
-
+                
+                final_reason = '; '.join(combined_reasons)
+                
+                updates.append((pool_id, date.today(), True, final_reason)) # is_filtered_out = True
+                
                 logger.info(f"Pool {pool_id} finally filtered out. Reasons: {'; '.join(additional_reasons)}.")
 
-        conn.commit()
-        
+        if updates:
+            metrics_repo.bulk_update_icebox_status(updates)
+            logger.info(f"Updated filtering status for {len(updates)} pools.")
+
         # Log final statistics
-        cur.execute("""
-            SELECT COUNT(*) FROM pool_daily_metrics
-            WHERE date = CURRENT_DATE AND is_filtered_out = FALSE;
-        """)
-        final_count = cur.fetchone()[0]
+        final_approved_ids = metrics_repo.get_filtered_pool_ids_for_date(date.today(), is_filtered_out=False)
+        final_filtered_ids = metrics_repo.get_filtered_pool_ids_for_date(date.today(), is_filtered_out=True)
         
-        cur.execute("""
-            SELECT COUNT(*) FROM pool_daily_metrics
-            WHERE date = CURRENT_DATE AND is_filtered_out = TRUE;
-        """)
-        filtered_count = cur.fetchone()[0]
+        final_count = len(final_approved_ids)
+        filtered_count = len(final_filtered_ids)
 
         logger.info(f"Final filtering completed successfully.")
         
@@ -149,14 +134,7 @@ def filter_pools_final():
 
     except Exception as e:
         logger.error(f"Error during final pool filtering: {e}")
-        if conn:
-            conn.rollback()
         raise
-    finally:
-        if conn:
-            conn.close()
-        if engine:
-            engine.dispose()
 
 if __name__ == "__main__":
     filter_pools_final()

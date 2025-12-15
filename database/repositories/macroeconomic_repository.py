@@ -50,3 +50,18 @@ class MacroeconomicRepository(BaseRepository[MacroeconomicData]):
                 stmt = stmt.where(MacroeconomicData.date <= end_date)
             stmt = stmt.order_by(MacroeconomicData.date)
             return session.execute(stmt).scalars().all()
+
+    def get_all_series_data(self, start_date: date, end_date: date) -> List[Any]:
+        """Get data for all series within a date range."""
+        with self.session() as session:
+             # We fetch dictionary-like objects or just fields needed for pivoting
+             # Using SQL text or select of specific fields for efficiency
+             from sqlalchemy import text
+             stmt = text("""
+                SELECT series_name, frequency, date, value
+                FROM macroeconomic_data
+                WHERE date BETWEEN :start AND :end
+                ORDER BY date, series_name
+             """)
+             return session.execute(stmt, {"start": start_date, "end": end_date}).fetchall()
+

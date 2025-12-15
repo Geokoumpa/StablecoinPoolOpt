@@ -1,13 +1,13 @@
 import logging
 import pandas as pd
 import numpy as np
-from datetime import timedelta
+from datetime import timedelta, date
 from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
-from sqlalchemy import text
 from tqdm.auto import tqdm
 
-from database.db_utils import get_db_connection
-from forecasting.panel_data_utils import fetch_panel_history, build_pool_feature_row, fetch_all_macro_daily, EXOG_BASE, LAG_SETS
+# Import repositories
+from database.repositories.pool_metrics_repository import PoolMetricsRepository
+from forecasting.panel_data_utils import fetch_panel_history, build_pool_feature_row, fetch_all_macro_daily
 from forecasting.neighbor_features import add_neighbor_features
 from forecasting.model_utils import fit_global_panel_model, make_tvl_oof
 
@@ -27,17 +27,12 @@ GROUP_COL = "pool_group"
 def get_filtered_pool_ids(limit: Optional[int] = None) -> List[str]:
     """
     Fetches pool_ids from pool_daily_metrics that are not filtered out and are active.
+    Uses today's status.
     """
-    engine = get_db_connection()
-    sql = """
-    SELECT DISTINCT pool_id
-    FROM pool_daily_metrics
-    WHERE is_filtered_out = FALSE
-    """
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn)
-        ids = df["pool_id"].tolist()
-        return ids[:limit] if limit else ids
+    repo = PoolMetricsRepository()
+    # Assuming we want pools valid for today (or latest)
+    ids = repo.get_active_filtered_pool_ids(date.today(), is_filtered_out=False)
+    return ids[:limit] if limit else ids
 
 def _count_actual_history(panel_df: pd.DataFrame, pid: str, asof_norm: pd.Timestamp) -> int:
     """Count actual history for a pool up to asof date."""
@@ -72,12 +67,13 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
     """
     rows = []
     days = pd.date_range(asof_start, asof_end, freq='D')
-    engine = get_db_connection()
+    repo = PoolMetricsRepository()
 
     logger.info(f"Building global panel dataset from {asof_start.date()} to {asof_end.date()}")
 
     # Load macroeconomic data with lags
-    macro_daily = fetch_all_macro_daily(engine,
+    # Note: repo/engine arg is None as utils use Repository internally now
+    macro_daily = fetch_all_macro_daily(None,
                                         start_date=asof_start - pd.Timedelta(days=hist_days),
                                         end_date=asof_end)
 
@@ -112,17 +108,21 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
         panel = add_neighbor_features(panel, group_col=group_col)
 
         # Get realized next day (target)
-        with engine.connect() as conn:
-            realized = pd.read_sql(
-                text("""SELECT pool_id, date, actual_apy,actual_tvl
-                        FROM pool_daily_metrics
-                        WHERE date = :d"""),
-                conn,
-                params={"d": (t + pd.Timedelta(days=1)).normalize().to_pydatetime()}
-            )
+        target_date = (t + pd.Timedelta(days=1)).normalize().to_pydatetime().date()
+        realized_rows = repo.get_realized_metrics_for_date(target_date)
+        
+        if not realized_rows:
+            continue
+            
+        realized = pd.DataFrame(realized_rows, columns=['pool_id', 'date', 'actual_apy', 'actual_tvl'])
         realized['date'] = pd.to_datetime(realized['date'], utc=True).dt.normalize()
 
         pools_today = panel.loc[panel['date'] == t.normalize(), 'pool_id'].unique().tolist()
+        
+        # Prepare realized dictionary for faster lookup
+        # realized.set_index('pool_id', inplace=True) 
+        # Actually doing row iteration is often fine with filtered df, but dict is faster.
+        realized_map = realized.set_index('pool_id')[['actual_apy', 'actual_tvl']].to_dict('index')
 
         for pid in pools_today:
             n_hist = _count_actual_history(panel, pid, t.normalize())
@@ -155,11 +155,14 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
             if not feat_row:
                 continue
 
-            y_next_apy = realized.loc[realized['pool_id'] == pid, 'actual_apy']
-            y_next_tvl = realized.loc[realized['pool_id'] == pid, 'actual_tvl']
+            if pid not in realized_map:
+                continue
+                
+            y_next_apy = realized_map[pid]['actual_apy']
+            y_next_tvl = realized_map[pid]['actual_tvl']
 
-            target_apy = float(y_next_apy.iloc[0]) if len(y_next_apy) > 0 and pd.notna(y_next_apy.iloc[0]) else np.nan
-            target_tvl = float(y_next_tvl.iloc[0]) if len(y_next_tvl) > 0 and pd.notna(y_next_tvl.iloc[0]) else np.nan
+            target_apy = float(y_next_apy) if pd.notna(y_next_apy) else np.nan
+            target_tvl = float(y_next_tvl) if pd.notna(y_next_tvl) else np.nan
 
             if pd.isna(target_apy):
                 continue
@@ -173,6 +176,10 @@ def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
             rows.append(feat_row)
 
     panel = pd.DataFrame(rows)
+    # Check if panel is empty before sorting
+    if panel.empty:
+        return pd.DataFrame()
+        
     panel = panel.sort_values(['pool_id', 'asof']).reset_index(drop=True)
 
     return panel
@@ -249,8 +256,7 @@ def predict_global_lgbm(asof: pd.Timestamp,
     # Build historical panel with macro data
     effective_days = hist_days + lag_pad_days
     start = (asof - pd.Timedelta(days=effective_days)).normalize()
-    engine = get_db_connection()
-
+    
     # 1) Raw per-pool history
     panel = fetch_panel_history(asof, pool_ids, days=effective_days, group_col=group_col)
     if panel.empty:
@@ -261,7 +267,7 @@ def predict_global_lgbm(asof: pd.Timestamp,
 
     # 2) Macro history + lags
     macro_daily = fetch_all_macro_daily(
-        engine,
+        None, # no engine
         start_date=start,
         end_date=asof.normalize()
     )
@@ -285,11 +291,14 @@ def predict_global_lgbm(asof: pd.Timestamp,
     # 4) Encode pool_id using SAME encoder as training
     if pool_id_encoder is not None:
         known = panel["pool_id"].astype(str).isin(pool_id_encoder.classes_)
-        panel.loc[known, "pool_id_code"] = pool_id_encoder.transform(
-            panel.loc[known, "pool_id"].astype(str)
-        )
-        panel.loc[~known, "pool_id_code"] = -1  # unknown bucket
-        panel["pool_id_code"] = panel["pool_id_code"].astype(int)
+        # Create a new column instead of relying on panel having it. 
+        # Using a temporary series to avoid assignment issues
+        codes = pd.Series(-1, index=panel.index, dtype=int)
+        if known.any():
+            codes.loc[known] = pool_id_encoder.transform(
+                panel.loc[known, "pool_id"].astype(str)
+            )
+        panel["pool_id_code"] = codes.astype(int)
 
     # 5) Trim to last hist_days (drop the lag_pad_days)
     cutoff_start = (asof - pd.Timedelta(days=hist_days)).normalize()
@@ -322,15 +331,14 @@ def predict_global_lgbm(asof: pd.Timestamp,
         # Cold-start baseline branch
         elif n_valid == 2:
             baseline_apy = float(hist_apys.tail(2).mean())
-            baseline_tvl = float(panel.loc[
+            
+            # Simple TVL access
+            tvl_vals = panel.loc[
                 (panel['pool_id'] == pid) &
                 (panel['date'] == asof.normalize()),
                 'tvl_usd'
-            ].iloc[0]) if len(panel.loc[
-                (panel['pool_id'] == pid) &
-                (panel['date'] == asof.normalize()),
-                'tvl_usd'
-            ]) > 0 else np.nan
+            ]
+            baseline_tvl = float(tvl_vals.iloc[0]) if len(tvl_vals) > 0 else np.nan
 
             rows.append({
                 'pool_id': pid,
@@ -371,6 +379,9 @@ def predict_global_lgbm(asof: pd.Timestamp,
 
             X_tvl = fr[tvl_feature_cols].fillna(0.0)
             tvl_hat = float(tvl_model.predict(X_tvl)[0])
+            # Clamp TVL to non-negative
+            if tvl_hat < 0:
+                tvl_hat = 0.0
             fr["tvl_hat_t1_oof"] = tvl_hat
 
         # Ensure needed APY features exist
@@ -405,6 +416,9 @@ def predict_global_lgbm(asof: pd.Timestamp,
 
         # Predict APY
         yhat_apy = float(apy_model.predict(fr_pred)[0])
+        # Clamp APY to non-negative
+        if yhat_apy < 0:
+            yhat_apy = 0.0
 
         rows.append({
             'pool_id': pid,
@@ -425,55 +439,36 @@ def persist_global_forecasts(predictions_df: pd.DataFrame):
         logger.warning("No predictions to persist")
         return
 
-    engine = get_db_connection()
+    repo = PoolMetricsRepository()
     
-    with engine.connect() as conn:
-        for _, row in predictions_df.iterrows():
-            pool_id = row['pool_id']
-            target_date = row['target_date']
-            apy_forecast = float(row['pred_global_apy'])
-            tvl_forecast = float(row['pred_tvl_t1']) if pd.notna(row['pred_tvl_t1']) else None
-
-            # Check if record exists
-            check_query = text("""
-            SELECT COUNT(*) as count FROM pool_daily_metrics
-            WHERE pool_id = :pool_id AND date = :target_date
-            """)
-            result = conn.execute(check_query, {
-                "pool_id": pool_id, 
-                "target_date": target_date.strftime('%Y-%m-%d')
-            })
-            exists = result.fetchone()[0] > 0
-
-            if exists:
-                # Update existing record
-                update_query = text("""
-                UPDATE pool_daily_metrics
-                SET forecasted_apy = :apy_forecast, forecasted_tvl = :tvl_forecast
-                WHERE pool_id = :pool_id AND date = :target_date
-                """)
-                conn.execute(update_query, {
-                    "apy_forecast": apy_forecast,
-                    "tvl_forecast": tvl_forecast,
-                    "pool_id": pool_id,
-                    "target_date": target_date.strftime('%Y-%m-%d')
-                })
-            else:
-                # Insert new record
-                insert_query = text("""
-                INSERT INTO pool_daily_metrics (pool_id, date, forecasted_apy, forecasted_tvl)
-                VALUES (:pool_id, :target_date, :apy_forecast, :tvl_forecast)
-                """)
-                conn.execute(insert_query, {
-                    "pool_id": pool_id,
-                    "target_date": target_date.strftime('%Y-%m-%d'),
-                    "apy_forecast": apy_forecast,
-                    "tvl_forecast": tvl_forecast
-                })
+    # Prepare data for bulk update of forecasts
+    forecasts_data = []
+    for _, row in predictions_df.iterrows():
+        pool_id = row['pool_id']
+        # target_date is a Timestamp/datetime from the dataframe rows usually
+        target_date = row['target_date']
+        # Ensure it's a date object for the repo/DB
+        if hasattr(target_date, 'date'):
+            date_val = target_date.date()
+        else:
+            date_val = pd.to_datetime(target_date).date()
+            
+        apy_forecast = float(row['pred_global_apy'])
+        tvl_forecast = float(row['pred_tvl_t1']) if pd.notna(row['pred_tvl_t1']) else None
         
-        conn.commit()
-    
-    logger.info(f"Persisted {len(predictions_df)} forecasts to database")
+        forecasts_data.append({
+            'pool_id': pool_id,
+            'date': date_val,
+            'forecasted_apy': apy_forecast,
+            'forecasted_tvl': tvl_forecast
+        })
+        
+    try:
+        repo.bulk_update_forecasts(forecasts_data)
+        logger.info(f"Persisted {len(forecasts_data)} forecasts to database")
+    except Exception as e:
+        logger.error(f"Error persisting forecasts: {e}")
+        raise
 
 def train_and_forecast_global(pool_ids: Optional[List[str]] = None,
                             train_days: int = 60,
@@ -489,7 +484,18 @@ def train_and_forecast_global(pool_ids: Optional[List[str]] = None,
 
     if not pool_ids:
         logger.warning("No pool IDs found for forecasting")
-        return {}
+        return {
+            'total_pools': 0,
+            'cold_start_pools': 0,
+            'model_pools': 0,
+            'train_window_days': train_days,
+            'forecast_ahead_days': forecast_ahead,
+            'use_tvl_stacking': use_tvl_stacking,
+            'apy_feature_count': 0,
+            'tvl_feature_count': 0,
+            'optuna_trials': n_trials,
+            'model_type': 'None (No pools)'
+        }
 
     logger.info(f"Processing {len(pool_ids)} pools with enhanced global modeling approach")
 
@@ -516,8 +522,12 @@ def train_and_forecast_global(pool_ids: Optional[List[str]] = None,
         persist_global_forecasts(predictions_df)
 
         # Return summary statistics
-        cold_start_count = predictions_df['cold_start_flag'].sum()
-        total_count = len(predictions_df)
+        if predictions_df.empty:
+             cold_start_count = 0
+             total_count = 0
+        else:
+             cold_start_count = predictions_df['cold_start_flag'].sum()
+             total_count = len(predictions_df)
 
         result = {
             'total_pools': total_count,
