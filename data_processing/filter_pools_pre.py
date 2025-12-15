@@ -1,5 +1,5 @@
 import logging
-import json
+
 from collections import Counter
 from datetime import datetime, timezone, date
 from api_clients.ethplorer_client import get_address_history

@@ -77,62 +77,7 @@ def _get_feature_cols_for_training(df: pd.DataFrame,
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     return [c for c in numeric_cols if c not in extra_drop]
 
-def tune_apy_params_with_optuna(train_df: pd.DataFrame,
-                                feature_cols: list,
-                                val_frac: float = 0.3,
-                                n_trials: int = 30,
-                                timeout: int | None = None,
-                                seed: int = 123) -> dict:
-    """
-    Returns best RandomForest params found by Optuna (minimizing blocked-CV MAE).
-    """
-    # Lazy imports for heavy ML libraries
-    import optuna
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.metrics import mean_absolute_error
-    
-    # Time-based train/valid split
-    df = train_df.sort_values('asof').reset_index(drop=True).copy()
-    n = len(df)
-    split_idx = int(n * (1.0 - val_frac))
-    if split_idx <= 0 or split_idx >= n:
-        split_idx = int(n * 0.8)
 
-    X_train = df.iloc[:split_idx][feature_cols].fillna(0.0)
-    y_train = df.iloc[:split_idx]['target_apy_t1'].astype(float)
-    X_valid = df.iloc[split_idx:][feature_cols].fillna(0.0)
-    y_valid = df.iloc[split_idx:]['target_apy_t1'].astype(float)
-
-    def objective(trial: optuna.Trial) -> float:
-        params = {
-            "n_estimators": trial.suggest_int("n_estimators", 200, 800),
-            "max_depth": trial.suggest_int("max_depth", 1, 24),
-            "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
-            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
-            "max_features": trial.suggest_categorical(
-                "max_features", ["sqrt", "log2", 0.3, 0.5, 0.7]
-            ),
-            "bootstrap": trial.suggest_categorical("bootstrap", [True, False]),
-            "n_jobs": -1,
-            "random_state": seed,
-        }
-
-        model = RandomForestRegressor(**params)
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_valid)
-        mae = mean_absolute_error(y_valid, y_pred)
-        return mae
-
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
-
-    best_params = study.best_params
-    best_params.update({"n_jobs": -1, "random_state": seed})
-
-    logger.info(f"Best RF params: {best_params}")
-    logger.info(f"Best validation MAE: {study.best_value}")
-
-    return best_params
 
 
 def fit_global_panel_model(panel_df: pd.DataFrame,

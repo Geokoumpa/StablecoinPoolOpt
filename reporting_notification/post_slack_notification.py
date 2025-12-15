@@ -5,7 +5,7 @@ import sys
 import logging
 import pandas as pd
 from datetime import datetime, date
-from typing import Dict, Optional
+from typing import Dict
 
 from database.repositories.parameter_repository import ParameterRepository
 from database.repositories.allocation_repository import AllocationRepository

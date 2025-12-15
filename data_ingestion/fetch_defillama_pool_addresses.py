@@ -20,16 +20,7 @@ def extract_pool_id(href):
     match = re.search(r'/yields/pool/([a-f0-9\-]+)', href)
     return match.group(1) if match else None
 
-def extract_ethereum_address(url):
-    """
-    Extract Ethereum address from URL - matches original JavaScript logic.
-    """
-    if not url:
-        return None
-    
-    # Match 0x followed by 40 hexadecimal characters (total 42 chars)
-    match = re.search(r'0x[a-fA-F0-9]{40}', url)
-    return match.group(0) if match else None
+
 
 async def crawl_defillama_ethereum_pools():
     """

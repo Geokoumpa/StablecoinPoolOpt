@@ -12,8 +12,8 @@ import pandas as pd
 import numpy as np
 import json
 from datetime import datetime, date, timezone
-from typing import Dict, List, Tuple, Optional, Any, Union
-from collections import defaultdict
+from typing import Dict, List, Tuple, Optional, Any
+
 import sys
 import os
 

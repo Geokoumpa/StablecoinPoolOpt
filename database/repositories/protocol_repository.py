@@ -22,22 +22,4 @@ class ProtocolRepository(BaseRepository[ApprovedProtocol]):
 
 
 
-    def sync_approved_protocols(self, protocols_names: List[str]) -> None:
-        """
-        Bulk upsert approved protocols.
-        """
-        if not protocols_names:
-            return
 
-        from datetime import datetime
-        now_val = datetime.now()
-
-        sql = """
-            INSERT INTO approved_protocols (protocol_name, added_timestamp)
-            VALUES %s
-            ON CONFLICT (protocol_name) DO UPDATE SET
-                removed_timestamp = NULL
-        """
-        
-        values = [(p, now_val) for p in protocols_names]
-        self.execute_bulk_values(sql, values)

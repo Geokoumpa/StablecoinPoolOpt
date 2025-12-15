@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Constants from notebook
 HIST_DAYS_PANEL = 150
-MIN_ROWS_PANEL = 400
+
 GROUP_COL = "pool_group"
 
 def get_filtered_pool_ids(limit: Optional[int] = None) -> List[str]:
@@ -44,18 +44,7 @@ def _count_actual_history(panel_df: pd.DataFrame, pid: str, asof_norm: pd.Timest
         ].shape[0]
     )
 
-def _baseline_from_actual(panel_df: pd.DataFrame, pid: str, asof_norm: pd.Timestamp) -> Optional[float]:
-    """Get baseline from actual APY values (mean of last 2 values)."""
-    hist = (panel_df.loc[
-        (panel_df['pool_id'] == pid) &
-        (panel_df['date'] <= asof_norm) &
-        (panel_df['actual_apy'].notna()),
-        'actual_apy'
-    ].sort_index())
-    
-    if len(hist) >= 2:
-        return float(hist.tail(2).mean())
-    return None
+
 
 def build_global_panel_dataset(asof_start: pd.Timestamp, asof_end: pd.Timestamp,
                           pool_ids: List[str], group_col: str = GROUP_COL,

@@ -48,25 +48,11 @@ class TransactionRepository(BaseRepository[Transaction]):
         
         self.execute_bulk_values(sql, values)
 
-    def get_transactions_in_range(self, start_time: datetime, end_time: datetime) -> List[Transaction]:
-        """Get transactions within a time range."""
-        with self.session() as session:
-            stmt = select(Transaction).where(
-                and_(Transaction.timestamp >= start_time, Transaction.timestamp <= end_time)
-            ).order_by(Transaction.timestamp)
-            return session.execute(stmt).scalars().all()
 
-    def get_latest_transaction_timestamp(self) -> Optional[datetime]:
-        """Get the timestamp of the latest transaction."""
-        with self.session() as session:
-            stmt = select(func.max(Transaction.timestamp))
-            return session.execute(stmt).scalar()
+
+
             
-    def get_all_ordered(self) -> List[Transaction]:
-        """Get all transactions ordered by timestamp."""
-        with self.session() as session:
-            stmt = select(Transaction).order_by(Transaction.timestamp, Transaction.operation_index)
-            return session.execute(stmt).scalars().all()
+
     
     def get_last_processed_raw_id(self) -> int:
         """Get the maximum raw_transaction_id processed."""

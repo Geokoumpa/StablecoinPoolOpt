@@ -1,12 +1,9 @@
 #!/bin/bash
 
-# Find all unique script paths from main_pipeline.py
-scripts=$(grep -oP "run_script\(\"\K[^\"]+" main_pipeline.py | sed 's/\./\//g' | sort -u)
+echo "Scanning the entire project tree with vulture..."
 
-# Run vulture on each script and append the output to a file
-for script in $scripts; do
-    echo "Scanning $script.py..."
-    vulture "$script.py" >> vulture_report.txt
-done
+# Run vulture on the current directory recursively
+# Exclude common virtual environment names and artifacts
+vulture . --exclude .venv,venv,env,.git,__pycache__,.pytest_cache,build,dist,web-ui/node_modules > vulture_report.txt
 
 echo "Scan complete. Report saved to vulture_report.txt"

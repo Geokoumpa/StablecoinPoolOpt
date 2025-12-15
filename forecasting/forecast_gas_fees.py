@@ -1,7 +1,6 @@
 import pandas as pd
-from datetime import timedelta
 import logging
-from typing import List, Dict, Any
+
 from database.repositories.gas_fee_repository import GasFeeRepository
 from forecasting.data_preprocessing import preprocess_data
 
@@ -72,16 +71,6 @@ def calculate_gas_rolling_metrics(df: pd.DataFrame) -> pd.DataFrame:
     df['stddev_gas_30d_delta'] = df['stddev_gas_30d'].diff()
     
     return df
-
-def calculate_previous_day_actuals(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calculates actuals for the previous day's gas fees from hourly data.
-    """
-    df_daily = df.resample('D').agg(
-        actual_avg_gas_gwei=('gas_price_gwei', 'mean'),
-        actual_max_gas_gwei=('estimated_gas_usd', 'max') # Assuming estimated_gas_usd can be used for max gas
-    )
-    return df_daily
 
 def train_and_forecast_gas_fees() -> dict:
     """
@@ -253,7 +242,7 @@ def train_and_forecast_gas_fees() -> dict:
         )
 
     # Always forecast for today, regardless of whether we have data up to yesterday or today
-    last_date = data_processed_clean.index[-1]
+
     today = pd.Timestamp.now(tz='UTC').normalize()
     
     # Always set forecast date to today

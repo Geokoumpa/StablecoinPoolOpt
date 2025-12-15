@@ -17,11 +17,10 @@ import logging
 import pandas as pd
 import numpy as np
 import json
-import time
-from datetime import datetime, date, timezone
+from datetime import datetime, date
 from uuid import uuid4
-from typing import Dict, List, Tuple, Optional, TYPE_CHECKING, Any
-from collections import defaultdict
+from typing import Dict, List, Tuple, TYPE_CHECKING
+
 
 from database.repositories.pool_metrics_repository import PoolMetricsRepository
 from database.repositories.daily_balance_repository import DailyBalanceRepository
@@ -469,7 +468,7 @@ class AllocationOptimizer:
         # Build pool-token mapping
         self.pool_tokens = {}  # pool_id -> list of token symbols
         self.pool_tvl = {}     # pool_id -> forecasted_tvl
-        for idx, row in pools_df.iterrows():
+        for _, row in pools_df.iterrows():
             pool_id = row['pool_id']
             underlying_tokens = row.get('underlying_tokens')
             
@@ -494,7 +493,6 @@ class AllocationOptimizer:
         
         # Constants
         self.conversion_rate = float(alloc_params.get('conversion_rate', 0.0004))
-        self.min_transaction_value = float(alloc_params.get('min_transaction_value', 50.0))
         self.max_alloc_percentage = float(alloc_params.get('max_alloc_percentage', 0.25))
         self.tvl_limit_percentage = float(alloc_params.get('tvl_limit_percentage', 0.05) or 0.05)
         
@@ -536,7 +534,7 @@ class AllocationOptimizer:
         
         # Objective Function
         daily_apy_matrix = np.zeros((self.n_pools, self.n_tokens))
-        for idx, row in self.pools_df.iterrows():
+        for _, row in self.pools_df.iterrows():
             pool_id = row['pool_id']
             i = self.pool_idx[pool_id]
             daily_apy = row['forecasted_apy'] / 100.0 / 365.0
@@ -970,7 +968,7 @@ def optimize_allocations(custom_overrides: Dict = None):
         
     # 5. Extract Results
     logger.info("\n[5/6] Extracting results...")
-    formatted_results = optimizer.format_results()
+    optimizer.format_results()
     
     # 6. Store Results
     logger.info("\n[6/6] Storing results...")

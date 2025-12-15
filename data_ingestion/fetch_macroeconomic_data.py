@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+
 from api_clients.fred_client import get_all_macro_data
 from database.repositories.macroeconomic_repository import MacroeconomicRepository
 

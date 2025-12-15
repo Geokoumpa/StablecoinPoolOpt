@@ -3,9 +3,8 @@ from datetime import datetime
 from sqlalchemy import select, func, text
 from database.models.raw_data import (
     RawDefiLlamaPool, RawDefiLlamaPoolHistory, RawEthGasTrackerHourlyGasData,
-    RawEtherscanAccountTransaction, RawEtherscanAccountBalance,
-    RawCoinMarketCapOHLCV, RawEthplorerAccountTransaction, 
-    RawEthplorerAccountTransactionDetail
+    RawEtherscanAccountTransaction,
+    RawEthplorerAccountTransaction
 )
 from database.repositories.base_repository import BaseRepository
 
@@ -67,9 +66,7 @@ class RawDataRepository(BaseRepository[RawDefiLlamaPool]):
         elif source == 'ethplorer':
             self._bulk_insert(RawEthplorerAccountTransaction, data)
             
-    def insert_raw_balances(self, data: List[Dict[str, Any]]) -> None:
-        """Insert raw account balance data."""
-        self._bulk_insert(RawEtherscanAccountBalance, data)
+
         
     def insert_ohlcv_data(self, data: List[Dict[str, Any]]) -> None:
         """

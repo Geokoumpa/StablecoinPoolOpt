@@ -9,14 +9,12 @@ from database.models.allocation_parameters import AllocationParameters, DefaultA
 from database.models.token import ApprovedToken, BlacklistedToken, IceboxToken
 from database.models.protocol import ApprovedProtocol
 from database.models.macroeconomic_data import MacroeconomicData
-from database.models.gas_fees import GasFeesHourly, GasFeesDaily
+from database.models.gas_fees import GasFeesDaily
 from database.models.raw_data import (
     RawDefiLlamaPool,
     RawDefiLlamaPoolHistory,
     RawEthGasTrackerHourlyGasData,
     RawEtherscanAccountTransaction,
-    RawEtherscanAccountBalance,
-    RawCoinMarketCapOHLCV,
-    RawEthplorerAccountTransaction,
-    RawEthplorerAccountTransactionDetail
+    RawEthplorerAccountTransaction
 )
+

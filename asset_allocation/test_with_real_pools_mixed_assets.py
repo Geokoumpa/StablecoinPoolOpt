@@ -96,9 +96,7 @@ def create_mixed_mock_assets(token_prices: Dict[str, float], pool_tokens: Dict, 
     warm_wallet_balances = {}
     current_allocations = {}
     
-    # Determine how to split assets between warm wallet and allocated
-    # We'll allocate 60% of total value to pools and 40% to warm wallet
-    allocation_ratio = 0.6
+
     
     # Create token categories
     stablecoins = ['USDC', 'USDT', 'DAI', 'BOLD', 'GHO', 'USDE', 'CRVUSD', 'LUSD', 'MIM', 'FRAX']

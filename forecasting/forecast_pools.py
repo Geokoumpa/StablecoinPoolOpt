@@ -1,6 +1,6 @@
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
-import pandas as pd
+
 from forecasting.global_forecasting import train_and_forecast_global
 
 

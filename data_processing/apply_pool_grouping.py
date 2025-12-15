@@ -43,7 +43,7 @@ def apply_pool_grouping():
 
         # Prepare data for batch update
         update_data = []
-        for pool_id, metric_date, apy_delta, stddev_7d_delta, stddev_30d_delta, mean_vol_7d, mean_vol_30d in pool_metrics_data:
+        for pool_id, metric_date, apy_delta, stddev_7d_delta, stddev_30d_delta, _, _ in pool_metrics_data:
             group_assignment = None # Default to None if no group matches
 
             # Group 1: ΔAPY ≤ 1% AND Δ7DSTDDEV ≤ 1.5% AND Δ30DSTDDEV ≤ 2%

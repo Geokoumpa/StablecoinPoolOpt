@@ -1,4 +1,4 @@
-import json
+
 import logging
 from datetime import datetime, timezone
 from config import MAIN_ASSET_HOLDING_ADDRESS

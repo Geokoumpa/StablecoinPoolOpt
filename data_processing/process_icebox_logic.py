@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime, timezone
+
 from database.repositories.token_repository import TokenRepository
 from database.repositories.parameter_repository import ParameterRepository
 from database.repositories.raw_data_repository import RawDataRepository

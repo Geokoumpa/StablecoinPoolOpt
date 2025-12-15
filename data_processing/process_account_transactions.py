@@ -1,6 +1,6 @@
 import logging
 import json
-from decimal import Decimal
+
 from datetime import datetime, timezone
 from api_clients.ethplorer_client import get_tx_info
 from database.repositories.transaction_repository import TransactionRepository

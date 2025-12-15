@@ -60,29 +60,11 @@ class DailyBalanceRepository(BaseRepository[DailyBalance]):
                     cur, sql, values, page_size=1000
                 )
 
-    def get_balances_by_date(self, balance_date: date) -> List[DailyBalance]:
-        """Get balances for a specific date."""
-        with self.session() as session:
-            stmt = select(DailyBalance).where(DailyBalance.date == balance_date)
-            results = session.execute(stmt).scalars().all()
-            session.expunge_all()
-            return results
-            
-    def get_latest_date(self) -> Optional[date]:
-        """Get the latest date available in balances."""
-        with self.session() as session:
-            stmt = select(func.max(DailyBalance.date))
-            return session.execute(stmt).scalar()
 
-    def get_wallet_balances(self, wallet_address: str, date: date) -> List[DailyBalance]:
-        """Get balances for a specific wallet on a date."""
-        with self.session() as session:
-            stmt = select(DailyBalance).where(
-                and_(DailyBalance.wallet_address == wallet_address, DailyBalance.date == date)
-            )
-            results = session.execute(stmt).scalars().all()
-            session.expunge_all()
-            return results
+            
+
+
+
 
     def get_current_balances(self, wallet_address: str, target_date: date) -> List[DailyBalance]:
         """

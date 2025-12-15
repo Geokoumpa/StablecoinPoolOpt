@@ -1,6 +1,6 @@
 import logging
 import pandas as pd
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, timedelta
 from database.repositories.pool_metrics_repository import PoolMetricsRepository
 from database.repositories.raw_data_repository import RawDataRepository
 from database.repositories.gas_fee_repository import GasFeeRepository

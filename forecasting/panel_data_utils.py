@@ -248,12 +248,3 @@ def _stable_hash_0_1(s: str, mod: int = 1000) -> float:
     h = hashlib.md5(s.encode('utf-8')).hexdigest()
     val = int(h[:8], 16) % mod
     return val / float(mod)
-
-def _get_numeric_feature_cols(df: pd.DataFrame, 
-                             exclude_cols: Optional[set] = None) -> List[str]:
-    """Get numeric feature columns for model training."""
-    if exclude_cols is None:
-        exclude_cols = set()
-    
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    return [c for c in numeric_cols if c not in exclude_cols]

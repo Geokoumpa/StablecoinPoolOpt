@@ -45,11 +45,7 @@ class AllocationRepository(BaseRepository[AssetAllocation]):
             session.expunge_all()
             return results
 
-    def get_latest_run_id(self) -> Optional[UUID]:
-        """Get the run_id of the most recent allocation."""
-        with self.session() as session:
-            stmt = select(AssetAllocation.run_id).order_by(desc(AssetAllocation.timestamp)).limit(1)
-            return session.execute(stmt).scalar()
+
 
     def delete_allocations_for_date(self, target_date: Any) -> int:
         """

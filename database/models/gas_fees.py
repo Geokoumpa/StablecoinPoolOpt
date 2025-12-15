@@ -2,12 +2,7 @@
 from sqlalchemy import Column, Integer, DECIMAL, Date, DateTime
 from database.models.base import Base
 
-class GasFeesHourly(Base):
-    __tablename__ = 'gas_fees_hourly'
 
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime(timezone=True), nullable=False, unique=True)
-    gas_price_gwei = Column(DECIMAL(10, 2))
 
 
 class GasFeesDaily(Base):

@@ -1,9 +1,7 @@
-import os
-import sys
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import List, Dict, Any
+
 
 from database.repositories.transaction_repository import TransactionRepository
 from database.repositories.daily_balance_repository import DailyBalanceRepository
@@ -19,7 +17,7 @@ class LedgerManager:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         pass
 
     def manage_ledger(self):
@@ -109,6 +107,11 @@ class LedgerManager:
         total_unallocated = sum(float(balance) for balance in unallocated_balances.values())
         total_allocated = sum(float(row[2]) for row in allocated_rows)
         
+        # logger.info(f"💰 Unallocated balances: {len(unallocated_balances)} tokens, Total: ${total_unallocated:,.2f}")
+        # for token, balance in unallocated_balances.items():
+        #     logger.info(f"   - {token}: ${float(balance):,.2f}")
+        
+        # Re-enabling verbose logging as per original
         logger.info(f"💰 Unallocated balances: {len(unallocated_balances)} tokens, Total: ${total_unallocated:,.2f}")
         for token, balance in unallocated_balances.items():
             logger.info(f"   - {token}: ${float(balance):,.2f}")

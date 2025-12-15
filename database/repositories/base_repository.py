@@ -14,7 +14,7 @@ from database.repositories.exceptions import (
     RepositoryError,
     DatabaseConnectionError,
     DuplicateEntityError,
-    EntityNotFoundError
+    DuplicateEntityError,
 )
 
 # Set up logger
@@ -151,21 +151,9 @@ class BaseRepository(Generic[T]):
             session.refresh(entity)
             return entity
 
-    def get_by_id(self, id: Any) -> Optional[T]:
-        """Get an entity by its ID."""
-        if not self.model_class:
-            raise RepositoryError("Model class not set for repository")
-            
-        with self.session() as session:
-            return session.query(self.model_class).get(id)
 
-    def get_all(self) -> List[T]:
-        """Get all entities."""
-        if not self.model_class:
-            raise RepositoryError("Model class not set for repository")
-            
-        with self.session() as session:
-            return session.query(self.model_class).all()
+
+
 
     def update(self, entity: T) -> T:
         """Update an existing entity."""

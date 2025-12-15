@@ -23,19 +23,7 @@ class TestGlobalForecasting(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        # Create sample pool data with 10 rows
-        self.sample_pool_data = pd.DataFrame({
-            'date': pd.date_range('2023-01-01', periods=10, freq='D'),
-            'pool_id': ['TEST_POOL_1'] * 5 + ['TEST_POOL_2'] * 5,
-            'apy_7d': [0.05, 0.06, 0.04, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13],
-            'actual_apy': [0.05, 0.06, 0.04, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13],
-            'tvl_usd': [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900],
-            'actual_tvl': [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900],
-            'eth_open': [2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900],
-            'btc_open': [40000, 41000, 42000, 43000, 44000, 45000, 46000, 47000, 48000, 49000],
-            'gas_price_gwei': [20, 22, 24, 26, 28, 30, 32, 34, 36, 38],
-            'pool_group': [1, 1, 2, 2, 1, 2, 2, 2, 1, 2]
-        })
+
         
         # Create sample panel data with 20 rows
         self.sample_panel_data = pd.DataFrame({
@@ -154,7 +142,7 @@ class TestGlobalForecasting(unittest.TestCase):
         with patch('forecasting.global_forecasting.get_filtered_pool_ids') as mock_get_ids:
             mock_get_ids.return_value = ['TEST_POOL_1', 'TEST_POOL_2']
             
-            with patch('forecasting.global_forecasting.persist_global_forecasts') as mock_persist:
+            with patch('forecasting.global_forecasting.persist_global_forecasts') as _:
                 with patch('forecasting.global_forecasting.train_global_models') as mock_train:
                     # Mock return value from train_global_models
                     mock_train.return_value = (

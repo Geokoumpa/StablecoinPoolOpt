@@ -41,27 +41,12 @@ class RawEtherscanAccountTransaction(Base):
     insertion_timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class RawEtherscanAccountBalance(Base):
-    __tablename__ = 'raw_etherscan_account_balances'
-
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    raw_json_data = Column(JSONB)
-    insertion_timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class RawCoinMarketCapOHLCV(Base):
-    __tablename__ = 'raw_coinmarketcap_ohlcv'
 
-    id = Column(Integer, primary_key=True)
-    data_timestamp = Column(DateTime(timezone=True), nullable=False)
-    symbol = Column(String(255), nullable=False)
-    raw_json_data = Column(JSONB)
-    insertion_timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
-    __table_args__ = (
-        UniqueConstraint('data_timestamp', 'symbol', name='raw_coinmarketcap_ohlcv_data_timestamp_symbol_key'),
-    )
+
+
 
 
 class RawEthplorerAccountTransaction(Base):
@@ -72,9 +57,4 @@ class RawEthplorerAccountTransaction(Base):
     insertion_timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class RawEthplorerAccountTransactionDetail(Base):
-    __tablename__ = 'raw_ethplorer_account_transaction_details'
 
-    transaction_hash = Column(String(255), primary_key=True)
-    raw_json = Column(JSONB, nullable=False)
-    fetched_at = Column(DateTime(timezone=True), server_default=func.now())

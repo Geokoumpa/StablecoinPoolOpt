@@ -81,50 +81,6 @@ def create_lagged_features(df: pd.DataFrame, column: str, lags: list) -> pd.Data
         df_copy[f'{column}_lag{lag}'] = df_copy[column].shift(lag)
     return df_copy
 
-def create_time_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Extracts time-based features from the DataFrame's datetime index.
 
-    Args:
-        df (pd.DataFrame): The input DataFrame with a datetime index.
 
-    Returns:
-        pd.DataFrame: The DataFrame with added time-based features.
-    """
-    df_copy = df.copy()
-    df_copy['year'] = df_copy.index.year
-    df_copy['month'] = df_copy.index.month
-    df_copy['day'] = df_copy.index.day
-    df_copy['day_of_week'] = df_copy.index.dayofweek
-    df_copy['day_of_year'] = df_copy.index.dayofyear
-    df_copy['week_of_year'] = df_copy.index.isocalendar().week.astype(int)
-    df_copy['quarter'] = df_copy.index.quarter
-    df_copy['is_month_start'] = df_copy.index.is_month_start.astype(int)
-    df_copy['is_month_end'] = df_copy.index.is_month_end.astype(int)
-    df_copy['is_quarter_start'] = df_copy.index.is_quarter_start.astype(int)
-    df_copy['is_quarter_end'] = df_copy.index.is_quarter_end.astype(int)
-    df_copy['is_year_start'] = df_copy.index.is_year_start.astype(int)
-    df_copy['is_year_end'] = df_copy.index.is_year_end.astype(int)
-    if 'hour' in df_copy.index.name or (df_copy.index.freq and 'H' in df_copy.index.freq):
-        df_copy['hour'] = df_copy.index.hour
-    return df_copy
 
-def shift_exogenous_variables(df: pd.DataFrame, exogenous_cols: list) -> pd.DataFrame:
-    """
-    Shifts exogenous variables by one period to prevent data leakage.
-    This assumes exogenous variables are known for the forecast period.
-
-    Args:
-        df (pd.DataFrame): The input DataFrame.
-        exogenous_cols (list): A list of column names to be shifted.
-
-    Returns:
-        pd.DataFrame: The DataFrame with shifted exogenous variables.
-    """
-    df_copy = df.copy()
-    for col in exogenous_cols:
-        if col in df_copy.columns:
-            df_copy[f'{col}_shifted'] = df_copy[col].shift(1)
-            # Optionally, drop the original exogenous column if only the shifted version is needed
-            # df_copy = df_copy.drop(columns=[col])
-    return df_copy

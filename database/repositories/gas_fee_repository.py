@@ -2,7 +2,7 @@
 from typing import List, Optional, Dict, Any
 from datetime import date, datetime
 from sqlalchemy import select
-from database.models.gas_fees import GasFeesHourly, GasFeesDaily
+from database.models.gas_fees import GasFeesDaily
 from database.repositories.base_repository import BaseRepository
 
 class GasFeeRepository(BaseRepository[GasFeesDaily]):

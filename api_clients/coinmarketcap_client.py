@@ -38,37 +38,7 @@ def get_latest_eth_price() -> float:
         logger.error(f"Could not find expected data in CoinMarketCap response: {e}")
         return None
 
-def get_latest_btc_price() -> float:
-    """
-    Fetches the latest BTC price from the CoinMarketCap API.
-    """
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-    headers = {
-        'Accepts': 'application/json',
-        'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY,
-    }
-    params = {
-        'symbol': 'BTC',
-        'convert': 'USD'
-    }
 
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        data = response.json()
-        
-        btc_data = data['data']['BTC']
-        latest_price = btc_data['quote']['USD']['price']
-        return latest_price
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching latest BTC price from CoinMarketCap: {e}")
-        return None
-    except json.JSONDecodeError as e:
-        logger.error(f"Error decoding JSON response from CoinMarketCap: {e}")
-        return None
-    except KeyError as e:
-        logger.error(f"Could not find expected data in CoinMarketCap response: {e}")
-        return None
 
 def get_historical_ohlcv_data(symbol: str, count: int = 30) -> list:
     """

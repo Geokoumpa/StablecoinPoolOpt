@@ -1,5 +1,5 @@
 import logging
-import pandas as pd
+
 from tqdm import tqdm
 from datetime import date
 from data_ingestion.fetch_defillama_pool_history import fetch_defillama_pool_history

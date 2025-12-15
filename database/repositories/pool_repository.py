@@ -70,9 +70,7 @@ class PoolRepository(BaseRepository[Pool]):
             return session.execute(stmt).scalars().all()
 
 
-    def get_pool_by_id(self, pool_id: str) -> Optional[Pool]:
-        """Get a pool by its ID."""
-        return self.get_by_id(pool_id)
+
         
     def mark_pools_inactive(self, pool_ids: List[str]) -> None:
         """Mark specified pools as inactive."""
@@ -83,28 +81,7 @@ class PoolRepository(BaseRepository[Pool]):
              stmt = update(Pool).where(Pool.pool_id.in_(pool_ids)).values(is_active=False)
              session.execute(stmt)
 
-    def get_filtered_pools(self, 
-                          chain_filter: List[str] = None, 
-                          min_tvl: float = None,
-                          is_active: bool = True) -> List[Pool]:
-        """Get pools matching filter criteria."""
-        with self.session() as session:
-            stmt = select(Pool)
-            conditions = []
-            
-            if is_active is not None:
-                conditions.append(Pool.is_active == is_active)
-            
-            if chain_filter:
-                conditions.append(Pool.chain.in_(chain_filter))
-            
-            if min_tvl is not None:
-                conditions.append(Pool.tvl >= min_tvl)
-            
-            if conditions:
-                stmt = stmt.where(and_(*conditions))
-                
-            return session.execute(stmt).scalars().all()
+
 
     def reset_all_currently_filtered_out(self) -> None:
         """Reset currently_filtered_out flag for all pools."""
