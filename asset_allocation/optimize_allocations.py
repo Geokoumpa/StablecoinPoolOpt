@@ -612,9 +612,14 @@ class AllocationOptimizer:
             
             pool_id = self.pools[i]
             pool_forecasted_tvl = self.pool_tvl.get(pool_id, 0)
-            if pool_forecasted_tvl > 0:
-                # TVL Limit applies to FINAL allocation size
-                constraints.append(pool_total_usd <= self.tvl_limit_percentage * pool_forecasted_tvl)
+            pool_tvl_min_limit = float(self.alloc_params.get('pool_tvl_limit', 0) or 0)
+            
+            if pool_forecasted_tvl < pool_tvl_min_limit:
+                 # Force exit if TVL is below absolute minimum limit
+                 constraints.append(pool_total_usd == 0)
+            else:
+                 # TVL Limit applies to FINAL allocation size
+                 constraints.append(pool_total_usd <= self.tvl_limit_percentage * pool_forecasted_tvl)
         
         # 7. AUM Conservation
         total_allocated_usd = cp.sum(cp.multiply(self.final_alloc, price_vector))
@@ -674,7 +679,17 @@ class AllocationOptimizer:
         
         logger.info(f"Solving with {solver}...")
         try:
-            problem.solve(solver=solver, verbose=verbose)
+            # Use tighter MIP gap tolerance for better solution quality
+            # Default gap (~1%) can lead to suboptimal allocations worth $40-50/year
+            solver_options = {}
+            if solver == cp.HIGHS:
+                solver_options = {
+                    'mip_rel_gap': 0.0001,  # 0.01% relative gap (much tighter than default)
+                    'time_limit': 300.0,     # 5 minute time limit
+                }
+                logger.info(f"HIGHS solver options: mip_rel_gap=0.01%, time_limit=300s")
+            
+            problem.solve(solver=solver, verbose=verbose, **solver_options)
         except Exception as e:
             logger.error(f"Solver error: {e}")
             logger.info("Attempting with ECOS solver as fallback...")
@@ -918,7 +933,7 @@ def store_results(run_id: str, allocations_df: pd.DataFrame,
                 'from_asset': txn.get('from_token', txn.get('token')),
                 'to_asset': txn.get('to_token', txn.get('token')),
                 'amount': amount,
-                'pool_id': txn.get('to_location') if txn['type'] == 'ALLOCATION' else None
+                'pool_id': txn.get('to_location') if txn['type'] == 'ALLOCATION' else (txn.get('from_location') if txn['type'] in ['WITHDRAWAL', 'HOLD'] else None)
             })
             
         repo.bulk_insert_allocations(allocations_data)

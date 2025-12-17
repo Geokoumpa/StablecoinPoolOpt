@@ -267,30 +267,26 @@ class PoolMetricsRepository(BaseRepository[PoolMetrics]):
         """
         sql = text("""
             SELECT
-                pdm.pool_id,
+                p.pool_id,
                 p.symbol,
                 p.chain,
                 p.protocol,
-                pdm.forecasted_apy,
-                pdm.forecasted_tvl,
+                COALESCE(pdm.forecasted_apy, 0) as forecasted_apy,
+                COALESCE(pdm.forecasted_tvl, 0) as forecasted_tvl,
                 p.underlying_tokens
-            FROM pool_daily_metrics pdm
-            JOIN pools p ON pdm.pool_id = p.pool_id
+            FROM pools p
+            LEFT JOIN pool_daily_metrics pdm ON p.pool_id = pdm.pool_id AND pdm.date = :date
             WHERE (
-                -- Active pools meeting all criteria
-                pdm.date = :date
+                -- Active pools meeting all criteria (Must have valid metrics)
+                pdm.pool_id IS NOT NULL
                 AND pdm.is_filtered_out = FALSE
-                AND pdm.forecasted_apy IS NOT NULL
                 AND pdm.forecasted_apy > 0
-                AND pdm.forecasted_tvl IS NOT NULL
                 AND pdm.forecasted_tvl > 0
                 AND p.is_active = TRUE
             )
             OR (
-                -- Already allocated pools (regardless of active status)
-                pdm.pool_id = ANY(:allocated_ids)
-                AND pdm.date = :date
-                AND pdm.forecasted_apy IS NOT NULL
+                -- Already allocated pools (Include regardless of status or metrics)
+                p.pool_id = ANY(:allocated_ids)
             )
         """)
         

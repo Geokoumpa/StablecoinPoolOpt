@@ -193,7 +193,22 @@ def fetch_optimization_results():
             final_allocations_df = pd.DataFrame(columns=['pool_id', 'token', 'amount', 'amount_usd'])
 
         # Get Metadata
-        all_pool_ids = final_allocations_df['pool_id'].unique().tolist()
+        all_pool_ids = set(final_allocations_df['pool_id'].unique().tolist())
+        
+        # Add pool IDs from transactions (e.g. withdrawals from pools not in final allocation)
+        for txn in parsed_sequence:
+            pid = None
+            t_type = txn.get('type')
+            if t_type == 'ALLOCATION' or t_type == 'HOLD':
+                pid = txn.get('to_location')
+            elif t_type == 'WITHDRAWAL':
+                pid = txn.get('from_location')
+            
+            if pid and pid != 'warm_wallet':
+                all_pool_ids.add(pid)
+        
+        all_pool_ids = list(all_pool_ids)
+        
         pools_data = []
         if all_pool_ids:
             pool_rows = pool_repo.get_pool_metrics_batch(all_pool_ids, date.today())
@@ -419,7 +434,7 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
              elif t_type == 'ALLOCATION':
                  message += f"• Step {seq}: ALLOCATE ${amt:,.2f} {token}{addr_info} | Cost: ${total:.4f}\n"
              elif t_type == 'WITHDRAWAL':
-                 message += f"• Step {seq}: WITHDRAW ${amt:,.2f} {txn.get('token')} | Total Cost: ${total:.4f}\n"
+                 message += f"• Step {seq}: WITHDRAW ${amt:,.2f} {txn.get('token')}{addr_info} | Total Cost: ${total:.4f}\n"
              elif t_type == 'CONVERSION':
                  message += f"• Step {seq}: CONVERT ${amt:,.2f} {txn.get('from_token')} -> {txn.get('to_token')} | Total Cost: ${total:.4f}\n"
                  

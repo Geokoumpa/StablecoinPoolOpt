@@ -94,11 +94,9 @@ class DailyBalanceRepository(BaseRepository[DailyBalance]):
         sql = text("""
             SELECT DISTINCT db.pool_id
             FROM daily_balances db
-            JOIN pool_daily_metrics pdm ON db.pool_id = pdm.pool_id
             WHERE db.date = :date
               AND (db.wallet_address = :wallet_address OR db.wallet_address IS NULL)
               AND db.allocated_balance > 0
-              AND pdm.date = :date
         """)
         
         with self.session() as session:
