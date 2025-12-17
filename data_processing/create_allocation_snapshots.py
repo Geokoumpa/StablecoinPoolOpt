@@ -46,19 +46,16 @@ def get_base_params(param_repo: ParameterRepository) -> Dict[str, Any]:
     # 1. Get defaults from DB
     defaults = param_repo.get_all_default_parameters()
     
-    # 2. Get latest params
-    latest_params = param_repo.get_latest_parameters()
-    
     # Define fallback defaults (hardcoded) in case DB is empty
     fallback_defaults = {
         'tvl_limit_percentage': 0.05,
         'max_alloc_percentage': 0.25,
         'conversion_rate': 0.0004,
-        'min_pools': 5,
+        'min_pools': 4,
         'profit_optimization': True,
         'token_marketcap_limit': 1000000000.0,
-        'pool_tvl_limit': 100000.0,
-        'pool_apy_limit': 0.01,
+        'pool_tvl_limit': 500000.0,
+        'pool_apy_limit': 0.04,
         'pool_pair_tvl_ratio_min': 0.3,
         'pool_pair_tvl_ratio_max': 0.5,
         'group1_max_pct': 0.35,
@@ -86,8 +83,10 @@ def get_base_params(param_repo: ParameterRepository) -> Dict[str, Any]:
     # Merge strategy:
     # 1. Start with fallbacks
     params = fallback_defaults.copy()
-    
-    # 2. Update with defaults from table
+
+    # 2. Update with defaults from table (Authoritative Config)
+    # We deliberately do NOT copy parameters from previous runs anymore, ensuring
+    # that the pipeline always strictly follows the configured defaults.
     for k, v in defaults.items():
         if v is not None:
              # handle profit_optimization bool conversion if needed
@@ -95,29 +94,6 @@ def get_base_params(param_repo: ParameterRepository) -> Dict[str, Any]:
                  params[k] = v.lower() == 'true'
              else:
                  params[k] = v
-                 
-    # 3. Update with latest params
-    if latest_params:
-        logger.info(f"Using latest parameters from run_id: {latest_params.run_id}")
-        # Map object attributes to dict
-        attrs = [
-            'tvl_limit_percentage', 'max_alloc_percentage', 'conversion_rate', 'min_pools', 'profit_optimization',
-            'token_marketcap_limit', 'pool_tvl_limit', 'pool_apy_limit', 'pool_pair_tvl_ratio_min', 'pool_pair_tvl_ratio_max',
-            'group1_max_pct', 'group2_max_pct', 'group3_max_pct', 'position_max_pct_total_assets', 'position_max_pct_pool_tvl',
-            'group1_apy_delta_max', 'group1_7d_stddev_max', 'group1_30d_stddev_max',
-            'group2_apy_delta_max', 'group2_7d_stddev_max', 'group2_30d_stddev_max',
-            'group3_apy_delta_min', 'group3_7d_stddev_min', 'group3_30d_stddev_min',
-            'other_dynamic_limits',
-            'icebox_ohlc_l_threshold_pct', 'icebox_ohlc_l_days_threshold',
-            'icebox_ohlc_c_threshold_pct', 'icebox_ohlc_c_days_threshold',
-            'icebox_recovery_l_days_threshold', 'icebox_recovery_c_days_threshold'
-        ]
-        for attr in attrs:
-            val = getattr(latest_params, attr, None)
-            if val is not None:
-                params[attr] = val
-    else:
-        logger.info("No previous allocation parameters found. Using defaults.")
         
     return params
 
