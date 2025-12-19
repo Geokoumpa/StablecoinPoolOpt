@@ -4,8 +4,8 @@ main:
         assign:
           - project_id: ${sys.get_env("PROJECT_ID")}
           - location: ${sys.get_env("REGION")}
-          - dataproc_bucket: ${project_id + "-dataproc"}
-          - dataproc_sa: ${"dataproc-spark-sa@" + project_id + ".iam.gserviceaccount.com"}
+          # - dataproc_bucket: ${project_id + "-dataproc"}
+          # - dataproc_sa: ${"dataproc-spark-sa@" + project_id + ".iam.gserviceaccount.com"}
 
     # Step 1: Apply migrations (must run first)
     - run_apply_migrations:
@@ -104,16 +104,24 @@ main:
           step_key: "fetch_filtered_pool_histories"
           step_number: 6
 
-    # Step 7: Calculate pool metrics (Dataproc Serverless Spark)
-    - run_calculate_pool_metrics_spark:
-        call: run_dataproc_batch_job
+    # Step 7: Calculate pool metrics
+    # Example of how to use Dataproc for this step (commented out):
+    # - run_calculate_pool_metrics_spark:
+    #     call: run_dataproc_batch_job
+    #     args:
+    #       project_id: ${project_id}
+    #       location: ${location}
+    #       dataproc_bucket: ${dataproc_bucket}
+    #       dataproc_sa: ${dataproc_sa}
+    #       job_name: "calculate-pool-metrics"
+    #       main_python_file: "calculate_pool_metrics_spark.py"
+    #       step_number: 7
+    - run_calculate_pool_metrics:
+        call: run_cloud_run_job
         args:
           project_id: ${project_id}
           location: ${location}
-          dataproc_bucket: ${dataproc_bucket}
-          dataproc_sa: ${dataproc_sa}
-          job_name: "calculate-pool-metrics"
-          main_python_file: "calculate_pool_metrics_spark.py"
+          step_key: "calculate_pool_metrics"
           step_number: 7
 
     # Step 8: Apply pool grouping
@@ -143,16 +151,24 @@ main:
           step_key: "update_allocation_snapshots"
           step_number: 10
 
-    # Step 11: Forecast pools (Dataproc Serverless Spark)
-    - run_forecast_pools_spark:
-        call: run_dataproc_batch_job
+    # Step 11: Forecast pools
+    # Example of how to use Dataproc for this step (commented out):
+    # - run_forecast_pools_spark:
+    #     call: run_dataproc_batch_job
+    #     args:
+    #       project_id: ${project_id}
+    #       location: ${location}
+    #       dataproc_bucket: ${dataproc_bucket}
+    #       dataproc_sa: ${dataproc_sa}
+    #       job_name: "forecast-pools"
+    #       main_python_file: "forecast_pools_spark.py"
+    #       step_number: 11
+    - run_forecast_pools:
+        call: run_cloud_run_job
         args:
           project_id: ${project_id}
           location: ${location}
-          dataproc_bucket: ${dataproc_bucket}
-          dataproc_sa: ${dataproc_sa}
-          job_name: "forecast-pools"
-          main_python_file: "forecast_pools_spark.py"
+          step_key: "forecast_pools"
           step_number: 11
 
     # Step 12: Forecast gas fees
@@ -218,9 +234,7 @@ main:
     - complete:
         return: "Workflow completed successfully"
 
-# =============================================================================
-# Subworkflow: Run Cloud Run Job
-# =============================================================================
+# Subworkflow to run a Cloud Run job
 run_cloud_run_job:
   params: [project_id, location, step_key, step_number]
   steps:
@@ -284,147 +298,147 @@ run_cloud_run_job:
         return: ${job_execution}
 
 # =============================================================================
-# Subworkflow: Run Dataproc Serverless Batch Job
+# Subworkflow: Run Dataproc Serverless Batch Job (COMMENTED OUT)
 # =============================================================================
-run_dataproc_batch_job:
-  params: [project_id, location, dataproc_bucket, dataproc_sa, job_name, main_python_file, step_number]
-  steps:
-    - generate_batch_id:
-        assign:
-          - batch_id: ${job_name + "-" + string(int(sys.now()))}
-
-    - log_batch_start:
-        call: sys.log
-        args:
-          data: '${"=== Starting Dataproc Spark step " + string(step_number) + " -> " + job_name + " ==="}'
-
-    - log_batch_details:
-        call: sys.log
-        args:
-          data: '${"Running Spark batch: " + batch_id + " with script: " + main_python_file}'
-
-    - create_batch:
-        try:
-          call: http.post
-          args:
-            url: ${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/locations/" + location + "/batches?batchId=" + batch_id}
-            auth:
-              type: OAuth2
-            body:
-              pysparkBatch:
-                mainPythonFileUri: ${"gs://" + dataproc_bucket + "/scripts/" + main_python_file}
-                pythonFileUris:
-                  - ${"gs://" + dataproc_bucket + "/scripts/database/db_utils_spark.py"}
-                  - ${"gs://" + dataproc_bucket + "/scripts/database/db_utils.py"}
-                  - ${"gs://" + dataproc_bucket + "/scripts/database/__init__.py"}
-                  - ${"gs://" + dataproc_bucket + "/scripts/config.py"}
-              environmentConfig:
-                executionConfig:
-                  serviceAccount: ${dataproc_sa}
-                  subnetworkUri: ${"projects/" + project_id + "/regions/" + location + "/subnetworks/default"}
-              runtimeConfig:
-                version: "2.1"
-                properties:
-                  spark.jars.packages: "com.microsoft.azure:synapseml_2.12:1.0.4,org.postgresql:postgresql:42.6.0"
-                  spark.dynamicAllocation.enabled: "true"
-                  spark.executor.memory: "4g"
-                  spark.driver.memory: "4g"
-          result: batch_response
-        except:
-          as: e
-          steps:
-            - log_create_error:
-                call: sys.log
-                args:
-                  data: '${"Error creating Dataproc batch -> " + text.decode(json.encode(e))}'
-            - fail_batch_create:
-                raise: '${"Failed to create Dataproc batch " + batch_id + " at step " + string(step_number) + ": " + text.decode(json.encode(e))}'
-
-    - log_batch_created:
-        call: sys.log
-        args:
-          data: '${"Batch job created: " + batch_response.body.name}'
-
-    # Poll for batch completion
-    - wait_for_batch:
-        call: poll_batch_status
-        args:
-          batch_name: ${batch_response.body.name}
-          max_wait_seconds: 3600
-          poll_interval_seconds: 30
-        result: final_status
-
-    - check_batch_success:
-        switch:
-          - condition: ${final_status == "SUCCEEDED"}
-            steps:
-              - log_batch_success:
-                  call: sys.log
-                  args:
-                    data: '${"✓ Dataproc step " + string(step_number) + " (" + job_name + ") completed successfully"}'
-          - condition: true
-            steps:
-              - log_batch_failure:
-                  call: sys.log
-                  args:
-                    data: '${"✗ Dataproc step " + string(step_number) + " (" + job_name + ") failed with status: " + final_status}'
-              - fail_batch:
-                  raise: '${"Dataproc batch failed at step " + string(step_number) + " (" + job_name + ") with status: " + final_status}'
-
-    - return_batch_result:
-        return: ${batch_response.body}
-
-# =============================================================================
-# Subworkflow: Poll Dataproc Batch Status
-# =============================================================================
-poll_batch_status:
-  params: [batch_name, max_wait_seconds, poll_interval_seconds]
-  steps:
-    - init_poll:
-        assign:
-          - elapsed: 0
-          - current_state: "PENDING"
-
-    - poll_loop:
-        switch:
-          - condition: ${elapsed >= max_wait_seconds}
-            steps:
-              - timeout:
-                  return: "TIMEOUT"
-          - condition: ${current_state == "SUCCEEDED" or current_state == "FAILED" or current_state == "CANCELLED"}
-            steps:
-              - return_final_state:
-                  return: ${current_state}
-          - condition: true
-            steps:
-              - get_batch_status:
-                  try:
-                    call: http.get
-                    args:
-                      url: ${"https://dataproc.googleapis.com/v1/" + batch_name}
-                      auth:
-                        type: OAuth2
-                    result: status_response
-                  except:
-                    as: e
-                    steps:
-                      - log_poll_error:
-                          call: sys.log
-                          args:
-                            data: '${"Warning: Error polling batch status -> " + text.decode(json.encode(e))}'
-              - update_state:
-                  assign:
-                    - current_state: ${status_response.body.state}
-              - log_poll_status:
-                  call: sys.log
-                  args:
-                    data: '${"Batch status: " + current_state + " (elapsed: " + string(elapsed) + "s)"}'
-              - wait_interval:
-                  call: sys.sleep
-                  args:
-                    seconds: ${poll_interval_seconds}
-              - increment_elapsed:
-                  assign:
-                    - elapsed: ${elapsed + poll_interval_seconds}
-              - continue_polling:
-                  next: poll_loop
+# run_dataproc_batch_job:
+#   params: [project_id, location, dataproc_bucket, dataproc_sa, job_name, main_python_file, step_number]
+#   steps:
+#     - generate_batch_id:
+#         assign:
+#           - batch_id: ${job_name + "-" + string(int(sys.now()))}
+# 
+#     - log_batch_start:
+#         call: sys.log
+#         args:
+#           data: '${"=== Starting Dataproc Spark step " + string(step_number) + " -> " + job_name + " ==="}'
+# 
+#     - log_batch_details:
+#         call: sys.log
+#         args:
+#           data: '${"Running Spark batch: " + batch_id + " with script: " + main_python_file}'
+# 
+#     - create_batch:
+#         try:
+#           call: http.post
+#           args:
+#             url: ${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/locations/" + location + "/batches?batchId=" + batch_id}
+#             auth:
+#               type: OAuth2
+#             body:
+#               pysparkBatch:
+#                 mainPythonFileUri: ${"gs://" + dataproc_bucket + "/scripts/" + main_python_file}
+#                 pythonFileUris:
+#                   - ${"gs://" + dataproc_bucket + "/scripts/database/db_utils_spark.py"}
+#                   - ${"gs://" + dataproc_bucket + "/scripts/database/db_utils.py"}
+#                   - ${"gs://" + dataproc_bucket + "/scripts/database/__init__.py"}
+#                   - ${"gs://" + dataproc_bucket + "/scripts/config.py"}
+#               environmentConfig:
+#                 executionConfig:
+#                   serviceAccount: ${dataproc_sa}
+#                   subnetworkUri: ${"projects/" + project_id + "/regions/" + location + "/subnetworks/default"}
+#               runtimeConfig:
+#                 version: "2.1"
+#                 properties:
+#                   spark.jars.packages: "com.microsoft.azure:synapseml_2.12:1.0.4,org.postgresql:postgresql:42.6.0"
+#                   spark.dynamicAllocation.enabled: "true"
+#                   spark.executor.memory: "4g"
+#                   spark.driver.memory: "4g"
+#           result: batch_response
+#         except:
+#           as: e
+#           steps:
+#             - log_create_error:
+#                 call: sys.log
+#                 args:
+#                   data: '${"Error creating Dataproc batch -> " + text.decode(json.encode(e))}'
+#             - fail_batch_create:
+#                 raise: '${"Failed to create Dataproc batch " + batch_id + " at step " + string(step_number) + ": " + text.decode(json.encode(e))}'
+# 
+#     - log_batch_created:
+#         call: sys.log
+#         args:
+#           data: '${"Batch job created: " + batch_response.body.name}'
+# 
+#     # Poll for batch completion
+#     - wait_for_batch:
+#         call: poll_batch_status
+#         args:
+#           batch_name: ${batch_response.body.name}
+#           max_wait_seconds: 3600
+#           poll_interval_seconds: 30
+#         result: final_status
+# 
+#     - check_batch_success:
+#         switch:
+#           - condition: ${final_status == "SUCCEEDED"}
+#             steps:
+#               - log_batch_success:
+#                   call: sys.log
+#                   args:
+#                     data: '${"✓ Dataproc step " + string(step_number) + " (" + job_name + ") completed successfully"}'
+#           - condition: true
+#             steps:
+#               - log_batch_failure:
+#                   call: sys.log
+#                   args:
+#                     data: '${"✗ Dataproc step " + string(step_number) + " (" + job_name + ") failed with status: " + final_status}'
+#               - fail_batch:
+#                   raise: '${"Dataproc batch failed at step " + string(step_number) + " (" + job_name + ") with status: " + final_status}'
+# 
+#     - return_batch_result:
+#         return: ${batch_response.body}
+# 
+# # =============================================================================
+# # Subworkflow: Poll Dataproc Batch Status (COMMENTED OUT)
+# # =============================================================================
+# poll_batch_status:
+#   params: [batch_name, max_wait_seconds, poll_interval_seconds]
+#   steps:
+#     - init_poll:
+#         assign:
+#           - elapsed: 0
+#           - current_state: "PENDING"
+# 
+#     - poll_loop:
+#         switch:
+#           - condition: ${elapsed >= max_wait_seconds}
+#             steps:
+#               - timeout:
+#                   return: "TIMEOUT"
+#           - condition: ${current_state == "SUCCEEDED" or current_state == "FAILED" or current_state == "CANCELLED"}
+#             steps:
+#               - return_final_state:
+#                   return: ${current_state}
+#           - condition: true
+#             steps:
+#               - get_batch_status:
+#                   try:
+#                     call: http.get
+#                     args:
+#                       url: ${"https://dataproc.googleapis.com/v1/" + batch_name}
+#                       auth:
+#                         type: OAuth2
+#                     result: status_response
+#                   except:
+#                     as: e
+#                     steps:
+#                       - log_poll_error:
+#                           call: sys.log
+#                           args:
+#                             data: '${"Warning: Error polling batch status -> " + text.decode(json.encode(e))}'
+#               - update_state:
+#                   assign:
+#                     - current_state: ${status_response.body.state}
+#               - log_poll_status:
+#                   call: sys.log
+#                   args:
+#                     data: '${"Batch status: " + current_state + " (elapsed: " + string(elapsed) + "s)"}'
+#               - wait_interval:
+#                   call: sys.sleep
+#                   args:
+#                     seconds: ${poll_interval_seconds}
+#               - increment_elapsed:
+#                   assign:
+#                     - elapsed: ${elapsed + poll_interval_seconds}
+#               - continue_polling:
+#                   next: poll_loop

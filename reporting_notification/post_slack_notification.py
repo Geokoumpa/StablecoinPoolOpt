@@ -119,11 +119,17 @@ def fetch_optimization_results():
         from database.repositories.raw_data_repository import RawDataRepository
         price_repo = RawDataRepository()
         
+        # Log configuration for debugging
+        logger.info(f"MAIN_ASSET_HOLDING_ADDRESS: {MAIN_ASSET_HOLDING_ADDRESS}")
+        
         tokens_to_fetch = set()
         if MAIN_ASSET_HOLDING_ADDRESS:
              start_balances = balance_repo.get_current_balances(MAIN_ASSET_HOLDING_ADDRESS, date.today())
+             logger.info(f"Fetched {len(start_balances)} initial balance entries from DB")
              for bal in start_balances:
                  tokens_to_fetch.add(bal.token_symbol)
+        else:
+             logger.warning("MAIN_ASSET_HOLDING_ADDRESS is not configured. Starting portfolio state reconstruction from empty.")
         
         if not transactions_df.empty:
              tokens_to_fetch.update(transactions_df['to_asset'].dropna().unique())
@@ -171,6 +177,18 @@ def fetch_optimization_results():
                 if pid:
                     if pid not in portfolio_state: portfolio_state[pid] = {}
                     portfolio_state[pid][token] = portfolio_state[pid].get(token, 0.0) + amt
+                    
+            elif t_type == 'HOLD':
+                pid = txn.get('to_location') or txn.get('from_location')
+                if pid:
+                    if pid not in portfolio_state: portfolio_state[pid] = {}
+                    # Only add if not already present to avoid double counting if daily_balances worked
+                    # or update to the specific HOLD amount if we want to trust the optimizer's view
+                    if token not in portfolio_state[pid]:
+                        portfolio_state[pid][token] = amt
+                    else:
+                        # If already there, we trust the HOLD amount as the definitive state for that token/pool
+                        portfolio_state[pid][token] = amt
 
         # Flatten for reporting
         final_allocations_list = []

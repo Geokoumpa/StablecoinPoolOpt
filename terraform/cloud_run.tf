@@ -317,7 +317,7 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
         }
 
         dynamic "env" {
-          for_each = contains(["process_account_transactions"], each.key) ? [1] : []
+          for_each = contains(["process_account_transactions", "filter_pools_pre"], each.key) ? [1] : []
           content {
             name  = "ETHPLORER_API_KEY"
             value_source {
@@ -336,6 +336,19 @@ resource "google_cloud_run_v2_job" "pipeline_step" {
             value_source {
               secret_key_ref {
                 secret  = google_secret_manager_secret.slack_webhook_url.id
+                version = "latest"
+              }
+            }
+          }
+        }
+
+        dynamic "env" {
+          for_each = contains(["post_slack_notification"], each.key) ? [1] : []
+          content {
+            name  = "MAIN_ASSET_HOLDING_ADDRESS"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.main_asset_holding_address.id
                 version = "latest"
               }
             }

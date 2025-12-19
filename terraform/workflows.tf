@@ -52,11 +52,11 @@ resource "google_project_iam_member" "workflow_storage_viewer" {
 }
 
 # Grant Service Account User to allow workflow to act as the Dataproc SA
-resource "google_service_account_iam_member" "workflow_can_use_dataproc_sa" {
-  service_account_id = google_service_account.dataproc_sa.name
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${google_service_account.workflow_sa.email}"
-}
+# resource "google_service_account_iam_member" "workflow_can_use_dataproc_sa" {
+#   service_account_id = google_service_account.dataproc_sa.name
+#   role               = "roles/iam.serviceAccountUser"
+#   member             = "serviceAccount:${google_service_account.workflow_sa.email}"
+# }
 
 # =============================================================================
 # Cloud Scheduler Job
@@ -89,12 +89,12 @@ resource "google_cloud_scheduler_job" "daily_pipeline_trigger" {
 # Outputs for Dataproc Integration
 # =============================================================================
 
-output "dataproc_bucket_name" {
-  description = "GCS bucket for Dataproc (scripts, temp data)"
-  value       = google_storage_bucket.dataproc.name
-}
+# output "dataproc_bucket_name" {
+#   description = "GCS bucket for Dataproc (scripts, temp data)"
+#   value       = google_storage_bucket.dataproc.name
+# }
 
-output "dataproc_service_account_email" {
-  description = "Service account email for Dataproc Serverless"
-  value       = google_service_account.dataproc_sa.email
-}
+# output "dataproc_service_account_email" {
+#   description = "Service account email for Dataproc Serverless"
+#   value       = google_service_account.dataproc_sa.email
+# }
