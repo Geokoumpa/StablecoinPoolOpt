@@ -183,11 +183,10 @@ def fetch_optimization_results():
                 if pid:
                     if pid not in portfolio_state: portfolio_state[pid] = {}
                     # Only add if not already present to avoid double counting if daily_balances worked
-                    # or update to the specific HOLD amount if we want to trust the optimizer's view
+                    # If already there, we assume the existing balance is the Total Initial Balance
+                    # from which subsequent Withdrawals will be subtracted. 
+                    # Overwriting it with the HOLD amount (which is partial) would cause Withdrawals to zero it out.
                     if token not in portfolio_state[pid]:
-                        portfolio_state[pid][token] = amt
-                    else:
-                        # If already there, we trust the HOLD amount as the definitive state for that token/pool
                         portfolio_state[pid][token] = amt
 
         # Flatten for reporting
