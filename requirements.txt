@@ -8,12 +8,7 @@ sqlalchemy
 google-cloud-storage
 requests
 python-dotenv
-cvxpy
 ortools
-ecos
-python-dateutil
-highspy
-cylp
 lightgbm
 playwright
 optuna
