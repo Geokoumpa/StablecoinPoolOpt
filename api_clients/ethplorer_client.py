@@ -69,3 +69,21 @@ def get_address_history(address: str, api_key: Optional[str] = None, limit: int 
     else:
         logger.warning(f"get_address_history returned unexpected type for {address}: {type(result)}")
         return None
+
+def get_token_history(token_address: str, type_: str = 'transfer', limit: int = 10, api_key: Optional[str] = None, timeout: int = 10) -> Optional[Dict]:
+    """
+    Fetch token history via /getTokenHistory/{tokenAddress}.
+    Useful for finding mints (transfers from 0x0) for a specific token.
+    valid types: 'transfer', 'issuance', 'burn', 'holder', 'contract'
+    """
+    params = {"limit": limit, "type": type_}
+    if api_key:
+        params["apiKey"] = api_key
+    
+    result = _get(f"/getTokenHistory/{token_address}", params=params, timeout=timeout)
+    
+    if result is None or isinstance(result, dict):
+        return result
+    else:
+        logger.warning(f"get_token_history returned unexpected type for {token_address}: {type(result)}")
+        return None

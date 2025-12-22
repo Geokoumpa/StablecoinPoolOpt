@@ -1,8 +1,10 @@
+
 import logging
 
 from collections import Counter
 from datetime import datetime, timezone, date
-from api_clients.ethplorer_client import get_address_history
+from api_clients.ethplorer_client import get_address_history, get_tx_info, get_token_history
+from api_clients.pendle_client import get_sdk_tokens, get_all_markets
 from database.repositories.pool_repository import PoolRepository
 from database.repositories.pool_metrics_repository import PoolMetricsRepository
 from database.repositories.parameter_repository import ParameterRepository
@@ -56,13 +58,19 @@ def filter_pools_pre():
         logger.info(f"Pool Pair TVL Ratio Max: {pool_pair_tvl_ratio_max}")
         logger.info(f"Pool TVL Limit (Optimization): {pool_tvl_limit}")
         logger.info(f"Approved Protocols: {approved_protocols}")
+
         logger.info(f"Approved Tokens: {approved_tokens}")
         logger.info("================================================")
+
+        # Pre-fetch Pendle Market Map for optimization
+        logger.info("Fetching Pendle Market Map...")
+        pendle_market_map = get_all_markets(chain_id=1) or {}
 
         # Fetch all active pools for pre-filtering
         pools_data = pool_repo.get_active_pools()
 
         token_updates = []
+        address_updates = [] # New: Collect updates for underlying token addresses
         metrics_updates = []
         filtered_ids = []
         
@@ -77,13 +85,16 @@ def filter_pools_pre():
             apy = pool.apy
             name = pool.name
             chain = pool.chain
-            underlying_token_addresses = pool.underlying_token_addresses
+            underlying_token_addresses = pool.underlying_token_addresses or []
             poolmeta = pool.pool_meta
             pool_address = pool.pool_address
 
             filter_reason = []
             is_filtered_out = False
             approved_token_symbols = []
+            
+            # Helper to store new addresses for this pool if we find them
+            rescued_addresses = []
 
             # Exclude pools not belonging to approved protocols
             if protocol not in approved_protocols:
@@ -97,32 +108,37 @@ def filter_pools_pre():
 
             # Enhanced filtering for pendle protocol pools
             if protocol.lower() == "pendle" and not is_filtered_out:
-                # First check if poolmeta contains "PT" or "LP"
-                if poolmeta and ("PT" in poolmeta or "LP" in poolmeta):
-                    logger.info(f"Pendle pool {pool_id} ({name}) contains 'PT' or 'LP' in poolmeta: {poolmeta}")
-                    
-                    if underlying_token_addresses:
-                        # Use Ethplorer API to find the most frequent token address
-                        most_frequent_token_address = find_most_frequent_token_address(pool_id, underlying_token_addresses)
-                        
-                        if most_frequent_token_address:
-                            # Check if this token address is in our approved tokens
-                            if most_frequent_token_address.lower() in approved_address_to_symbol:
-                                token_symbol = approved_address_to_symbol[most_frequent_token_address.lower()]
-                                approved_token_symbols = [token_symbol]
-                                logger.info(f"Pendle pool {pool_id} matched with approved token: {token_symbol} (address: {most_frequent_token_address})")
-                            else:
-                                filter_reason.append(f"Most frequent token address {most_frequent_token_address} not in approved tokens")
-                                is_filtered_out = True
-                        else:
-                            filter_reason.append("Could not determine most frequent token address from Ethplorer API")
-                            is_filtered_out = True
-                    else:
-                        filter_reason.append("Pendle pool has no underlying token addresses")
-                        is_filtered_out = True
+                
+                # 1. Check Local Data First: Do we already have approved tokens associated?
+                local_approved_candidates = [
+                    t for t in underlying_token_addresses 
+                    if t.lower() in approved_address_to_symbol
+                ]
+
+                if local_approved_candidates:
+                     # Already approved locally (e.g. from previous rescue run)
+                     # Note: we don't need to push address update here, it's already local
+                     approved_token_symbols = [approved_address_to_symbol[t.lower()] for t in local_approved_candidates]
+                     logger.info(f"Pendle pool {pool_id} ({name}) approved via LOCAL data: {approved_token_symbols}")
+                
                 else:
-                    filter_reason.append("Pendle pool poolmeta does not contain 'PT' or 'LP'")
-                    is_filtered_out = True
+                    # 2. Not found locally, attempt Rescue via API Map & Analyis
+                    # Only if poolmeta indicates it's likely a Pendle market
+                    if poolmeta and ("PT" in poolmeta or "LP" in poolmeta):
+                         logger.info(f"Pendle pool {pool_id} missing valid underlying. Checking API Map...")
+                         
+                         rescued_symbol, rescued_address = identify_pendle_underlying(pool_id, pool_address, pendle_market_map, approved_address_to_symbol)
+                         
+                         if rescued_symbol and rescued_address:
+                             approved_token_symbols = [rescued_symbol]
+                             rescued_addresses = [rescued_address] # We want to overwrite with the true underlying
+                         else:
+                             filter_reason.append(f"Pendle pool has no valid underlying token (Local or API Analysis failed)")
+                             is_filtered_out = True
+                    else:
+                        filter_reason.append("Pendle pool poolmeta does not contain 'PT' or 'LP'")
+                        is_filtered_out = True
+            
             else:
                 # Check token composition using address-based filtering for non-pendle protocols
                 if underlying_token_addresses and not is_filtered_out:
@@ -149,6 +165,10 @@ def filter_pools_pre():
                             if most_frequent_token_address.lower() in approved_address_to_symbol:
                                 token_symbol = approved_address_to_symbol[most_frequent_token_address.lower()]
                                 approved_token_symbols = [token_symbol]
+                                # Note: For non-pendle, we are not actively 'rescuing' missing addresses here in the same way, 
+                                # but we COULD update addresses if we wanted. 
+                                # Logic: If `underlying_token_addresses` was empty, we found one. We should save it.
+                                rescued_addresses = [most_frequent_token_address] 
                                 logger.info(f"Pool {pool_id} matched with approved token from pool address: {token_symbol} (address: {most_frequent_token_address})")
                             else:
                                 filter_reason.append(f"Most frequent token address {most_frequent_token_address} from pool address not in approved tokens")
@@ -160,10 +180,16 @@ def filter_pools_pre():
                         filter_reason.append("Pool has no underlying token addresses and no pool address available")
                         is_filtered_out = True
 
-            # Update pools table with approved token symbols for approved pools
+            # Update pools table with approved token symbols 
             if approved_token_symbols:
                 token_updates.append((pool_id, approved_token_symbols))
             
+            # Update pools table with underlying addresses (if we found new ones/overwrote them)
+            # Note: We only update if we genuinely found new info (pendle rescue or frequent token scan)
+            # Existing addresses are assumed fine if we didn't touch them.
+            if rescued_addresses:
+                 address_updates.append((pool_id, rescued_addresses))
+
             # Prepare metric update
             metrics_updates.append({
                 'pool_id': pool_id,
@@ -181,6 +207,9 @@ def filter_pools_pre():
         # Perform updates
         if token_updates:
             pool_repo.bulk_update_underlying_tokens(token_updates)
+            
+        if address_updates:
+            pool_repo.bulk_update_underlying_token_addresses(address_updates)
             
         if metrics_updates:
             metrics_repo.bulk_upsert_filtering_status(metrics_updates)
@@ -244,6 +273,79 @@ def find_most_frequent_token_address(pool_id, token_addresses):
     else:
         logger.warning(f"No token addresses found in transaction history for pool {pool_id}")
         return None
+
+def identify_pendle_underlying(pool_id, pool_address, pendle_market_map, approved_address_to_symbol):
+    """
+    Identifies the underlying token for a Pendle pool using the market map and Mint Analysis.
+    
+    1. Looks up `pool_address` in `pendle_market_map`.
+    2. If found, gets the `asset_address`.
+    3. If `asset_address` is APPROVED: returns its symbol.
+    4. If not (e.g. reUSDe): Performs Mint Analysis on `asset_address` (treating it as derivative)
+       to find if it was minted using an APPROVED token (e.g. USDe).
+    
+    Returns (Approved Symbol, Approved Address) or (None, None).
+    """
+    logger.info(f"Identifying underlying for Pendle pool {pool_id}...")
+    
+    if not pool_address:
+        return None, None
+        
+    # 1. Look up in Map
+    asset_address = pendle_market_map.get(pool_address.lower())
+    if not asset_address:
+         logger.warning(f"Pool {pool_address} not found in Pendle Market Map.")
+         # Fallback to direct tokensIn call? No, logic dictates map is source of truth.
+         return None, None
+         
+    logger.info(f"Pool {pool_id} maps to asset: {asset_address}")
+    
+    # 2. Check Direct Approval
+    if asset_address.lower() in approved_address_to_symbol:
+         symbol = approved_address_to_symbol[asset_address.lower()]
+         logger.info(f"Asset {asset_address} is DIRECTLY APPROVED: {symbol}")
+         return symbol, asset_address
+         
+    # 3. Derivative Rescue (Mint Analysis)
+    logger.info(f"Asset {asset_address} is NOT approved. Analyzing as derivative (Mint Analysis)...")
+    
+    try:
+        # Fetch Issuance History for this Asset
+        history = get_token_history(asset_address, type_='issuance', limit=20)
+        
+        if not history or 'operations' not in history or not history['operations']:
+             # Fallback to transfer from 0x0
+             history = get_token_history(asset_address, type_='transfer', limit=20)
+             
+        if not history or 'operations' not in history:
+             return None, None
+             
+        mint_tx_hashes = []
+        zero_addr = '0x0000000000000000000000000000000000000000'
+        
+        for op in history['operations']:
+            op_type = op.get('type')
+            from_addr = op.get('from', '').lower()
+            if op_type == 'issuance' or op_type == 'mint' or (op_type == 'transfer' and from_addr == zero_addr):
+                 mint_tx_hashes.append(op.get('transactionHash'))
+
+        unique_mints = list(set(mint_tx_hashes))[:3]
+        
+        for tx_hash in unique_mints:
+             tx_info = get_tx_info(tx_hash)
+             if not tx_info or 'operations' not in tx_info: continue
+             
+             for op in tx_info['operations']:
+                 if 'tokenInfo' in op and 'address' in op['tokenInfo']:
+                     ta = op['tokenInfo']['address'].lower()
+                     if ta in approved_address_to_symbol:
+                         symbol = approved_address_to_symbol[ta]
+                         logger.info(f"RESCUED via Mint Analysis: {asset_address} -> {symbol} (tx {tx_hash})")
+                         return symbol, ta
+    except Exception as e:
+        logger.error(f"Error in identify_pendle_underlying for {pool_id}: {e}")
+        
+    return None, None
 
 if __name__ == "__main__":
     filter_pools_pre()

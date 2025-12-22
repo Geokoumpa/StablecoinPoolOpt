@@ -116,6 +116,22 @@ class PoolRepository(BaseRepository[Pool]):
         """
         self.execute_bulk_values(sql, updates, template="(%s, %s::text[])")
 
+    def bulk_update_underlying_token_addresses(self, updates: List[Tuple[str, List[str]]]) -> None:
+        """
+        Bulk update underlying token addresses.
+        updates: List of (pool_id, addresses)
+        """
+        if not updates:
+            return
+        
+        sql = """
+            UPDATE pools
+            SET underlying_token_addresses = data.addresses 
+            FROM (VALUES %s) AS data (pool_id, addresses) 
+            WHERE pools.pool_id = data.pool_id
+        """
+        self.execute_bulk_values(sql, updates, template="(%s, %s::text[])")
+
     def get_approved_protocols(self) -> List[str]:
         """Get list of approved protocol names."""
         from database.models.protocol import ApprovedProtocol
