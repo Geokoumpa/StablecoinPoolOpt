@@ -25,25 +25,32 @@ class SlackNotifier:
     def __init__(self):
         self.webhook_url = config.SLACK_WEBHOOK_URL
 
-    def send_notification(self, message, title="Daily Allocation Report"):
+    def send_notification(self, blocks=None, text_fallback="Daily Allocation Report", title="Daily Allocation Report"):
         """
-        Sends a formatted message to Slack via webhook.
+        Sends a formatted message to Slack via webhook using Block Kit.
         """
         if not self.webhook_url:
             logger.warning("Slack webhook URL not configured. Skipping notification.")
             return
 
         payload = {
-            "attachments": [
-                {
-                    "fallback": title,
-                    "color": "#36a64f",
-                    "pretext": title,
-                    "text": message,
-                    "ts": os.path.getmtime(__file__) # Timestamp of the file modification
-                }
-            ]
+            "text": text_fallback,
+            "blocks": blocks if blocks else []
         }
+        
+        # If no blocks, use legacy structure (though we plan to move to blocks)
+        if not blocks:
+            payload = {
+                "attachments": [
+                    {
+                        "fallback": title,
+                        "color": "#36a64f",
+                        "pretext": title,
+                        "text": text_fallback,
+                        "ts": os.path.getmtime(__file__)
+                    }
+                ]
+            }
 
         try:
             response = requests.post(
@@ -54,6 +61,8 @@ class SlackNotifier:
             logger.info("Slack notification sent successfully!")
         except requests.exceptions.RequestException as e:
             logger.error(f"Error sending Slack notification: {e}")
+            if response is not None:
+                logger.error(f"Response: {response.text}")
 
 
 def fetch_optimization_results():
@@ -148,14 +157,22 @@ def fetch_optimization_results():
 
         # Build Portfolio State (Pool -> {token: amount})
         portfolio_state = {} 
+        wallet_state = {}
+        
         if MAIN_ASSET_HOLDING_ADDRESS:
              start_balances = balance_repo.get_current_balances(MAIN_ASSET_HOLDING_ADDRESS, date.today())
              for bal in start_balances:
+                 # Allocated
                  if bal.allocated_balance and bal.allocated_balance > 0 and bal.pool_id:
                      pid = bal.pool_id
                      if pid not in portfolio_state: portfolio_state[pid] = {}
                      t = bal.token_symbol
                      portfolio_state[pid][t] = portfolio_state[pid].get(t, 0.0) + float(bal.allocated_balance)
+                 
+                 # Unallocated (Initial Wallet State)
+                 if bal.unallocated_balance and bal.unallocated_balance > 0:
+                     t = bal.token_symbol
+                     wallet_state[t] = wallet_state.get(t, 0.0) + float(bal.unallocated_balance)
         
         # Replay transactions
         for txn in parsed_sequence:
@@ -166,39 +183,77 @@ def fetch_optimization_results():
             if t_type == 'WITHDRAWAL':
                 pid = txn.get('from_location')
                 if pid and pid in portfolio_state and token in portfolio_state[pid]:
+                    # Remove from Pool
                     portfolio_state[pid][token] = max(0.0, portfolio_state[pid][token] - amt)
                     if portfolio_state[pid][token] <= 1e-9:
                         del portfolio_state[pid][token]
                     if not portfolio_state[pid]:
                         del portfolio_state[pid]
+                    
+                    # Add to Wallet
+                    wallet_state[token] = wallet_state.get(token, 0.0) + amt
                         
             elif t_type == 'ALLOCATION':
                 pid = txn.get('to_location')
                 if pid:
+                    # Add to Pool
                     if pid not in portfolio_state: portfolio_state[pid] = {}
                     portfolio_state[pid][token] = portfolio_state[pid].get(token, 0.0) + amt
+                    
+                    # Remove from Wallet
+                    wallet_state[token] = max(0.0, wallet_state.get(token, 0.0) - amt)
                     
             elif t_type == 'HOLD':
                 pid = txn.get('to_location') or txn.get('from_location')
                 if pid:
                     if pid not in portfolio_state: portfolio_state[pid] = {}
-                    # Only add if not already present to avoid double counting if daily_balances worked
-                    # If already there, we assume the existing balance is the Total Initial Balance
-                    # from which subsequent Withdrawals will be subtracted. 
-                    # Overwriting it with the HOLD amount (which is partial) would cause Withdrawals to zero it out.
                     if token not in portfolio_state[pid]:
                         portfolio_state[pid][token] = amt
+            
+            elif t_type == 'CONVERSION':
+                from_t = txn.get('from_token') or txn.get('from_asset')
+                to_t = txn.get('to_token') or txn.get('to_asset')
+                
+                if from_t and to_t:
+                    # Remove from Wallet
+                    wallet_state[from_t] = max(0.0, wallet_state.get(from_t, 0.0) - amt)
+                    
+                    # Add to Wallet (Estimate output based on price)
+                    p_in = token_prices.get(from_t, 0.0)
+                    p_out = token_prices.get(to_t, 0.0)
+                    
+                    if p_in > 0 and p_out > 0:
+                        # Estimate output amount: (AmountIn * PriceIn * (1 - FeeRate)) / PriceOut
+                        # Assuming standard fee/slippage of ~0.04% if not specified
+                        val_usd = amt * p_in * (1 - 0.0004) 
+                        amt_out = val_usd / p_out
+                        wallet_state[to_t] = wallet_state.get(to_t, 0.0) + amt_out
 
         # Flatten for reporting
         final_allocations_list = []
         total_allocated_usd = 0.0
         
+        # Add Pools
         for pid, tokens in portfolio_state.items():
             for t, amt in tokens.items():
+                if amt > 1e-9:
+                    price = token_prices.get(t, 1.0)
+                    amt_usd = amt * price
+                    final_allocations_list.append({
+                        'pool_id': pid,
+                        'token': t,
+                        'amount': amt,
+                        'amount_usd': amt_usd
+                    })
+                    total_allocated_usd += amt_usd
+        
+        # Add Wallet (Unallocated)
+        for t, amt in wallet_state.items():
+            if amt > 1e-9:
                 price = token_prices.get(t, 1.0)
                 amt_usd = amt * price
                 final_allocations_list.append({
-                    'pool_id': pid,
+                    'pool_id': 'Unallocated',
                     'token': t,
                     'amount': amt,
                     'amount_usd': amt_usd
@@ -224,6 +279,8 @@ def fetch_optimization_results():
             if pid and pid != 'warm_wallet':
                 all_pool_ids.add(pid)
         
+        if 'Unallocated' in all_pool_ids:
+            all_pool_ids.remove('Unallocated')
         all_pool_ids = list(all_pool_ids)
         
         pools_data = []
@@ -289,7 +346,7 @@ def fetch_optimization_results():
             'pool_count': len(pool_summary),
             'token_count': len(token_summary),
             'transaction_count': len(transactions_df),
-            'top_pools': pool_summary.head(5).to_dict('records'),
+            'top_pools': pool_summary.to_dict('records'),
             'token_allocation': token_summary.to_dict('records'),
             'allocations_df': allocations_with_pools,
             'transactions_df': transactions_df,
@@ -309,6 +366,8 @@ def calculate_yield_metrics(results: Dict) -> Dict:
             return {}
             
         pool_ids = results['allocations_df']['pool_id'].dropna().unique().tolist()
+        if 'Unallocated' in pool_ids:
+            pool_ids.remove('Unallocated')
         if not pool_ids:
             return {}
             
@@ -352,54 +411,100 @@ def calculate_yield_metrics(results: Dict) -> Dict:
         return {}
 
 
-def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
-    """Format results into Slack message."""
+def create_markdown_table_block(df: pd.DataFrame, headers: list = None) -> dict:
+    """
+    Helper to create a Slack Markdown Code Block containing a dataframe table.
+    Native Table blocks are not yet supported in Webhook messages.
+    """
+    if df.empty:
+        return None
+        
+    # Pandas to_string usually does a good job
+    # We can ensure headers are nice
+    if headers:
+        df.columns = headers
+        
+    table_str = df.to_string(index=False)
+    
+    return {
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"```\n{table_str}\n```"
+        }
+    }
+
+def format_slack_message_blocks(results: Dict, yield_metrics: Dict) -> list:
+    """Format results into Slack Block Kit blocks."""
+    blocks = []
     date_str = datetime.now().strftime("%Y-%m-%d")
     pool_total_mapping = results.get('pool_total_mapping', {})
-    pool_address_map = results.get('pool_address_map', {})
     
-    # Fetch total AUM
     total_aum = results['total_allocated']
-    try:
-        repo = DailyBalanceRepository()
-        db_aum = repo.get_total_aum(date.today())
-        if db_aum > 0:
-            total_aum = db_aum
-    except Exception as e:
-        logger.warning(f"Could not fetch total AUM: {e}")
+    unallocated_mask = results['allocations_df']['pool_id'] == 'Unallocated'
+    unallocated_usd = results['allocations_df'][unallocated_mask]['amount_usd'].sum()
+    allocated_usd = total_aum - unallocated_usd
 
-    message = f"""
-*📊 Daily Allocation Report - {date_str}*
-
-*💰 Portfolio Summary:*
-• Total AUM: ${total_aum:,.2f}
-• Total Allocated: ${results['total_allocated']:,.2f}
-• Number of Pools: {results['pool_count']}
-• Number of Tokens: {results['token_count']}
-• Transactions: {results['transaction_count']}
-
-*💵 Yield Metrics:*
-"""
+    # 1. Title
+    blocks.append({
+        "type": "header",
+        "text": {
+            "type": "plain_text",
+            "text": f"📊 Daily Allocation Report - {date_str}",
+            "emoji": True
+        }
+    })
     
+    # 2. Portfolio Summary (Section with Fields)
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "*💰 Portfolio Summary*"}
+    })
+    
+    summary_fields = [
+        {"type": "mrkdwn", "text": f"*Total AUM:*\n${total_aum:,.2f}"},
+        {"type": "mrkdwn", "text": f"*Allocated:*\n${allocated_usd:,.2f}"},
+        {"type": "mrkdwn", "text": f"*Unallocated:*\n${unallocated_usd:,.2f}"},
+        {"type": "mrkdwn", "text": f"*Transactions:*\n{results['transaction_count']}"}
+    ]
+    blocks.append({
+        "type": "section",
+        "fields": summary_fields
+    })
+
+    # 3. Yield Metrics
     if yield_metrics:
-        message += f"""• Weighted Avg APY: {yield_metrics.get('weighted_avg_apy', 0):.2f}%
-• Daily Yield: ${yield_metrics.get('total_daily_yield', 0):.2f}
-• Annual Yield: ${yield_metrics.get('total_annual_yield', 0):,.2f}
-• Net Daily Yield (after fees): ${yield_metrics.get('net_daily_yield', 0):.2f}
-• Net Annual Yield (after fees): ${yield_metrics.get('net_annual_yield', 0):,.2f}
-"""
-    
-    message += f"""
-*💸 Transaction Costs:*
-• Gas Fees: ${results['total_gas_cost']:.4f}
-• Conversion Fees: ${results['total_conversion_cost']:.4f}
-• Total Transaction Cost: ${results['total_transaction_cost']:.4f}
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*💵 Yield Metrics*"}
+        })
+        yield_fields = [
+             {"type": "mrkdwn", "text": f"*Avg APY:*\n{yield_metrics.get('weighted_avg_apy', 0):.2f}%"},
+             {"type": "mrkdwn", "text": f"*Daily Yield:*\n${yield_metrics.get('total_daily_yield', 0):.2f}"},
+             {"type": "mrkdwn", "text": f"*Net Daily:*\n${yield_metrics.get('net_daily_yield', 0):.2f}"},
+             {"type": "mrkdwn", "text": f"*Annual Yield:*\n${yield_metrics.get('total_annual_yield', 0):,.2f}"}
+        ]
+        blocks.append({"type": "section", "fields": yield_fields})
 
-*📈 Optimization Metrics:*
-• Projected APY: {results.get('projected_apy', 0):.2f}%
+    # 4. Costs
+    blocks.append({"type": "divider"})
+    cost_text = f"*💸 Transaction Costs:* ${results['total_transaction_cost']:.4f}\n" \
+                f"(Gas: ${results['total_gas_cost']:.4f} | Conv: ${results['total_conversion_cost']:.4f})"
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": cost_text}
+    })
 
-*🏆 Top Pool Allocations:*
-"""
+    # 5. Pool Allocations Table
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "header",
+        "text": {"type": "plain_text", "text": "🏆 Pool Allocations", "emoji": True}
+    })
+
+    pool_table_data = []
+    pool_links = []
     
     for pool in results['top_pools']:
         pool_id = pool['pool_id']
@@ -407,64 +512,107 @@ def format_slack_message(results: Dict, yield_metrics: Dict) -> str:
         percentage = (pool_total_amount / total_aum) * 100 if total_aum > 0 else 0
         apy = pool.get('forecasted_apy', 0)
         tvl = pool.get('forecasted_tvl', 0)
-        tvl_str = f"${tvl:,.0f}" if tvl > 0 else "N/A"
-        apy_str = f"{apy:.2f}%" if apy > 0 else "N/A"
         
-        # Format pool ID and Address
-        addr = pool_address_map.get(pool_id, "N/A")
-        if addr != "N/A":
-             id_str = f"ID: {pool_id} | Addr: {addr}"
-        else:
-             id_str = f"ID: {pool_id}"
-             
-        message += f"• {pool['symbol']} ({id_str}): ${pool_total_amount:,.2f} ({percentage:.1f}% of AUM) | APY: {apy_str} | TVL: {tvl_str}\n"
+        pool_table_data.append({
+            "Pool": pool['symbol'],
+            "ID": pool_id[:8] + "..",
+            "Amt": f"${pool_total_amount:,.0f}",
+            "%": f"{percentage:.1f}%",
+            "APY": f"{apy:.2f}%",
+            "TVL": f"${tvl/1e6:.1f}M" if tvl > 0 else "N/A"
+        })
+        
+        # Links separate
+        pool_url = f"https://defillama.com/yields/pool/{pool_id}"
+        pool_links.append(f"• <{pool_url}|{pool['symbol']} ({pool_id})>")
+    
+    if pool_table_data:
+        df_pools = pd.DataFrame(pool_table_data)
+        blocks.append(create_markdown_table_block(df_pools))
+        
+        # Pool Links Context
+        if pool_links:
+             blocks.append({
+                 "type": "context",
+                 "elements": [{"type": "mrkdwn", "text": "*Pool Links:*\n" + "\n".join(pool_links)}]
+             })
 
-    message += "\n*💎 Token Allocation:*\n"
+    # 6. Token Allocation Table
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "*💎 Token Allocation*"}
+    })
+    token_table_data = []
     for token in results['token_allocation']:
         percentage = (token['amount_usd'] / results['total_allocated']) * 100 if results['total_allocated'] > 0 else 0
-        message += f"• {token['token']}: ${token['amount_usd']:,.2f} ({percentage:.1f}%)\n"
+        token_table_data.append({
+            "Token": token['token'],
+            "Amt": f"${token['amount_usd']:,.0f}",
+            "%": f"{percentage:.1f}%"
+        })
+    if token_table_data:
+        df_tokens = pd.DataFrame(token_table_data)
+        blocks.append(create_markdown_table_block(df_tokens))
 
-    # Transaction Sequence
+    # 7. Transaction Sequence Table
     parsed_sequence = results.get('transaction_sequence', [])
     if parsed_sequence:
-        message += "\n*🔄 Transaction Sequence:*\n"
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "header",
+            "text": {"type": "plain_text", "text": "🔄 Transaction Sequence", "emoji": True}
+        })
+        
+        txn_table_data = []
+        pool_address_map = results.get('pool_address_map', {})
+        
+        type_map = {
+             'ALLOCATION': 'ALLOC', 'WITHDRAWAL': 'WITHDR', 
+             'CONVERSION': 'CONV', 'HOLD': 'HOLD'
+        }
+
         for txn in parsed_sequence:
              t_type = txn.get('type')
              seq = txn.get('seq')
              amt = txn.get('amount_usd', 0)
-             total = txn.get('total_cost_usd', 0)
-             token = txn.get('token')
              
-             # Resolve pool address for context
+             detail = ""
+             if t_type == 'CONVERSION':
+                 detail = f"{txn.get('from_token')}->{txn.get('to_token')}"
+             else:
+                 detail = f"{txn.get('token')}"
+                 
+             # Resolve address
              pool_id_ctx = txn.get('to_location') if t_type in ['ALLOCATION', 'HOLD'] else txn.get('from_location')
-             addr_info = ""
-             if pool_id_ctx:
+             addr_str = "-"
+             if pool_id_ctx and pool_id_ctx != 'warm_wallet':
                   addr = pool_address_map.get(pool_id_ctx)
                   if addr:
-                      addr_info = f" (Pool: {pool_id_ctx} | {addr})"
+                      addr_str = addr
                   else:
-                      addr_info = f" (Pool: {pool_id_ctx})"
+                      addr_str = pool_id_ctx
+            
+             txn_table_data.append({
+                 "#": seq,
+                 "Type": type_map.get(t_type, t_type),
+                 "Details": detail,
+                 "Amt": f"${amt:,.0f}",
+                 "Address": addr_str
+             })
              
-             if t_type == 'HOLD':
-                 # Step 0 or similar
-                 message += f"• Step {seq}: HOLD ${amt:,.2f} {token}{addr_info}\n"
-             elif t_type == 'ALLOCATION':
-                 message += f"• Step {seq}: ALLOCATE ${amt:,.2f} {token}{addr_info} | Cost: ${total:.4f}\n"
-             elif t_type == 'WITHDRAWAL':
-                 message += f"• Step {seq}: WITHDRAW ${amt:,.2f} {txn.get('token')}{addr_info} | Total Cost: ${total:.4f}\n"
-             elif t_type == 'CONVERSION':
-                 message += f"• Step {seq}: CONVERT ${amt:,.2f} {txn.get('from_token')} -> {txn.get('to_token')} | Total Cost: ${total:.4f}\n"
-                 
-    elif not results['transactions_df'].empty:
-         # Fallback
-         message += "\n*🔄 Transaction Sequence (Fallback):*\n"
-         for _, row in results['transactions_df'].iterrows():
-             message += f"• Step {row['step_number']}: {row['operation']} ${row['amount']}\n"
-             
-    message += f"\n*🔍 Run ID: {results['run_id']}*"
-    message += f"\n*✅ Status: Optimization completed successfully*"
-    
-    return message
+        if txn_table_data:
+            df_txn = pd.DataFrame(txn_table_data)
+            # Full address can be long, but code block handles scrolling horizontally in Slack if needed
+            # or just wraps. Standard markdown code block doesn't force wrap.
+            blocks.append(create_markdown_table_block(df_txn))
+
+    # Footer
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": f"Run ID: {results['run_id']} | Status: ✅ Success"}]
+    })
+
+    return blocks
 
 
 def main():
@@ -475,13 +623,15 @@ def main():
         return
         
     yield_metrics = calculate_yield_metrics(results)
-    message = format_slack_message(results, yield_metrics)
     
-    logger.info("SLACK MESSAGE PREVIEW:")
-    print(message)
+    # Generate Blocks
+    blocks = format_slack_message_blocks(results, yield_metrics)
+    
+    # Text fallback
+    text_fallback = f"Daily Allocation Report: AUM ${results['total_allocated']:,.2f}"
     
     notifier = SlackNotifier()
-    notifier.send_notification(message, "Daily Allocation Report")
+    notifier.send_notification(blocks=blocks, text_fallback=text_fallback)
     logger.info("Slack notification process completed.")
 
 if __name__ == "__main__":

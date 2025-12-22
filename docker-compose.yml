@@ -14,5 +14,67 @@ services:
       - db_data:/var/lib/postgresql/data
     command: postgres -c 'max_connections=200' -c 'shared_buffers=256MB'
 
+  runner-lightweight:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.lightweight
+    depends_on:
+      - db
+    volumes:
+      - ./:/app
+      - ./credentials:/app/credentials
+    environment: &common-env
+      - ENVIRONMENT=local
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - COINMARKETCAP_API_KEY=${COINMARKETCAP_API_KEY}
+      - ETHPLORER_API_KEY=${ETHPLORER_API_KEY}
+      - FRED_API_KEY=${FRED_API_KEY}
+      - ETHGASTRACKER_API_KEY=${ETHGASTRACKER_API_KEY}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - MAIN_ASSET_HOLDING_ADDRESS=${MAIN_ASSET_HOLDING_ADDRESS}
+      - COLD_WALLET_ADDRESS=${COLD_WALLET_ADDRESS}
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+  runner-ml:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.ml-science
+    depends_on:
+      - db
+    volumes:
+      - ./:/app
+      - ./credentials:/app/credentials
+    environment: *common-env
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+  runner-scraping:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.web-scraping
+    depends_on:
+      - db
+    volumes:
+      - ./:/app
+      - ./credentials:/app/credentials
+    environment: *common-env
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+  runner-database:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.database
+    depends_on:
+      - db
+    volumes:
+      - ./:/app
+      - ./credentials:/app/credentials
+    environment: *common-env
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+
 volumes:
   db_data:

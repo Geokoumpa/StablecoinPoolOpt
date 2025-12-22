@@ -28,12 +28,9 @@ RUN pip install --no-cache-dir --upgrade pip \
     google-cloud-storage \
     requests \
     python-dotenv \
-    cvxpy \
+    python-dotenv \
     ortools \
-    ecos \
     python-dateutil \
-    highspy \
-    cylp \
     lightgbm \
     optuna
 

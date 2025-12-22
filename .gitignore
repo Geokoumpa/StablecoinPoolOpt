@@ -54,3 +54,5 @@ models/exports/
 /archives
 /mlruns
 /mlflow_artifacts
+/.roo
+/.claude
