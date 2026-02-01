@@ -398,12 +398,15 @@ def calculate_yield_metrics(results: Dict) -> Dict:
         if total_usd > 0:
              weighted_avg_apy = (allocations_with_apy['amount_usd'] * allocations_with_apy['forecasted_apy']).sum() / total_usd
 
+        # Optimization Horizon (Use 30 as default to match optimizer, since not yet in DB)
+        horizon = 30.0 
+        
         return {
             'total_daily_yield': total_daily_yield,
             'total_annual_yield': total_annual_yield,
             'weighted_avg_apy': weighted_avg_apy,
-            'net_daily_yield': total_daily_yield - (results['total_transaction_cost'] / 365),
-            'net_annual_yield': total_annual_yield - results['total_transaction_cost']
+            'net_daily_yield': total_daily_yield - (results['total_transaction_cost'] / horizon),
+            'net_annual_yield': total_annual_yield - (results['total_transaction_cost'] * (365.0 / horizon)) 
         }
         
     except Exception as e:

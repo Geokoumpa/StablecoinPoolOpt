@@ -197,6 +197,7 @@ def fetch_allocation_parameters(custom_overrides: Dict = None) -> Dict:
         'conversion_rate': 0.0004,
         'tvl_limit_percentage': 0.05,
         'min_pools': 4,
+        'optimization_horizon_days': 30, # Default to 30 days if not specified
     }
     
     final_params = defaults_map.copy()
@@ -262,6 +263,10 @@ class AllocationOptimizer:
         self.gas_fees = gas_fees
         self.alloc_params = alloc_params
         
+        # Optimization Horizon (default 30 days)
+        self.optimization_horizon_days = float(alloc_params.get('optimization_horizon_days', 30))
+        logger.info(f"Optimization Horizon: {self.optimization_horizon_days} days")
+
         self.allocation_gas_fee = gas_fees['allocation']
         self.withdrawal_gas_fee = gas_fees['withdrawal']
         self.conversion_gas_fee = gas_fees['conversion']
@@ -534,7 +539,9 @@ class AllocationOptimizer:
         # --- Objective Function ---
         # Maximize Annual Yield - Total Costs
         
-        # Annual Yield
+        # Annual Yield -> Horizon Yield
+        # maximize (DailyYield * Horizon) - TotalCosts
+        
         daily_apy_matrix = np.zeros((self.n_pools, self.n_tokens))
         for _, row in self.pools_df.iterrows():
             pool_id = row['pool_id']
@@ -545,15 +552,16 @@ class AllocationOptimizer:
                     j = self.token_idx[token]
                     daily_apy_matrix[i, j] = daily_apy
 
-        annual_yield = self.solver.Sum([
-            self.x[i, j] * daily_apy_matrix[i, j] * price_vector[j] * 365.0
+        # Calculate Yield over the specific Horizon
+        horizon_yield = self.solver.Sum([
+            self.x[i, j] * daily_apy_matrix[i, j] * price_vector[j] * self.optimization_horizon_days
             for i in range(self.n_pools) for j in range(self.n_tokens)
         ])
         
-        self.solver.Maximize(annual_yield - total_costs)
+        self.solver.Maximize(horizon_yield - total_costs)
         
         # Save expressions for result extraction
-        self.objective_expr = annual_yield - total_costs
+        self.objective_expr = horizon_yield - total_costs
         self.total_costs_expr = total_costs
         
     def solve(self) -> bool:
@@ -596,25 +604,37 @@ class AllocationOptimizer:
         """Extracts results from solved optimization model."""
         if not self.solver:
             return pd.DataFrame(), []
-            
+
+        if not hasattr(self, 'x') or not hasattr(self, 'w') or not hasattr(self, 'd') or not hasattr(self, 'c'):
+            logger.error("Solver variables not initialized. Call solve() first.")
+            return pd.DataFrame(), []
+
+        if self.n_pools == 0 or self.n_tokens == 0:
+            logger.warning("No pools or tokens available for result extraction.")
+            return pd.DataFrame(), []
+
         allocations = []
         transactions = []
         transaction_seq = 1
         price_vector = np.array([self.token_prices.get(t, 1.0) for t in self.tokens])
-        
-        # Helpers to get values
+
+        # Helpers to get values safely
         def get_val(var_dict, *args):
-            return var_dict[args].solution_value()
-        
+            try:
+                val = var_dict[args].solution_value()
+                return val if val is not None else 0.0
+            except (KeyError, AttributeError):
+                return 0.0
+
         # 1. Holds
         for (pool_id, token), current_amt in self.current_allocations.items():
             if pool_id in self.pool_idx and token in self.token_idx:
                 i = self.pool_idx[pool_id]
                 j = self.token_idx[token]
-                
+
                 withdraw_amt = get_val(self.w, i, j)
                 kept_amt = current_amt - withdraw_amt
-                
+
                 if kept_amt > 0.01:
                     transactions.append({
                         'seq': transaction_seq,
@@ -622,14 +642,14 @@ class AllocationOptimizer:
                         'from_location': pool_id,
                         'to_location': pool_id,
                         'token': token,
-                        'amount': kept_amt,
-                        'amount_usd': kept_amt * price_vector[j],
+                        'amount': float(kept_amt),
+                        'amount_usd': float(kept_amt * price_vector[j]),
                         'gas_cost_usd': 0.0,
                         'conversion_cost_usd': 0.0,
                         'total_cost_usd': 0.0
                     })
                     transaction_seq += 1
-                    
+
         # 2. Withdrawals
         for i in range(self.n_pools):
             pool_id = self.pools[i]
@@ -642,22 +662,22 @@ class AllocationOptimizer:
                         'from_location': pool_id,
                         'to_location': 'warm_wallet',
                         'token': self.tokens[j],
-                        'amount': amount,
-                        'amount_usd': amount * price_vector[j],
-                        'gas_cost_usd': self.withdrawal_gas_fee,
+                        'amount': float(amount),
+                        'amount_usd': float(amount * price_vector[j]),
+                        'gas_cost_usd': float(self.withdrawal_gas_fee),
                         'conversion_cost_usd': 0.0,
-                        'total_cost_usd': self.withdrawal_gas_fee
+                        'total_cost_usd': float(self.withdrawal_gas_fee)
                     })
                     transaction_seq += 1
-                    
+
         # 3. Conversions
         for i in range(self.n_tokens):
             for j in range(self.n_tokens):
                 if i != j:
                     amount = get_val(self.c, i, j)
                     if amount > 0.01:
-                        trans_cost = self.conversion_gas_fee
-                        conv_cost = amount * price_vector[i] * self.conversion_rate
+                        trans_cost = float(self.conversion_gas_fee)
+                        conv_cost = float(amount * price_vector[i] * self.conversion_rate)
                         transactions.append({
                             'seq': transaction_seq,
                             'type': 'CONVERSION',
@@ -665,36 +685,36 @@ class AllocationOptimizer:
                             'to_location': 'warm_wallet',
                             'from_token': self.tokens[i],
                             'to_token': self.tokens[j],
-                            'amount': amount,
-                            'amount_usd': amount * price_vector[i],
+                            'amount': float(amount),
+                            'amount_usd': float(amount * price_vector[i]),
                             'conversion_cost_usd': conv_cost,
                             'gas_cost_usd': trans_cost,
                             'total_cost_usd': trans_cost + conv_cost
                         })
                         transaction_seq += 1
-                        
+
         # 4. Allocations (Deposits) & Final State
         for i in range(self.n_pools):
             pool_id = self.pools[i]
             # Handle potential empty dataframe result safely
             pool_info = self.pools_df[self.pools_df['pool_id'] == pool_id]
             symbol = pool_info['symbol'].iloc[0] if not pool_info.empty else "UNKNOWN"
-            
+
             for j in range(self.n_tokens):
                 token = self.tokens[j]
                 final_amt = get_val(self.x, i, j)
                 deposit_amt = get_val(self.d, i, j)
-                
+
                 if final_amt > 0.01:
                     allocations.append({
                         'pool_id': pool_id,
                         'pool_symbol': symbol,
                         'token': token,
-                        'amount': final_amt,
-                        'amount_usd': final_amt * price_vector[j],
+                        'amount': float(final_amt),
+                        'amount_usd': float(final_amt * price_vector[j]),
                         'needs_conversion': bool(deposit_amt > 0.01)
                     })
-                    
+
                 if deposit_amt > 0.01:
                     transactions.append({
                         'seq': transaction_seq,
@@ -702,15 +722,15 @@ class AllocationOptimizer:
                         'from_location': 'warm_wallet',
                         'to_location': pool_id,
                         'token': token,
-                        'amount': deposit_amt,
-                        'amount_usd': deposit_amt * price_vector[j],
+                        'amount': float(deposit_amt),
+                        'amount_usd': float(deposit_amt * price_vector[j]),
                         'conversion_cost_usd': 0.0,
-                        'gas_cost_usd': self.allocation_gas_fee,
-                        'total_cost_usd': self.allocation_gas_fee,
-                        'needs_conversion': False 
+                        'gas_cost_usd': float(self.allocation_gas_fee),
+                        'total_cost_usd': float(self.allocation_gas_fee),
+                        'needs_conversion': False
                     })
                     transaction_seq += 1
-                    
+
         return pd.DataFrame(allocations), transactions
 
     def format_results(self):
