@@ -56,3 +56,4 @@ models/exports/
 /mlflow_artifacts
 /.roo
 /.claude
+/backtest_results

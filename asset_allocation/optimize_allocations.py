@@ -197,7 +197,7 @@ def fetch_allocation_parameters(custom_overrides: Dict = None) -> Dict:
         'conversion_rate': 0.0004,
         'tvl_limit_percentage': 0.05,
         'min_pools': 4,
-        'optimization_horizon_days': 30, # Default to 30 days if not specified
+        'optimization_horizon_days': 1, # Default to 1 day (daily optimization)
     }
     
     final_params = defaults_map.copy()
@@ -264,7 +264,7 @@ class AllocationOptimizer:
         self.alloc_params = alloc_params
         
         # Optimization Horizon (default 30 days)
-        self.optimization_horizon_days = float(alloc_params.get('optimization_horizon_days', 30))
+        self.optimization_horizon_days = float(alloc_params.get('optimization_horizon_days', 1))
         logger.info(f"Optimization Horizon: {self.optimization_horizon_days} days")
 
         self.allocation_gas_fee = gas_fees['allocation']
