@@ -398,8 +398,8 @@ def calculate_yield_metrics(results: Dict) -> Dict:
         if total_usd > 0:
              weighted_avg_apy = (allocations_with_apy['amount_usd'] * allocations_with_apy['forecasted_apy']).sum() / total_usd
 
-        # Optimization Horizon (Use 30 as default to match optimizer, since not yet in DB)
-        horizon = 30.0 
+        # Optimization Horizon (Use 1 as default to match optimizer, since not yet in DB)
+        horizon = 1.0 
         
         return {
             'total_daily_yield': total_daily_yield,

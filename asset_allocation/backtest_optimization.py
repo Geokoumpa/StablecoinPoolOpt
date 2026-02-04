@@ -815,8 +815,8 @@ def parse_arguments():
     parser.add_argument(
         '--optimization-horizon',
         type=int,
-        default=30,
-        help='Optimization horizon in days (default: 30)'
+        default=1,
+        help='Optimization horizon in days (default: 1)'
     )
 
     return parser.parse_args()
